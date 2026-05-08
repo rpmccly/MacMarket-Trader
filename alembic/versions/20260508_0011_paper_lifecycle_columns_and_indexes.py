@@ -8,39 +8,74 @@ Background
 ----------
 The original ``20260415_0005_replay_stageable_and_paper_portfolio_scaffold``
 migration created ``paper_positions`` and ``paper_trades`` from an earlier
-ORM shape.  Subsequent additions on
-``src/macmarket_trader/domain/models.py`` (``opened_qty``,
-``remaining_qty``, the ``replay_run_id`` lineage column on
-``paper_positions``, and the ``position_id`` / ``replay_run_id`` lineage
-columns on ``paper_trades``) were patched into the live schema at startup
-by ``apply_schema_updates()`` in ``src/macmarket_trader/storage/db.py``
-rather than through a formal Alembic revision, and the corresponding
-``index=True`` indexes that the ORM declares were never produced by
-Alembic on databases that started from migration 0005.
+ORM shape.  Several columns that ``src/macmarket_trader/domain/models.py``
+declares today were never written into a follow-up Alembic revision and
+have been patched into the live schema at startup by
+``apply_schema_updates()`` in ``src/macmarket_trader/storage/db.py``
+instead.  The corresponding ``index=True`` indexes that the ORM declares
+were also never produced by Alembic on databases that started from
+migration 0005, because ``apply_schema_updates()`` only adds missing
+columns — it does not add indexes on existing tables.
+
+Per-column status going into this revision
+------------------------------------------
+* ``paper_positions.opened_qty`` — declared by the ORM, never added by
+  any pre-0011 Alembic revision.  Patched in by ``apply_schema_updates()``
+  at runtime.  Truly needs a backfill here.
+* ``paper_positions.remaining_qty`` — same story as ``opened_qty``.
+  Truly needs a backfill here.
+* ``paper_trades.realized_pnl`` — *was* in fact created by 0005 (see
+  ``alembic/versions/20260415_0005_replay_stageable_and_paper_portfolio_scaffold.py``
+  line 52, ``sa.Column("realized_pnl", sa.Float(), nullable=False,
+  server_default="0")``).  The 2026-05-07 roadmap reality audit listed
+  it as missing from the migration set; that specific item was incorrect.
+  We still include ``realized_pnl`` in the idempotent "if missing" list
+  here so that databases bootstrapped via ``init_db()`` /
+  ``Base.metadata.create_all()`` end up at the same state regardless of
+  which path they took, but the column is **not** new in this revision.
+* ``paper_positions.replay_run_id`` — declared by the ORM with
+  ``index=True`` but the column itself was never written into Alembic.
+  Patched in by ``apply_schema_updates()`` at runtime; the index
+  ``ix_paper_positions_replay_run_id`` is missing on those databases
+  and is created here.
+* ``paper_trades.replay_run_id`` — same pattern as
+  ``paper_positions.replay_run_id``.  The index
+  ``ix_paper_trades_replay_run_id`` is created here.
+* ``paper_trades.position_id`` — same pattern.  The index
+  ``ix_paper_trades_position_id`` is created here.
 
 What this migration does
 ------------------------
-* Backfills the three columns explicitly called out by the
-  2026-05-07 roadmap reality audit if they are still missing
-  (``paper_positions.opened_qty``, ``paper_positions.remaining_qty``,
-  ``paper_trades.realized_pnl``).  ``paper_trades.realized_pnl`` was in
-  fact created by 0005, but it remains in the idempotent "if missing"
-  list so that databases bootstrapped via ``init_db()`` /
-  ``apply_schema_updates()`` reach the same end state.
-* Defensively backfills the three lineage columns that the next step
-  needs to index (``paper_positions.replay_run_id``,
-  ``paper_trades.replay_run_id``, ``paper_trades.position_id``) so the
-  index creation never fires against a missing column.
-* Adds the three explicit lineage indexes if missing:
-  ``ix_paper_positions_replay_run_id``,
-  ``ix_paper_trades_replay_run_id``, ``ix_paper_trades_position_id``.
+* Pass 1: idempotently backfill the six columns above if missing.  On
+  any database where ``apply_schema_updates()`` has already patched
+  them in, this pass is a no-op.
+* Pass 2: idempotently add the three lineage indexes if missing.  On
+  any database where ``Base.metadata.create_all()`` already produced
+  the ``index=True`` indexes from the ORM, this pass is a no-op.
+
+Downgrade behaviour (data-preserving)
+-------------------------------------
+This migration's downgrade is intentionally **index-only**.  None of
+the data-bearing columns are dropped on downgrade because, on the
+deployed alpha database, those columns may have been added by
+``apply_schema_updates()`` long before this revision existed and may
+already hold real paper-lifecycle data (opened/remaining quantities,
+realized P&L, and lineage IDs that join paper trades back to their
+recommendations and replay runs).  Dropping them on downgrade would
+silently destroy that data.
+
+The downgrade therefore only removes what this revision actually
+created on the deployed schema: the three lineage indexes.  Operators
+who genuinely need to remove the columns must do so via a separate,
+explicit, data-aware migration — not by using ``alembic downgrade``.
 
 Safety
 ------
-Every step is guarded by an SQLAlchemy inspector check, so the migration
-is a no-op on databases where ``apply_schema_updates()`` has already
-added the columns, or where ``Base.metadata.create_all()`` already
-produced the lineage indexes from the ORM ``index=True`` declarations.
+Every step is guarded by an SQLAlchemy inspector check, so the
+migration is a no-op on databases where ``apply_schema_updates()`` has
+already added the columns or where ``Base.metadata.create_all()``
+already produced the lineage indexes from the ORM ``index=True``
+declarations.
 """
 
 from __future__ import annotations
@@ -97,17 +132,17 @@ _LINEAGE_INDEXES: tuple[tuple[str, str, str], ...] = (
 
 
 def upgrade() -> None:
-    # Pass 1 — backfill any missing columns.  Each table is inspected once
-    # per column to keep the conditional logic obvious; the underlying
-    # ``inspect`` call is cheap enough at private-alpha scale.
+    # Pass 1 — backfill any missing columns.  Each table is inspected
+    # once per column to keep the conditional logic obvious; the
+    # underlying ``inspect`` call is cheap enough at private-alpha scale.
     for table_name, column_name, factory in _BACKFILL_COLUMNS:
         if column_name not in _column_names(table_name):
             op.add_column(table_name, factory())
 
     # Pass 2 — add lineage indexes if both column and index are in the
     # expected state.  Skip silently when the column is missing for any
-    # unexpected reason; this keeps the migration idempotent on partially
-    # patched databases.
+    # unexpected reason; this keeps the migration idempotent on
+    # partially patched databases.
     for index_name, table_name, column_name in _LINEAGE_INDEXES:
         if column_name not in _column_names(table_name):
             continue
@@ -116,18 +151,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop indexes first so the columns underneath are not in use.
+    # Index-only downgrade.  All data-bearing columns are intentionally
+    # preserved — see the module docstring for the data-preservation
+    # rationale.  ``alembic downgrade`` from 0011 to 0010 must not
+    # destroy paper-lifecycle data that may pre-date this revision via
+    # ``apply_schema_updates()``.
     for index_name, table_name, _ in _LINEAGE_INDEXES:
         if index_name in _index_names(table_name):
             op.drop_index(index_name, table_name=table_name)
-
-    # Drop columns in reverse order.  ``realized_pnl`` is intentionally
-    # NOT dropped on downgrade because it pre-existed this migration in
-    # the 0005 ledger, and a downgrade should not erase data that earlier
-    # migrations created.
-    preserve = {("paper_trades", "realized_pnl")}
-    for table_name, column_name, _ in reversed(_BACKFILL_COLUMNS):
-        if (table_name, column_name) in preserve:
-            continue
-        if column_name in _column_names(table_name):
-            op.drop_column(table_name, column_name)

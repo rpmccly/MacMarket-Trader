@@ -27,16 +27,28 @@ MacMarket-Trader is a deterministic, event-driven research and paper-execution p
 These are constitutional notes, not implementation detail. They pin
 down where reviewers should look first.
 
-### Alembic is the schema source of truth
+### Alembic is the schema source of truth (with one historical caveat)
 
-- `alembic/versions/*` is the canonical schema source of truth for new
-  tables, non-nullable columns, indexes, foreign keys, and structural
-  changes. Any schema-shape claim about MacMarket-Trader must be
-  reconcilable against the migration ledger.
+- `alembic/versions/*` is the **required** schema source of truth for
+  any **new** schema change: new tables, non-nullable columns,
+  indexes, foreign keys, and structural changes must land in a formal
+  Alembic revision and be reconcilable against the migration ledger.
 - The most recent backfill — `20260508_0011_paper_lifecycle_columns_and_indexes`
   — illustrates the expected pattern: idempotent column / index
-  creation guarded by SQLAlchemy inspector checks, with a downgrade
-  that preserves any data created by earlier revisions.
+  creation guarded by SQLAlchemy inspector checks, and an index-only,
+  data-preserving downgrade (because data-bearing columns may have
+  been added by `apply_schema_updates()` long before the revision
+  existed and may already hold real lifecycle data).
+- One historical limitation, tracked separately: the initial revision
+  `20260331_0001_initial_schema` calls `Base.metadata.create_all()`
+  rather than declaring a static historical table set. That means
+  `alembic upgrade head` from an empty database is **not** the
+  supported bootstrap path today — `init_db()` plus
+  `apply_schema_updates()` is. Operationally this is fine (every
+  deployment and test bootstraps via `init_db`, then forward
+  revisions apply incrementally), and it is acknowledged as a known
+  diligence/hygiene gap to address in a future "static-historical-0001"
+  revision rather than as a constraint on future schema work.
 
 ### `apply_schema_updates()` is a compatibility shim only
 
