@@ -4,13 +4,21 @@ from fastapi import APIRouter, Depends
 
 from macmarket_trader.api.deps.auth import require_approved_user
 from macmarket_trader.charts.haco_service import HacoChartService
+from macmarket_trader.charts.momentum_service import MomentumChartService
 from macmarket_trader.data.providers.registry import build_market_data_service
-from macmarket_trader.domain.schemas import Bar, HacoChartPayload, HacoChartRequest
+from macmarket_trader.domain.schemas import (
+    Bar,
+    HacoChartPayload,
+    HacoChartRequest,
+    MomentumChartPayload,
+    MomentumChartRequest,
+)
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import DailyBarRepository
 
 router = APIRouter(prefix="/charts", tags=["charts"])
 service = HacoChartService()
+momentum_service = MomentumChartService()
 bar_repo = DailyBarRepository(SessionLocal)
 market_data_service = build_market_data_service()
 
@@ -97,6 +105,21 @@ def get_haco_chart(req: HacoChartRequest, _user=Depends(require_approved_user)) 
         timeframe=req.timeframe,
         bars=bars,
         include_heikin_ashi=req.include_heikin_ashi,
+        data_source=data_source,
+        fallback_mode=fallback_mode,
+        metadata=metadata,
+    )
+
+
+@router.post("/momentum", response_model=MomentumChartPayload)
+def get_momentum_chart(req: MomentumChartRequest, _user=Depends(require_approved_user)) -> MomentumChartPayload:
+    bars, data_source, fallback_mode, metadata = _resolve_bars(req.symbol, req.timeframe, req.bars)
+    return momentum_service.build_payload(
+        symbol=req.symbol,
+        timeframe=req.timeframe,
+        bars=bars,
+        higher_timeframe_bars=list(req.higher_timeframe_bars) if req.higher_timeframe_bars else None,
+        include_markers=req.include_markers,
         data_source=data_source,
         fallback_mode=fallback_mode,
         metadata=metadata,

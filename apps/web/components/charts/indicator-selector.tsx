@@ -3,7 +3,7 @@
 import { INDICATOR_REGISTRY, type IndicatorCategory, type IndicatorId } from "@/lib/indicator-framework";
 
 const BUCKETS: Array<{
-  key: "price" | "lower" | "context";
+  key: "price" | "lower" | "context" | "momentum_intelligence";
   label: string;
   hint: string;
   categories: IndicatorCategory[];
@@ -11,6 +11,7 @@ const BUCKETS: Array<{
   { key: "price", label: "Price overlays", hint: "Overlays that share the main price pane.", categories: ["trend", "volatility", "structure"] },
   { key: "lower", label: "Lower panels", hint: "Separate scales for compact volume and RSI context.", categories: ["momentum", "volume"] },
   { key: "context", label: "HACO context", hint: "Dedicated HACO/HACOLT context strips.", categories: ["haco"] },
+  { key: "momentum_intelligence", label: "Momentum Intelligence", hint: "True Momentum, HiLo Elite, and composite score strips. Deterministic context only — never trade approval.", categories: ["momentum_intelligence"] },
 ];
 
 export function IndicatorSelector({

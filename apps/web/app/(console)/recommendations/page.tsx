@@ -14,6 +14,8 @@ import { MetricLabel } from "@/components/ui/metric-help";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { isE2EAuthBypassEnabled } from "@/lib/e2e-auth";
 import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
+import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
 import { parseManualSymbolEntry, SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
@@ -454,6 +456,9 @@ export default function RecommendationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState({ queue: false, recommendations: false, promote: false, saveAlt: false, approve: false, opportunity: false });
   const [chartPayload, setChartPayload] = useState<HacoChartPayload | null>(null);
+  const [selectedMomentumPayload, setSelectedMomentumPayload] = useState<MomentumChartPayload | null>(null);
+  const [selectedMomentumLoading, setSelectedMomentumLoading] = useState(false);
+  const [selectedMomentumError, setSelectedMomentumError] = useState<string | null>(null);
   const [optionsPreview, setOptionsPreview] = useState<OptionsResearchSetup | null>(null);
   const [optionsPreviewLoading, setOptionsPreviewLoading] = useState(false);
   const [optionsPreviewError, setOptionsPreviewError] = useState<string | null>(null);
@@ -1008,6 +1013,54 @@ export default function RecommendationsPage() {
       cancelled = true;
     };
   }, [isOptionsPreviewMode, optionsPreview?.symbol, optionsPreview?.timeframe, previewSymbol, previewFallback, selectedQueue?.symbol, selectedQueue?.timeframe, selectedRecommendation?.symbol, selectedRecommendation?.id, selectedQueueKey, fallbackDerived]);
+
+  useEffect(() => {
+    // Phase A2/A3: Momentum Intelligence is deterministic context only —
+    // never blocks recommendation generation, approval, paper orders, or
+    // ranking decisions. Errors render inside the panel only.
+    let cancelled = false;
+    async function loadMomentum() {
+      const momentumSymbol = isOptionsPreviewMode ? (optionsPreview?.symbol ?? previewSymbol) : (selectedRecommendation?.symbol ?? selectedQueue?.symbol);
+      const timeframeRaw = isOptionsPreviewMode ? (optionsPreview?.timeframe ?? "1D") : (selectedQueue?.timeframe ?? "1D");
+      const timeframe = ["1D", "4H", "1H"].includes(String(timeframeRaw).toUpperCase()) ? String(timeframeRaw).toUpperCase() : "1D";
+      if (!momentumSymbol) {
+        setSelectedMomentumPayload(null);
+        setSelectedMomentumError(null);
+        setSelectedMomentumLoading(false);
+        return;
+      }
+      setSelectedMomentumLoading(true);
+      setSelectedMomentumError(null);
+      try {
+        const payload = await fetchMomentumChart({ symbol: momentumSymbol, timeframe });
+        if (cancelled) return;
+        setSelectedMomentumPayload(payload);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : "Momentum context unavailable.";
+        setSelectedMomentumError(
+          message === "AUTH_NOT_READY" ? "Authentication initializing. Momentum context will load once auth is ready." : message,
+        );
+        setSelectedMomentumPayload(null);
+      } finally {
+        if (!cancelled) setSelectedMomentumLoading(false);
+      }
+    }
+    void loadMomentum();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isOptionsPreviewMode,
+    optionsPreview?.symbol,
+    optionsPreview?.timeframe,
+    previewSymbol,
+    selectedQueue?.symbol,
+    selectedQueue?.timeframe,
+    selectedRecommendation?.symbol,
+    selectedRecommendation?.id,
+    selectedQueueKey,
+  ]);
 
   const activeRecommendation = useMemo(() => {
     if (selectedRecommendation) return selectedRecommendation;
@@ -1829,6 +1882,14 @@ export default function RecommendationsPage() {
           />
         )}
       </Card> : null}
+
+      <MomentumSummaryPanel
+        payload={selectedMomentumPayload}
+        loading={selectedMomentumLoading}
+        error={selectedMomentumError}
+        compact
+        title="Momentum Intelligence (context only)"
+      />
     </section>
   );
 }

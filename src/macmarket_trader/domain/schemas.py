@@ -1237,3 +1237,122 @@ class ReplayRunResponse(BaseModel):
     fills: list[FillRecord]
     final_portfolio: PortfolioSnapshot
     summary_metrics: ReplaySummaryMetrics
+
+
+class MomentumLinePoint(BaseModel):
+    index: int
+    time: str | int
+    value: float
+
+
+class MomentumStripPoint(BaseModel):
+    index: int
+    time: str | int
+    value: int
+    state: str
+
+
+class MomentumScoreStripPoint(BaseModel):
+    index: int
+    time: str | int
+    total_score: int
+    state: str
+
+
+class MomentumSignalMarker(BaseModel):
+    index: int
+    time: str | int
+    marker_type: Literal[
+        "bullish_pullback_context",
+        "bearish_rally_context",
+        "reversal_warning",
+        "neutral_to_bull",
+        "neutral_to_bear",
+    ]
+    direction: Literal["bullish", "bearish", "warning"]
+    price: float
+    text: str
+
+
+class MomentumComponentBreakdownPayload(BaseModel):
+    true_momentum_score: int
+    hilo_thrust: int
+    bull_ma: int
+    bear_ma: int
+    atr_value: int
+    macd_bias: int
+    intraday_penalty: int
+    base_score: int
+
+
+class MomentumScoreSnapshot(BaseModel):
+    total_score: int
+    total_label: str
+    total_state: str
+    trend_score: float
+    momo_score: float
+    true_momentum: float
+    true_momentum_ema: float
+    true_momentum_score: int
+    hilo_thrust: int
+    hilo_score: int
+    atr_bias: int
+    macd_bias: int
+    ma_bias: int
+    component_breakdown: MomentumComponentBreakdownPayload
+
+
+class MomentumChartExplanation(BaseModel):
+    snapshot: MomentumScoreSnapshot
+    reversal_warning: bool = False
+    pullback_signal: bool = False
+    no_trade_warning: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class MomentumChartRequest(BaseModel):
+    symbol: str
+    timeframe: str = "1D"
+    bars: list[Bar] = Field(default_factory=list, max_length=500)
+    higher_timeframe_bars: list[Bar] = Field(default_factory=list, max_length=500)
+    include_markers: bool = True
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        return _validated_symbol(value)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_timeframe(cls, value: str) -> str:
+        timeframe = str(value or "1D").strip().upper()
+        if timeframe not in {"1D", "1H", "4H"}:
+            raise ValueError("timeframe must be one of: 1D, 1H, 4H")
+        return timeframe
+
+
+class MomentumChartPayload(BaseModel):
+    symbol: str
+    timeframe: str
+    candles: list[ChartCandle]
+    true_momentum_line: list[MomentumLinePoint]
+    true_momentum_ema_line: list[MomentumLinePoint]
+    hilo_slowd_line: list[MomentumLinePoint]
+    hilo_slowd_x_line: list[MomentumLinePoint]
+    hilo_thrust_strip: list[MomentumStripPoint]
+    score_strip: list[MomentumScoreStripPoint]
+    markers: list[MomentumSignalMarker] = Field(default_factory=list)
+    latest_snapshot: MomentumScoreSnapshot | None = None
+    explanation: MomentumChartExplanation | None = None
+    data_source: str = "request_bars"
+    fallback_mode: bool = False
+    session_policy: str | None = None
+    source_session_policy: str | None = None
+    source_timeframe: str | None = None
+    output_timeframe: str | None = None
+    first_bar_timestamp: str | None = None
+    last_bar_timestamp: str | None = None
+    higher_timeframe_source: str = "derived_from_chart_bars"
+    higher_timeframe: str | None = None
+    parity_status: str = "pending_thinkorswim_fixture_validation"
+    calculation_notes: list[str] = Field(default_factory=list)

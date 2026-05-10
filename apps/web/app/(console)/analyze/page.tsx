@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, StatusBadge } from "@/components/operator-ui";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { buildIndicatorProvenance, strategyFitText } from "@/lib/analyze-helpers";
+import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 
 type ScoreboardEntry = {
   rank: number;
@@ -38,6 +40,9 @@ export default function AnalyzePage() {
   const [payload, setPayload] = useState<AnalyzePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message: string }>({ state: "idle", message: "" });
+  const [momentumPayload, setMomentumPayload] = useState<MomentumChartPayload | null>(null);
+  const [momentumLoading, setMomentumLoading] = useState(false);
+  const [momentumError, setMomentumError] = useState<string | null>(null);
 
   async function load() {
     setFeedback({ state: "loading", message: "Running fast symbol triage…" });
@@ -50,6 +55,20 @@ export default function AnalyzePage() {
     setError(null);
     setPayload(result.data);
     setFeedback({ state: "success", message: "Analyze triage ready." });
+
+    // Phase A2/A3: Momentum Intelligence is deterministic context only — never blocks triage.
+    setMomentumLoading(true);
+    setMomentumError(null);
+    try {
+      const momentum = await fetchMomentumChart({ symbol, timeframe: "1D" });
+      setMomentumPayload(momentum);
+    } catch (momentumErr) {
+      const message = momentumErr instanceof Error ? momentumErr.message : "Momentum context unavailable.";
+      setMomentumError(message === "AUTH_NOT_READY" ? "Authentication initializing. Momentum context will load once auth is ready." : message);
+      setMomentumPayload(null);
+    } finally {
+      setMomentumLoading(false);
+    }
   }
 
   useEffect(() => { void load(); }, []);
@@ -94,6 +113,13 @@ export default function AnalyzePage() {
           return <button key={action.label} onClick={() => window.location.assign(path)}>{action.label}</button>;
         })}</div></Card>
       </div>
+      <MomentumSummaryPanel
+        payload={momentumPayload}
+        loading={momentumLoading}
+        error={momentumError}
+        compact
+        title="Momentum Intelligence (context only)"
+      />
     </>}
   </section>;
 }

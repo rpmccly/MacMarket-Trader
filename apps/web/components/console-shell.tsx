@@ -26,6 +26,7 @@ const navSections = [
     links: [
       ["/analyze", "Symbol Snapshot"],
       ["/charts/haco", "HACO Context"],
+      ["/charts/momentum", "Momentum Intelligence"],
     ],
   },
   {
