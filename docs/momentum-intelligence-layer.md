@@ -126,17 +126,48 @@ provider/session metadata including `data_source`, `fallback_mode`,
 `higher_timeframe_source`, `higher_timeframe`, `parity_status`, and
 `calculation_notes`.
 
+## Phase A2 — frontend display integration
+
+Phase A2 wires the Phase A1 backend payload into the operator console as
+**deterministic display context only**. It deliberately does **not**
+introduce ranking influence, strategy-family creation, or any change to
+recommendation approval, sizing, or paper-order behavior.
+
+| Surface | File | Notes |
+|---|---|---|
+| Frontend proxy route | `apps/web/app/api/charts/momentum/route.ts` | POST proxy via `proxyWorkflowRequest` to `/charts/momentum`; auth-pending → 425. |
+| Momentum API client | `apps/web/lib/momentum-api.ts` | `fetchMomentumChart`, types matching the backend payload; 425 maps to `AUTH_NOT_READY`. |
+| Pure helpers | `apps/web/lib/momentum-chart.ts` | `momentumScoreTone`, `formatMomentumScore`, `formatMomentumValue`, `summarizeMomentumSnapshot`, `hasMomentumWarning`, `getLatestMomentumSnapshot`, `buildMomentumLegendValues`, `normalizeMomentumTimeKey`. |
+| Reusable summary panel | `apps/web/components/charts/momentum-summary-panel.tsx` | Renders score / state / trend / momo / components / parity / HTF source / data source / explicit deterministic-context note. |
+| Workspace | `apps/web/components/charts/momentum-workspace.tsx` | Symbol input, timeframe selector (1D / 4H / 1H), price candles + synced TM/EMA, SlowD/SlowD_X, score histogram, thrust strip, and markers. |
+| Console page | `apps/web/app/(console)/charts/momentum/page.tsx` | Mounts the workspace under **Research → Momentum Intelligence** in the console nav. |
+| Strategy Workbench | `apps/web/app/(console)/analysis/page.tsx` | Adds `momentumPayload` / loading / error state; fetches alongside the existing `fetchHacoChart` call; renders `MomentumSummaryPanel` near the Workbench chart. Failure does not block the workbench. |
+| Symbol Snapshot | `apps/web/app/(console)/analyze/page.tsx` | Adds compact panel for the entered symbol on timeframe `1D`; failure does not block triage. |
+| Recommendation detail | `apps/web/app/(console)/recommendations/page.tsx` | Adds `selectedMomentumPayload` for the selected queue/recommendation symbol; renders compact panel as context only. |
+| Indicator registry | `apps/web/lib/indicator-framework.ts` + `apps/web/components/charts/indicator-selector.tsx` | New IDs: `true_momentum`, `true_momentum_ema`, `hilo_elite`, `hilo_slowd`, `hilo_slowd_x`, `momentum_score`, `momentum_thrust` under a typed `momentum_intelligence` category. All `defaultEnabled: false`. The generic `WorkflowChart` lists them as **unsupported** rather than rendering them, since they require the dedicated momentum payload. |
+
+### Tests
+
+- `apps/web/lib/momentum-chart.test.ts` — score tone mapping, null/undefined formatting, snapshot summary (bull / bear / neutral), warning detection, latest-snapshot extraction, legend rows.
+- `apps/web/lib/momentum-api.test.ts` — `fetchMomentumChart` posts JSON to `/api/charts/momentum`, uses `credentials: include` and `cache: no-store`, maps 425 to `AUTH_NOT_READY`, throws clear error on non-OK responses.
+- `apps/web/components/charts/momentum-summary-panel.test.tsx` — renders empty / loading / error states, score / label / trend / momo / components, parity-pending and HTF-source badges, deterministic-context note, reversal/no-trade warning state, bear-tone variant.
+- `apps/web/lib/indicator-framework.test.ts` — registry contains new IDs; existing defaults unchanged; momentum-intelligence IDs round-trip through `normalizeSelection`.
+- `apps/web/lib/workflow-chart.test.ts` — momentum-intelligence IDs are surfaced as **unsupported** (not selected) on the generic workflow chart.
+- `apps/web/lib/momentum-integration.test.ts` — Strategy Workbench, Symbol Snapshot, Recommendation detail import the panel + client; momentum proxy route delegates to `proxyWorkflowRequest`; `/charts/momentum` page mounts `MomentumWorkspace`.
+
+### Explicitly out of scope
+
+- No ranking influence — composite scores still do not feed recommendation ranking, scoring, or quality gates.
+- No strategy families.
+- No recommendation approval, sizing, or paper-order behavior changes.
+- No HACO/HACOLT removal; HACO context remains intact.
+- `parity_status` continues to default to `pending_thinkorswim_fixture_validation` until Thinkorswim fixture CSVs land under `tests/fixtures/thinkorswim_momentum/`.
+
 ## Future phases
 
-Phase A1 deliberately stops at backend deterministic math and protected
-chart payload. Future phases (not implemented in this prompt):
-
-- Phase A2: frontend display integration for Symbol Snapshot, Strategy
-  Workbench, Recommendation detail, and the indicator registry.
-- Phase B: ranking influence — feeding momentum scores into recommendation
-  ranking with explicit guardrails and replay parity.
-- Phase C: dedicated strategy families that combine momentum context with
-  event/regime/sector filters.
+- Phase A3: visual QA / operator hardening — mobile/responsive polish, accessibility audit, dark/light theme review, hover/legend/animation polish, and signal-marker copy review across surfaces.
+- Phase B (later, gated): ranking influence — only after Phase A3 completes and explicit operator approval is in place.
+- Phase C (later, gated): dedicated strategy families that combine momentum context with event/regime/sector filters.
 - Thinkorswim fixture validation: replacing `parity_status =
   pending_thinkorswim_fixture_validation` with measured tolerances once CSVs
   land.

@@ -27,6 +27,12 @@ describe("workflow chart presets", () => {
     expect(result.unsupported).toEqual(["haco"]);
   });
 
+  it("hides momentum-intelligence ids as unsupported on the generic workflow chart", () => {
+    const result = sanitizeWorkflowIndicatorSelection(["true_momentum", "momentum_score", "rsi"], supportedIndicators);
+    expect(result.selected).toEqual(["rsi"]);
+    expect(result.unsupported).toEqual(["true_momentum", "momentum_score"]);
+  });
+
   it("detects exact preset matches and falls back to custom otherwise", () => {
     expect(detectWorkflowIndicatorPreset(["volume"], supportedIndicators)).toBe("clean");
     expect(detectWorkflowIndicatorPreset(["volume", "rsi"], supportedIndicators)).toBe("momentum");

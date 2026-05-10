@@ -1,4 +1,4 @@
-export type IndicatorCategory = "trend" | "volatility" | "structure" | "momentum" | "volume" | "haco";
+export type IndicatorCategory = "trend" | "volatility" | "structure" | "momentum" | "volume" | "haco" | "momentum_intelligence";
 
 export type IndicatorId =
   | "sma20"
@@ -19,7 +19,14 @@ export type IndicatorId =
   | "volume"
   | "relative_volume"
   | "haco"
-  | "hacolt";
+  | "hacolt"
+  | "true_momentum"
+  | "true_momentum_ema"
+  | "hilo_elite"
+  | "hilo_slowd"
+  | "hilo_slowd_x"
+  | "momentum_score"
+  | "momentum_thrust";
 
 export type IndicatorDefinition = {
   id: IndicatorId;
@@ -57,6 +64,13 @@ export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
   { id: "relative_volume", label: "Relative Volume", category: "volume", defaultEnabled: false },
   { id: "haco", label: "HACO", category: "haco", defaultEnabled: false },
   { id: "hacolt", label: "HACOLT", category: "haco", defaultEnabled: false },
+  { id: "true_momentum", label: "True Momentum", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "true_momentum_ema", label: "True Momentum EMA", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "hilo_elite", label: "HiLo Elite", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "hilo_slowd", label: "HiLo SlowD", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "hilo_slowd_x", label: "HiLo SlowD X", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "momentum_score", label: "Momentum Score", category: "momentum_intelligence", defaultEnabled: false },
+  { id: "momentum_thrust", label: "Momentum Thrust", category: "momentum_intelligence", defaultEnabled: false },
 ];
 
 const defaultSelection = INDICATOR_REGISTRY.filter((item) => item.defaultEnabled).map((item) => item.id);

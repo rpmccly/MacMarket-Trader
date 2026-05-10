@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { calculateIndicatorSnapshot, normalizeSelection } from '@/lib/indicator-framework';
+import { INDICATOR_REGISTRY, calculateIndicatorSnapshot, normalizeSelection } from '@/lib/indicator-framework';
 
 describe('indicator framework', () => {
   it('normalizes unknown indicators to defaults', () => {
@@ -22,5 +22,33 @@ describe('indicator framework', () => {
     expect(snapshot).toHaveProperty('sma50');
     expect(snapshot).toHaveProperty('ema20');
     expect(snapshot).toHaveProperty('relativeVolume');
+  });
+
+  it('registers Momentum Intelligence indicator IDs without changing existing defaults', () => {
+    const ids = INDICATOR_REGISTRY.map((entry) => entry.id);
+    for (const expected of [
+      'true_momentum',
+      'true_momentum_ema',
+      'hilo_elite',
+      'hilo_slowd',
+      'hilo_slowd_x',
+      'momentum_score',
+      'momentum_thrust',
+    ]) {
+      expect(ids).toContain(expected);
+    }
+    const newEntries = INDICATOR_REGISTRY.filter((entry) => entry.category === 'momentum_intelligence');
+    expect(newEntries).toHaveLength(7);
+    for (const entry of newEntries) {
+      expect(entry.defaultEnabled).toBe(false);
+    }
+    // Existing defaults stay backward compatible: ema20, vwap, prior_day_levels.
+    const defaults = INDICATOR_REGISTRY.filter((entry) => entry.defaultEnabled).map((entry) => entry.id).sort();
+    expect(defaults).toEqual(['ema20', 'prior_day_levels', 'vwap']);
+  });
+
+  it('preserves stored momentum-intelligence ids through normalization', () => {
+    const result = normalizeSelection(['true_momentum', 'momentum_score', 'ema20']);
+    expect(result).toEqual(['true_momentum', 'momentum_score', 'ema20']);
   });
 });

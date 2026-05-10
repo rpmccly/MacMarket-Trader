@@ -11,6 +11,8 @@ import { WorkflowChart } from "@/components/charts/workflow-chart";
 import { ExpectedRangeVisualization } from "@/components/options/expected-range-visualization";
 import { MetricLabel } from "@/components/ui/metric-help";
 import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
+import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { isE2EAuthBypassEnabled } from "@/lib/e2e-auth";
 import { fetchStrategyRegistry, filterStrategiesByMode, type MarketMode, type StrategyRegistryEntry } from "@/lib/strategy-registry";
@@ -263,6 +265,9 @@ export default function Page() {
   const [source, setSource] = useState("workflow pending");
   const [setup, setSetup] = useState<SetupPayload | null>(null);
   const [chartPayload, setChartPayload] = useState<HacoChartPayload | null>(null);
+  const [momentumPayload, setMomentumPayload] = useState<MomentumChartPayload | null>(null);
+  const [momentumLoading, setMomentumLoading] = useState(false);
+  const [momentumError, setMomentumError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message: string }>({ state: "idle", message: "" });
   const [workbenchState, setWorkbenchState] = useState<WorkbenchState>("auth_initializing");
   const [initialLoadDone, setInitialLoadDone] = useState(false);
@@ -320,6 +325,24 @@ export default function Page() {
 
       setWorkbenchState(payload.fallback_mode ? "fallback_mode" : "ready");
       setFeedback({ state: "success", message: "Analysis loaded. Strategy and indicators are synced to one canonical bar series." });
+
+      // Momentum Intelligence is deterministic context only and must never fail the workbench.
+      setMomentumLoading(true);
+      setMomentumError(null);
+      try {
+        const momentum = await fetchMomentumChart({ symbol: nextSymbol, timeframe: nextTimeframe });
+        setMomentumPayload(momentum);
+      } catch (momentumErr) {
+        if (momentumErr instanceof Error && momentumErr.message === "AUTH_NOT_READY") {
+          setMomentumError("Authentication initializing. Momentum context will load once auth is ready.");
+        } else {
+          setMomentumError(momentumErr instanceof Error ? momentumErr.message : "Momentum context unavailable.");
+        }
+        setMomentumPayload(null);
+      } finally {
+        setMomentumLoading(false);
+      }
+
       return workflowSource || setupPayload?.workflow_source || "workflow source pending";
     } catch (err) {
       if (err instanceof Error && err.message === "AUTH_NOT_READY") {
@@ -764,5 +787,13 @@ export default function Page() {
         sourceLabel={setup?.workflow_source ?? source}
       />
     </Card>
+
+    <MomentumSummaryPanel
+      payload={momentumPayload}
+      loading={momentumLoading}
+      error={momentumError}
+      compact
+      title="Momentum Intelligence (context only)"
+    />
   </section>;
 }
