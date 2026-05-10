@@ -11,6 +11,7 @@ from macmarket_trader.recommendation.momentum_ranking import (
     build_momentum_ranking_contribution,
     build_momentum_ranking_status,
     momentum_ranking_config_from_settings,
+    resolve_effective_momentum_ranking_mode,
     resolve_momentum_ranking_mode,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",
+    "resolve_effective_momentum_ranking_mode",
     "resolve_momentum_ranking_mode",
 ]

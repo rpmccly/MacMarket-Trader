@@ -56,8 +56,17 @@ function shadowStatus(overrides: Partial<MomentumRankingStatus> = {}): MomentumR
       "Shadow mode computes contribution but does not alter final ranking.",
       "Active mode applies a bounded contribution only.",
       "This does not approve, reject, size, or route trades.",
-      "Real Thinkorswim parity fixtures are still pending.",
+      "Approval, sizing, and paper-order creation remain manual.",
+      "Active mode changes ranking order only; it does not approve, reject, size, or route trades.",
+      "Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true.",
+      "Thinkorswim parity fixtures are still pending.",
     ],
+    requested_mode: "shadow",
+    effective_mode: "shadow",
+    active_allowed: false,
+    active_guard_env_var: "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING",
+    active_mode_blocked: false,
+    active_mode_block_reason: null,
     ...overrides,
   };
 }
@@ -93,7 +102,7 @@ describe("MomentumRankingStatusCard", () => {
     expect(html).toContain("MACMARKET_MOMENTUM_RANKING_MODE");
     expect(html).toContain("Parity required for active");
     expect(html).toContain("Shadow mode computes contribution but does not alter final ranking.");
-    expect(html).toContain("Real Thinkorswim parity fixtures are still pending.");
+    expect(html).toContain("Thinkorswim parity fixtures are still pending.");
     expect(html).toContain(DETERMINISTIC_NOTE);
   });
 
@@ -102,6 +111,8 @@ describe("MomentumRankingStatusCard", () => {
       <MomentumRankingStatusCard
         status={shadowStatus({
           mode: "off",
+          requested_mode: "off",
+          effective_mode: "off",
           enabled: false,
           applied_by_default: false,
           reason_codes: [],
@@ -117,6 +128,9 @@ describe("MomentumRankingStatusCard", () => {
       <MomentumRankingStatusCard
         status={shadowStatus({
           mode: "active",
+          requested_mode: "active",
+          effective_mode: "active",
+          active_allowed: true,
           applied_by_default: true,
           reason_codes: ["thinkorswim_parity_pending", "active_mode_with_parity_pending"],
           active_mode_warning: "Active mode is applying a bounded momentum contribution while Thinkorswim parity fixtures are still pending review.",
@@ -173,5 +187,71 @@ describe("MomentumRankingStatusCard", () => {
     ]) {
       expect(html.includes(forbidden)).toBe(false);
     }
+  });
+
+  // ── Phase B6 — safety-guard rendering ───────────────────────────────
+
+  it("renders blocked-active warning when active was requested without the safety guard", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          mode: "shadow",
+          requested_mode: "active",
+          effective_mode: "shadow",
+          active_allowed: false,
+          active_mode_blocked: true,
+          active_mode_block_reason:
+            "Active Momentum ranking was requested but blocked because MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING is not enabled.",
+          reason_codes: ["thinkorswim_parity_pending", "active_mode_blocked_by_safety_guard"],
+          active_mode_warning:
+            "Active Momentum ranking was requested but blocked because MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING is not enabled.",
+        })}
+      />,
+    );
+    expect(html).toContain("Effective: Shadow — computed, not applied");
+    expect(html).toContain("Requested: Active — applied to ranking");
+    expect(html).toContain("Active blocked — safety guard not enabled");
+    expect(html).toContain("Active allowed: No");
+    expect(html).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING");
+    expect(html).toContain('data-testid="momentum-ranking-status-safety-guard-block"');
+    expect(html).toContain('role="alert"');
+  });
+
+  it("renders allowed-active state with active allowed badge in good tone", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          mode: "active",
+          requested_mode: "active",
+          effective_mode: "active",
+          active_allowed: true,
+          active_mode_blocked: false,
+          applied_by_default: true,
+          reason_codes: ["thinkorswim_parity_pending", "active_mode_with_parity_pending"],
+        })}
+      />,
+    );
+    expect(html).toContain("Effective: Active — applied to ranking");
+    expect(html).toContain("Active allowed: Yes");
+    expect(html).not.toContain("Active blocked — safety guard not enabled");
+  });
+
+  it("renders Phase B6 guardrail copy when supplied", () => {
+    const html = renderToStaticMarkup(<MomentumRankingStatusCard status={shadowStatus()} />);
+    expect(html).toContain("Approval, sizing, and paper-order creation remain manual.");
+    expect(html).toContain(
+      "Active mode changes ranking order only; it does not approve, reject, size, or route trades.",
+    );
+    expect(html).toContain(
+      "Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true.",
+    );
+    expect(html).toContain("Thinkorswim parity fixtures are still pending.");
+  });
+
+  it("renders the active guard env var label", () => {
+    const html = renderToStaticMarkup(<MomentumRankingStatusCard status={shadowStatus()} />);
+    expect(html).toContain("Active guard env var");
+    expect(html).toContain('data-testid="momentum-ranking-status-active-guard-env-var"');
+    expect(html).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING");
   });
 });

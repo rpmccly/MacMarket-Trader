@@ -43,6 +43,14 @@ class RankedCandidate:
     # present (with mode='off' / enabled=False) when no Momentum payload is
     # available so frontend clients can rely on a stable shape.
     momentum_contribution: dict[str, Any] = field(default_factory=dict)
+    # Phase B6 — before/after visibility. Always populated so the
+    # Momentum Shadow Impact Review can show baseline vs. applied score
+    # without recomputing indicators. ``momentum_rank_mode`` mirrors the
+    # effective mode at the time of ranking.
+    score_before_momentum: float | None = None
+    score_after_momentum: float | None = None
+    momentum_score_delta: float | None = None
+    momentum_rank_mode: str | None = None
 
 
 def _regime_alignment_bonus(bars: list[Bar], strategy: str) -> float:
@@ -205,6 +213,14 @@ class DeterministicRankingEngine:
             for entry in selected:
                 metrics = _score_symbol(bars, entry.display_name)
                 total = metrics["total_score"]
+                # Phase B6 — capture the baseline before the bounded
+                # momentum contribution is applied so the operator UI can
+                # show before/after visibility without recomputing
+                # indicators. ``score_before_momentum`` is the raw
+                # deterministic score from ``_score_symbol``; the active
+                # mode delta is layered on top below.
+                score_before_momentum: float | None = total
+                momentum_score_delta: float | None = None
 
                 # Phase B1: bounded momentum ranking contribution.
                 # Phase B4.2: enrich the inference context with the
@@ -230,13 +246,17 @@ class DeterministicRankingEngine:
                         # the engine's [0,1] score scale, then re-clamp the
                         # final score so we never exit the engine's domain.
                         delta = contribution.total_contribution / max(active_config.ranking_score_scale, 1.0)
-                        total = max(0.0, min(1.0, total + delta))
+                        new_total = max(0.0, min(1.0, total + delta))
+                        momentum_score_delta = new_total - total
+                        total = new_total
                 else:
                     # off-mode: still emit a stable shape so clients/tests
                     # can read momentum_contribution without conditional logic.
                     contribution_dict = MomentumRankingContribution(
                         mode="off", enabled=False, applied=False
                     ).model_dump(mode="json")
+                    score_before_momentum = None
+                    momentum_score_delta = None
 
                 status = "top_candidate" if total >= 0.62 else "watchlist"
                 if metrics["confidence"] < 0.45:
@@ -268,6 +288,14 @@ class DeterministicRankingEngine:
                         trigger="Hold above opening range high with RVOL confirmation.",
                         entry_zone=f"{latest.close * 0.995:.2f} - {latest.close * 1.005:.2f}",
                         invalidation=f"{prior.low * 0.995:.2f}",
+                        score_before_momentum=(
+                            round(score_before_momentum, 4) if score_before_momentum is not None else None
+                        ),
+                        score_after_momentum=round(total, 4) if score_before_momentum is not None else None,
+                        momentum_score_delta=(
+                            round(momentum_score_delta, 6) if momentum_score_delta is not None else None
+                        ),
+                        momentum_rank_mode=active_config.mode if active_config.mode != "off" else "off",
                         targets=f"{latest.close * 1.02:.2f} / {latest.close * 1.04:.2f}",
                         reason_text=reason_text,
                         momentum_contribution=contribution_dict,

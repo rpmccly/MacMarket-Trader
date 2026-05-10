@@ -138,6 +138,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Phase B6 — safety guard for active Momentum ranking mode. Active
+    # contribution only applies when *both* momentum_ranking_mode=="active"
+    # and momentum_active_ranking_allowed is truthy. Default False so
+    # production cannot silently flip ranking behavior even if someone
+    # changes MACMARKET_MOMENTUM_RANKING_MODE without coordinating with
+    # the operator. Truthy values: ``true`` / ``1`` / ``yes``
+    # (case-insensitive).
+    momentum_active_ranking_allowed: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING",
+            "ALLOW_MOMENTUM_ACTIVE_RANKING",
+        ),
+    )
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
     @model_validator(mode="after")

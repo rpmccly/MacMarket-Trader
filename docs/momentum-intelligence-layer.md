@@ -850,6 +850,174 @@ to zero for queues consisting of these strategies.
   not count toward `direction_unknown_count`; rows that still carry
   `direction_unknown` continue to count.
 
+## Phase B6 — controlled active-mode safety guard
+
+Phase B6 lets an operator run **active** Momentum ranking in a
+controlled paper / research environment **without** changing
+recommendation approval, paper-order behavior, or live trading. The
+guard is an explicit second env var that must be flipped **alongside**
+the mode flag; production deployments that only change the mode flag
+stay on shadow.
+
+### Env vars
+
+| Variable | Allowed values | Default | Effect |
+|---|---|---|---|
+| `MACMARKET_MOMENTUM_RANKING_MODE` | `off` / `shadow` / `active` (case-insensitive) | `shadow` | Operator-requested mode. |
+| `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING` | `true` / `1` / `yes` (case-insensitive) | `false` | Safety guard; must be truthy for the **requested active** mode to take effect. |
+
+Behavior table:
+
+| Requested mode | Active allowed | Effective mode | Notes |
+|---|---|---|---|
+| `(unset)` | `false` | `shadow` | Default deployment. |
+| `shadow` | `false` | `shadow` | No change. |
+| `off` | `false` | `off` | Contribution not computed. |
+| Invalid mode string | `false` | `shadow` | Adds `invalid_env_value_resolved_to_shadow`. |
+| `active` | `false` | **`shadow`** | Adds `active_mode_blocked_by_safety_guard` + operator warning. Final scores/order unchanged. |
+| `active` | `true` | `active` | Bounded contribution applies exactly as Phase B1 designed. |
+
+### Resolution helper
+
+`resolve_effective_momentum_ranking_mode(requested, *, active_allowed)`
+in `src/macmarket_trader/recommendation/momentum_ranking.py` returns
+`(effective, requested_canonical, blocked)`. The truthy parser accepts
+`true` / `1` / `yes` and rejects anything else (including invalid
+strings), defaulting to `false`.
+
+### Status payload additions
+
+`MomentumRankingStatus` (Phase B3) gained these fields:
+
+| Field | Meaning |
+|---|---|
+| `requested_mode` | Operator's raw requested mode (after invalid-string normalization). |
+| `effective_mode` | The mode actually applied — mirrors `mode` for backward compatibility. |
+| `active_allowed` | Resolved value of the safety-guard env var. |
+| `active_guard_env_var` | The literal env-var name (`MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING`). |
+| `active_mode_blocked` | True when active was requested but the guard refused. |
+| `active_mode_block_reason` | Operator-facing explanation when blocked. |
+
+The Phase B3 status card was extended to render `Effective: ...`,
+`Requested: ...` (when different), an `Active allowed: Yes/No` badge,
+the active-guard env-var row, and a prominent
+`<strong data-testid="momentum-ranking-status-safety-guard-block">`
+warning when the safety guard refused active mode. The endpoint still
+has **zero** market-provider side effects.
+
+### Operator-facing copy
+
+The status payload's `guardrails` array now always includes:
+
+- *"Shadow mode computes contribution but does not alter final ranking."*
+- *"Active mode applies a bounded contribution only."*
+- *"This does not approve, reject, size, or route trades."*
+- *"Approval, sizing, and paper-order creation remain manual."*
+- *"Active mode changes ranking order only; it does not approve, reject, size, or route trades."*
+- *"Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true."*
+- *"Thinkorswim parity fixtures are still pending."* (when applicable)
+
+The Momentum Shadow Impact Review's framing line is mode-aware:
+
+| State | Framing line |
+|---|---|
+| Shadow | *"Shadow mode is enabled. Final scores are unchanged. The estimated active score shows what would happen if active mode were enabled."* |
+| Active (allowed) | *"Momentum contribution is currently applied to ranking. Approval and paper orders remain manual. Active mode changes ranking order only; it does not approve, reject, size, or route trades."* |
+| Active (blocked) | *"Active was requested but the safety guard blocked application; review is running as shadow. Final scores are unchanged. Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true."* |
+| Off | *"Momentum contribution is disabled (off) or not computed. No estimated movement is shown."* |
+
+### Before / after visibility (RankedCandidate fields)
+
+`RankedCandidate` gained four optional fields so the impact review can
+show baseline vs applied score without recomputing indicators:
+
+| Field | Meaning |
+|---|---|
+| `score_before_momentum` | Baseline deterministic score before any Momentum delta. |
+| `score_after_momentum` | The score actually published on `score`. |
+| `momentum_score_delta` | Bounded contribution that was applied (active mode only). |
+| `momentum_rank_mode` | Effective mode at the time of ranking (`off` / `shadow` / `active`). |
+
+In shadow and blocked-active modes, `score_before_momentum ==
+score_after_momentum` and `momentum_score_delta` is `None`. In active
+mode with the guard satisfied, `momentum_score_delta` reflects the
+exact bounded delta added to the score. In `off` mode all four fields
+stay `None`.
+
+### Operator enable / disable checklist
+
+1. **Confirm parity caveat is acceptable.** Real Thinkorswim parity
+   fixtures are still pending; enabling active mode is a research /
+   paper-only decision.
+2. **Set both env vars** in the **controlled paper/research**
+   environment only:
+
+   ```bash
+   export MACMARKET_MOMENTUM_RANKING_MODE=active
+   export MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true
+   ```
+
+3. **Restart the backend** so settings reload.
+4. **Verify Settings → Momentum ranking status** shows:
+   - `Effective: Active — applied to ranking`
+   - `Active allowed: Yes`
+   - **No** "Active blocked — safety guard not enabled" warning.
+5. **Verify Recommendations → Momentum ranking contribution card** and
+   **Momentum Shadow Impact Review** report mode `active` and that
+   `score_after_momentum` differs from `score_before_momentum` for
+   bullish candidates with a Bull / Max Bull Momentum payload.
+6. **Confirm approval and paper orders are still manual.** No
+   recommendation should be auto-approved; no paper order should be
+   auto-created. Phase B6 must never change those flows.
+7. **To disable**, set either `MACMARKET_MOMENTUM_RANKING_MODE=shadow`
+   *or* remove `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`, then
+   restart. Either change resolves the effective mode back to shadow.
+
+### What Phase B6 does NOT do
+
+- **No ranking math / cap changes.** Phase B1's bounded contribution
+  caps still hold. `build_momentum_ranking_contribution` only learned
+  to surface the new safety-guard reason code; component math is
+  byte-identical.
+- **No default mode change.** Default remains `shadow`.
+- **No recommendation approval changes.**
+  `recommendation_service.generate`, the deterministic quality gates,
+  and the queue promote flow are untouched.
+- **No paper-order behavior changes.** Paper open/close/settle/review
+  code paths and surfaces are unchanged. The frontend guard test
+  confirms the new status helpers/components are not imported into
+  any order/paper-position/paper-trade/options-paper-structure/replay-
+  preview route.
+- **No live trading.** `LIVE_TRADING_ALLOWED` and `BROKER_PROVIDER`
+  defaults remain.
+- **No strategy families.** No new strategy registry entries; no
+  new setup-engine paths; no new `setup_type` values.
+
+### Tests (Phase B6)
+
+- `tests/test_momentum_active_mode_guardrails.py` — 39 tests covering
+  the resolver table, truthy parsing, contribution behavior in blocked
+  vs allowed active, off-mode short-circuit, ranking-engine end-to-end
+  (no score change when blocked; bounded change when allowed;
+  before/after fields populated), status builder, status endpoint
+  (default / blocked / allowed-active / no-provider-calls), and the
+  no-approval/no-routing payload guard.
+- `tests/test_momentum_ranking_status.py` — Phase B3 status tests
+  updated to set the safety-guard allow flag when the test intent is
+  "active mode applies".
+- `apps/web/components/recommendations/momentum-ranking-status-card.test.tsx`
+  — 4 new tests: blocked-active warning, allowed-active "Active
+  allowed: Yes" badge, Phase B6 guardrail copy lines, env-var label.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 1 new test pinning the blocked-active framing copy plus the
+  `Active blocked — safety guard not enabled` chip.
+- `apps/web/lib/momentum-ranking.test.ts` — translates the new
+  `active_mode_blocked_by_safety_guard` reason code.
+- `apps/web/lib/momentum-integration.test.ts` — Phase B6 describe
+  block pins Settings wiring, env-var references in the card +
+  impact review, and forbids the safety-guard symbols from
+  order/paper-order/options-paper/replay-preview routes.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

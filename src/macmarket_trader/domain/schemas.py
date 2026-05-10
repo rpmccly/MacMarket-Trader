@@ -1333,13 +1333,19 @@ class MomentumChartRequest(BaseModel):
 
 class MomentumRankingStatus(BaseModel):
     """Operator-facing read-only status of the Momentum Intelligence
-    ranking influence layer (Phase B3 surface).
+    ranking influence layer (Phase B3 + Phase B6 surface).
 
     This model is **status-only**: it never approves trades, mutates
     state, or talks to providers. The settings/admin UI consumes this
     payload to surface the resolved mode, parity state, and operator
     guardrails. ``parity_required_for_active`` is exposed as
     informational metadata only — Phase B1 logic still owns the gate.
+
+    Phase B6 adds ``requested_mode`` / ``effective_mode`` /
+    ``active_allowed`` / ``active_guard_env_var`` / ``active_mode_blocked``
+    / ``active_mode_block_reason`` so the operator can see when active
+    was requested but blocked by the
+    ``MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING`` safety guard.
     """
 
     mode: Literal["off", "shadow", "active"] = "shadow"
@@ -1357,6 +1363,15 @@ class MomentumRankingStatus(BaseModel):
     active_mode_warning: str | None = None
     reason_codes: list[str] = Field(default_factory=list)
     guardrails: list[str] = Field(default_factory=list)
+    # Phase B6 safety-guard fields. ``mode`` mirrors ``effective_mode``
+    # for backward compatibility with the existing frontend; new clients
+    # should prefer the explicit pair.
+    requested_mode: Literal["off", "shadow", "active"] = "shadow"
+    effective_mode: Literal["off", "shadow", "active"] = "shadow"
+    active_allowed: bool = False
+    active_guard_env_var: str = "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING"
+    active_mode_blocked: bool = False
+    active_mode_block_reason: str | None = None
 
 
 class MomentumRankingContribution(BaseModel):

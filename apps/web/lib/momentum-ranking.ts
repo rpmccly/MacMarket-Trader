@@ -114,6 +114,8 @@ const REASON_CODE_LABELS: Record<string, string> = {
   direction_from_strategy_metadata: "Direction from strategy metadata",
   bullish_strategy_direction_inferred: "Bullish strategy direction inferred",
   direction_inferred_from_strategy: "Direction inferred from strategy",
+  // Phase B6 — safety-guard reason code.
+  active_mode_blocked_by_safety_guard: "Active blocked — safety guard not enabled",
 };
 
 export function getMomentumContributionReasonLabels(

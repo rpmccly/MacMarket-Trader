@@ -327,3 +327,50 @@ describe("Momentum Intelligence Phase B4 impact-review guards", () => {
     }
   });
 });
+
+describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Settings still mounts the Momentum ranking status section", () => {
+    const source = read("app/(console)/settings/page.tsx");
+    expect(source).toContain("MomentumRankingStatusSection");
+  });
+
+  it("status card references MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING", () => {
+    const source = read("components/recommendations/momentum-ranking-status-card.tsx");
+    expect(source).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING");
+    expect(source).toContain("Active blocked — safety guard not enabled");
+  });
+
+  it("impact review carries the Phase B6 blocked-active framing", () => {
+    const source = read("components/recommendations/momentum-impact-review.tsx");
+    expect(source).toContain("safety guard blocked application");
+    expect(source).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true");
+  });
+
+  it("safety-guard env var is not referenced from order/paper-order/options-paper/replay-preview routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      expect(source).not.toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING");
+      expect(source).not.toContain("active_mode_blocked_by_safety_guard");
+    }
+  });
+});

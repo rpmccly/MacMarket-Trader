@@ -48,6 +48,8 @@ const REASON_LABELS: Record<string, string> = {
   thinkorswim_parity_pending: "Thinkorswim parity pending",
   active_mode_with_parity_pending: "Active mode while parity pending",
   active_blocked_parity_required: "Active blocked — parity required",
+  // Phase B6 — safety-guard reason codes.
+  active_mode_blocked_by_safety_guard: "Active blocked — safety guard not enabled",
 };
 
 function reasonLabel(code: string): string {
@@ -105,6 +107,12 @@ export function MomentumRankingStatusCard({
   }
 
   const mode = normalizeMomentumRankingMode(status.mode);
+  const requestedMode = normalizeMomentumRankingMode(status.requested_mode ?? mode);
+  const effectiveMode = normalizeMomentumRankingMode(status.effective_mode ?? mode);
+  const activeAllowed = status.active_allowed === true;
+  const activeBlocked = status.active_mode_blocked === true;
+  const activeGuardEnvVar = status.active_guard_env_var ?? "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING";
+  const requestedDiffersFromEffective = requestedMode !== effectiveMode;
   const parity = describeParity(status);
   const tone = modeTone(status);
   const activeWithParityPending = mode === "active" && status.real_thinkorswim_parity_pending;
@@ -119,15 +127,33 @@ export function MomentumRankingStatusCard({
         style={{ gap: 8 }}
       >
         <div className="op-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <StatusBadge tone={tone}>{momentumRankingModeLabel(mode)}</StatusBadge>
+          <StatusBadge tone={tone} aria-label="Effective Momentum ranking mode">
+            Effective: {momentumRankingModeLabel(effectiveMode)}
+          </StatusBadge>
+          {requestedDiffersFromEffective ? (
+            <StatusBadge tone="warn" aria-label="Requested Momentum ranking mode">
+              Requested: {momentumRankingModeLabel(requestedMode)}
+            </StatusBadge>
+          ) : null}
           <StatusBadge tone="neutral">Default mode: {momentumRankingModeLabel(status.default_mode)}</StatusBadge>
           <StatusBadge tone={status.applied_by_default ? "warn" : "neutral"}>
             {describeAppliedByDefault(status)}
           </StatusBadge>
           <StatusBadge tone={parity.tone}>{parity.label}</StatusBadge>
+          <StatusBadge
+            tone={activeAllowed ? "good" : "neutral"}
+            data-testid="momentum-ranking-status-allowed-badge"
+          >
+            Active allowed: {activeAllowed ? "Yes" : "No"}
+          </StatusBadge>
           {status.invalid_env_value ? (
             <strong data-testid="momentum-ranking-status-invalid-env">
               <StatusBadge tone="warn">Invalid env value — resolved to shadow</StatusBadge>
+            </strong>
+          ) : null}
+          {activeBlocked ? (
+            <strong data-testid="momentum-ranking-status-safety-guard-block">
+              <StatusBadge tone="warn">Active blocked — safety guard not enabled</StatusBadge>
             </strong>
           ) : null}
           {activeWithParityPending ? (
@@ -173,6 +199,23 @@ export function MomentumRankingStatusCard({
             <StatusBadge tone={status.parity_required_for_active ? "warn" : "neutral"}>
               {status.parity_required_for_active ? "Yes" : "No"}
             </StatusBadge>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "4px 8px",
+              borderRadius: 6,
+              background: "rgba(15, 24, 34, 0.45)",
+              border: "1px solid rgba(115, 138, 163, 0.18)",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>Active guard env var</span>
+            <code style={{ fontVariantNumeric: "tabular-nums" }} data-testid="momentum-ranking-status-active-guard-env-var">
+              {activeGuardEnvVar}
+            </code>
           </div>
         </div>
 

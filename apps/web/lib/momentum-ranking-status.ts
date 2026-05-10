@@ -17,6 +17,15 @@ export type MomentumRankingStatus = {
   active_mode_warning?: string | null;
   reason_codes: string[];
   guardrails: string[];
+  // Phase B6 safety-guard fields. ``mode`` mirrors ``effective_mode``
+  // for backward compatibility with existing renderers; new clients
+  // should prefer the explicit pair.
+  requested_mode?: MomentumRankingMode;
+  effective_mode?: MomentumRankingMode;
+  active_allowed?: boolean;
+  active_guard_env_var?: string;
+  active_mode_blocked?: boolean;
+  active_mode_block_reason?: string | null;
 };
 
 /**

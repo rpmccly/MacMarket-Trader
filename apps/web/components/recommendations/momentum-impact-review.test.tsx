@@ -121,8 +121,31 @@ describe("MomentumImpactReview", () => {
       />,
     );
     expect(html).toContain("Active — applied to ranking");
-    expect(html).toContain("already applied to the current score");
-    expect(html).toContain("do not double-count");
+    expect(html).toContain("Momentum contribution is currently applied to ranking");
+    expect(html).toContain("Approval and paper orders remain manual");
+    expect(html).toContain("Active mode changes ranking order only");
+  });
+
+  it("renders blocked-active framing when safety guard is engaged", () => {
+    const contributionWithBlock: MomentumRankingContribution = {
+      ...contribution({
+        mode: "shadow",
+        applied: false,
+        shadow_contribution: 14,
+        reason_codes: [
+          "active_mode_blocked_by_safety_guard",
+          "thinkorswim_parity_pending",
+        ],
+      }),
+    };
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview candidates={[candidate({ momentum_contribution: contributionWithBlock })]} />,
+    );
+    expect(html).toContain(
+      "Active was requested but the safety guard blocked application; review is running as shadow.",
+    );
+    expect(html).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true");
+    expect(html).toContain("Active blocked — safety guard not enabled");
   });
 
   it("renders off-mode disabled framing", () => {

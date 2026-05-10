@@ -54,13 +54,21 @@ def resolve_momentum_ranking_mode(value: str | None, *, default: Mode = "shadow"
 class MomentumRankingConfig:
     """Configuration for the bounded ranking contribution.
 
-    All bounds are absolute caps applied per-candidate. ``parity_required_for_active``
-    is intentionally False at Phase B1 — it should flip to True once
-    Thinkorswim parity fixtures land and have been reviewed (see
-    ``tests/fixtures/thinkorswim_momentum/``).
+    Phase B6 splits ``mode`` (the **effective** mode, after the safety
+    guard) from ``requested_mode`` (the raw configured request). When
+    ``requested_mode == "active"`` but ``active_allowed`` is False, the
+    safety guard forces ``mode == "shadow"`` and the contribution
+    surfaces ``active_mode_blocked_by_safety_guard``.
+
+    All bounds are absolute caps applied per-candidate.
+    ``parity_required_for_active`` is intentionally False at Phase B1 —
+    it should flip to True once Thinkorswim parity fixtures land and
+    have been reviewed (see ``tests/fixtures/thinkorswim_momentum/``).
     """
 
     mode: Mode = "shadow"
+    requested_mode: Mode | None = None
+    active_allowed: bool = False
     max_momentum_alignment_bonus: float = 10.0
     max_trend_alignment_bonus: float = 8.0
     max_hilo_confirmation_bonus: float = 5.0
@@ -78,10 +86,61 @@ class MomentumRankingConfig:
     ranking_score_scale: float = 100.0
 
 
+_TRUTHY_STRINGS: frozenset[str] = frozenset({"true", "1", "yes", "y", "on"})
+
+
+def _resolve_active_allowed(value: Any) -> bool:
+    """Truthy-tolerant resolution for the active-mode safety guard.
+
+    Accepts bool ``True``, the integer ``1``, and the strings ``"true"``,
+    ``"1"``, ``"yes"`` (case-insensitive). Anything else, including
+    ``None`` and invalid strings, resolves to ``False``.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value).strip().lower() in _TRUTHY_STRINGS
+
+
+def resolve_effective_momentum_ranking_mode(
+    requested_mode: Mode | str | None,
+    *,
+    active_allowed: bool,
+) -> tuple[Mode, Mode, bool]:
+    """Resolve the effective Momentum ranking mode given the safety guard.
+
+    Returns ``(effective_mode, requested_mode_canonical, blocked)``.
+    ``blocked`` is True when active mode was requested but the safety
+    guard refused to honor it.
+    """
+    requested = resolve_momentum_ranking_mode(requested_mode)
+    if requested == "active" and not active_allowed:
+        return "shadow", requested, True
+    return requested, requested, False
+
+
 def momentum_ranking_config_from_settings(settings: Any) -> MomentumRankingConfig:
-    """Build a MomentumRankingConfig from the application settings object."""
+    """Build a MomentumRankingConfig from the application settings object.
+
+    Reads both ``momentum_ranking_mode`` and the Phase B6 safety guard
+    ``momentum_active_ranking_allowed``. When active is requested but the
+    guard is not set, ``mode`` falls back to ``shadow`` while
+    ``requested_mode`` preserves the original request for status reporting.
+    """
     raw_mode = getattr(settings, "momentum_ranking_mode", "shadow")
-    return MomentumRankingConfig(mode=resolve_momentum_ranking_mode(raw_mode))
+    raw_allowed = getattr(settings, "momentum_active_ranking_allowed", False)
+    active_allowed = _resolve_active_allowed(raw_allowed)
+    effective, requested, _blocked = resolve_effective_momentum_ranking_mode(
+        raw_mode, active_allowed=active_allowed
+    )
+    return MomentumRankingConfig(
+        mode=effective,
+        requested_mode=requested,
+        active_allowed=active_allowed,
+    )
 
 
 # ── Direction inference ────────────────────────────────────────────────────
@@ -380,11 +439,26 @@ def build_momentum_ranking_contribution(
     ``[config.min_total_contribution, config.max_total_contribution]``.
     """
     mode: Mode = config.mode if config.mode in _VALID_MODES else "off"
+    # Phase B6 — the contribution shape is driven by the **effective** mode
+    # (``config.mode``). If active was requested but blocked by the safety
+    # guard, ``config.mode`` is already shadow and ``config.requested_mode``
+    # is active. Surface ``active_mode_blocked_by_safety_guard`` so the
+    # operator UI can render the blocked-active framing.
+    safety_blocked = (
+        getattr(config, "requested_mode", None) == "active"
+        and mode != "active"
+        and not getattr(config, "active_allowed", False)
+    )
 
     if mode == "off":
-        return MomentumRankingContribution(mode="off", enabled=False, applied=False)
+        out = MomentumRankingContribution(mode="off", enabled=False, applied=False)
+        if safety_blocked:  # pragma: no cover - off with blocked active is a contradiction
+            out = out.model_copy(update={"reason_codes": ["active_mode_blocked_by_safety_guard"]})
+        return out
 
     reason_codes: list[str] = []
+    if safety_blocked:
+        reason_codes.append("active_mode_blocked_by_safety_guard")
     notes: list[str] = []
 
     snapshot = _extract_snapshot(payload_or_snapshot)
@@ -602,7 +676,6 @@ def build_momentum_ranking_status(
     raw_str: str | None = None
     if raw_value is not None:
         raw_str = str(raw_value)
-    mode = resolve_momentum_ranking_mode(raw_value)
 
     invalid_env = False
     if isinstance(raw_value, str):
@@ -610,7 +683,18 @@ def build_momentum_ranking_status(
         if normalized and normalized not in _VALID_MODES:
             invalid_env = True
 
-    resolved_config = config or MomentumRankingConfig(mode=mode)
+    raw_active_allowed = getattr(settings, "momentum_active_ranking_allowed", False)
+    active_allowed = _resolve_active_allowed(raw_active_allowed)
+    effective_mode, requested_mode, active_mode_blocked = resolve_effective_momentum_ranking_mode(
+        raw_value, active_allowed=active_allowed
+    )
+    mode = effective_mode
+
+    resolved_config = config or MomentumRankingConfig(
+        mode=effective_mode,
+        requested_mode=requested_mode,
+        active_allowed=active_allowed,
+    )
 
     manifest_resolved = (manifest_path or _DEFAULT_PARITY_MANIFEST_PATH).resolve()
     try:
@@ -631,6 +715,8 @@ def build_momentum_ranking_status(
     reason_codes: list[str] = []
     if invalid_env:
         reason_codes.append("invalid_env_value_resolved_to_shadow")
+    if active_mode_blocked:
+        reason_codes.append("active_mode_blocked_by_safety_guard")
     if real_thinkorswim_parity_pending:
         reason_codes.append("thinkorswim_parity_pending")
     if mode == "active" and real_thinkorswim_parity_pending:
@@ -638,8 +724,15 @@ def build_momentum_ranking_status(
     if mode == "active" and resolved_config.parity_required_for_active and real_thinkorswim_parity_pending:
         reason_codes.append("active_blocked_parity_required")
 
+    active_mode_block_reason: str | None = None
     active_mode_warning: str | None = None
-    if mode == "active":
+    if active_mode_blocked:
+        active_mode_block_reason = (
+            "Active Momentum ranking was requested but blocked because "
+            "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING is not enabled."
+        )
+        active_mode_warning = active_mode_block_reason
+    elif mode == "active":
         if real_thinkorswim_parity_pending and resolved_config.parity_required_for_active:
             active_mode_warning = (
                 "Active mode is configured but blocked: parity_required_for_active=True "
@@ -652,8 +745,15 @@ def build_momentum_ranking_status(
             )
 
     guardrails = list(_GUARDRAILS)
+    guardrails.append("Approval, sizing, and paper-order creation remain manual.")
+    guardrails.append(
+        "Active mode changes ranking order only; it does not approve, reject, size, or route trades."
+    )
+    guardrails.append(
+        "Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true."
+    )
     if real_thinkorswim_parity_pending:
-        guardrails.append("Real Thinkorswim parity fixtures are still pending.")
+        guardrails.append("Thinkorswim parity fixtures are still pending.")
 
     return MomentumRankingStatus(
         mode=mode,
@@ -671,6 +771,12 @@ def build_momentum_ranking_status(
         active_mode_warning=active_mode_warning,
         reason_codes=reason_codes,
         guardrails=guardrails,
+        requested_mode=requested_mode,
+        effective_mode=effective_mode,
+        active_allowed=active_allowed,
+        active_guard_env_var="MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING",
+        active_mode_blocked=active_mode_blocked,
+        active_mode_block_reason=active_mode_block_reason,
     )
 
 
@@ -679,5 +785,6 @@ __all__ = [
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",
+    "resolve_effective_momentum_ranking_mode",
     "resolve_momentum_ranking_mode",
 ]

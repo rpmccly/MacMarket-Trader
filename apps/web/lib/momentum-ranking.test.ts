@@ -196,6 +196,12 @@ describe("getMomentumContributionReasonLabels", () => {
       "Direction inferred from strategy",
     ]);
   });
+
+  it("translates the Phase B6 active_mode_blocked_by_safety_guard reason code", () => {
+    expect(getMomentumContributionReasonLabels(["active_mode_blocked_by_safety_guard"])).toEqual([
+      "Active blocked — safety guard not enabled",
+    ]);
+  });
 });
 
 describe("hasMomentumRankingWarnings", () => {

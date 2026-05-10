@@ -54,10 +54,13 @@ function effectiveMode(rows: MomentumImpactRow[]): MomentumRankingMode {
   return best;
 }
 
-function modeFraming(mode: MomentumRankingMode): string {
+function modeFraming(mode: MomentumRankingMode, blockedActive: boolean): string {
+  if (blockedActive) {
+    return "Active was requested but the safety guard blocked application; review is running as shadow. Final scores are unchanged. Active Momentum ranking requires MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true.";
+  }
   switch (mode) {
     case "active":
-      return "Active mode is enabled. The bounded contribution is already applied to the current score — these estimates do not double-count it.";
+      return "Momentum contribution is currently applied to ranking. Approval and paper orders remain manual. Active mode changes ranking order only; it does not approve, reject, size, or route trades.";
     case "shadow":
       return "Shadow mode is enabled. Final scores are unchanged. The estimated active score shows what would happen if active mode were enabled.";
     case "off":
@@ -94,6 +97,12 @@ export function MomentumImpactReview({
   const sortedRows = useMemo(() => sortMomentumImpactRows(rows, sortMode), [rows, sortMode]);
   const summary = useMemo(() => summarizeMomentumImpact(rows), [rows]);
   const rankDelta = useMemo(() => estimateActiveRankDelta(rows), [rows]);
+  // Phase B6 — detect blocked-active state from per-row reason codes so the
+  // review can swap framing copy without needing the status endpoint.
+  const blockedActive = useMemo(
+    () => rows.some((row) => row.reasonCodes.includes("active_mode_blocked_by_safety_guard")),
+    [rows],
+  );
   const mode = useMemo(() => effectiveMode(rows), [rows]);
 
   if (rows.length === 0) {
@@ -182,7 +191,7 @@ export function MomentumImpactReview({
           }}
           role="note"
         >
-          {modeFraming(mode)}
+          {modeFraming(mode, blockedActive)}
         </div>
 
         <div className="op-row" style={{ flexWrap: "wrap", gap: 8 }} aria-label="Estimated rank movement summary">

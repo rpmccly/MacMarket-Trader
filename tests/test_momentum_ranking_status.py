@@ -31,9 +31,20 @@ from macmarket_trader.recommendation.momentum_ranking import (
 from macmarket_trader.storage.db import SessionLocal, init_db
 
 
-def _settings_with_mode(value: str | None) -> SimpleNamespace:
-    """Return a minimal settings-shaped object with the given mode."""
-    return SimpleNamespace(momentum_ranking_mode=value)
+def _settings_with_mode(
+    value: str | None, *, active_allowed: bool = False
+) -> SimpleNamespace:
+    """Return a minimal settings-shaped object with the given mode.
+
+    Phase B6: ``active_allowed`` mirrors
+    ``MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING``. Defaults to ``False`` so
+    callers that don't opt in see the same safety-guard behavior as
+    production deployments.
+    """
+    return SimpleNamespace(
+        momentum_ranking_mode=value,
+        momentum_active_ranking_allowed=active_allowed,
+    )
 
 
 def _approve_default_user(client: TestClient) -> None:
@@ -83,8 +94,10 @@ def test_off_mode_reports_disabled_and_not_applied(tmp_path: Path) -> None:
 
 
 def test_active_mode_with_parity_pending_emits_warning(tmp_path: Path) -> None:
+    # Phase B6: pass the safety-guard allow flag so the active path is
+    # the one under test, not the new blocked-active branch.
     status = build_momentum_ranking_status(
-        _settings_with_mode("active"),
+        _settings_with_mode("active", active_allowed=True),
         manifest_path=tmp_path / "manifest.json",
     )
     assert status.mode == "active"
@@ -97,9 +110,14 @@ def test_active_mode_with_parity_pending_emits_warning(tmp_path: Path) -> None:
 
 def test_active_mode_with_parity_required_and_pending_emits_blocked_reason(tmp_path: Path) -> None:
     status = build_momentum_ranking_status(
-        _settings_with_mode("active"),
+        _settings_with_mode("active", active_allowed=True),
         manifest_path=tmp_path / "manifest.json",
-        config=MomentumRankingConfig(mode="active", parity_required_for_active=True),
+        config=MomentumRankingConfig(
+            mode="active",
+            requested_mode="active",
+            active_allowed=True,
+            parity_required_for_active=True,
+        ),
     )
     assert "active_blocked_parity_required" in status.reason_codes
     assert status.parity_required_for_active is True
@@ -202,7 +220,9 @@ def test_status_endpoint_returns_off_when_settings_off(monkeypatch) -> None:
 
 
 def test_status_endpoint_returns_active_with_warning_when_parity_pending(monkeypatch) -> None:
+    # Phase B6: active mode requires the safety-guard allow flag.
     monkeypatch.setattr(_settings, "momentum_ranking_mode", "active")
+    monkeypatch.setattr(_settings, "momentum_active_ranking_allowed", True)
     client = TestClient(app)
     _approve_default_user(client)
     response = client.get(
@@ -212,6 +232,10 @@ def test_status_endpoint_returns_active_with_warning_when_parity_pending(monkeyp
     assert response.status_code == 200
     payload = response.json()
     assert payload["mode"] == "active"
+    assert payload["effective_mode"] == "active"
+    assert payload["requested_mode"] == "active"
+    assert payload["active_allowed"] is True
+    assert payload["active_mode_blocked"] is False
     if payload["real_thinkorswim_parity_pending"]:
         assert payload["active_mode_warning"]
         assert "active_mode_with_parity_pending" in payload["reason_codes"]
