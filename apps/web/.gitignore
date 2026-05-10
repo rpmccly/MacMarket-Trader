@@ -1,3 +1,8 @@
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Proprietary Thinkorswim / SimplerTrading reference studies
+ST_TrueMomentumScoreSTUDY.ts
+ST_TrueMomentumSTUDY.ts
+ST_HiLoEliteSTUDY.ts
