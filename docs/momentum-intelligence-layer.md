@@ -230,14 +230,102 @@ no recommendation approval changes.
 
 ---
 
+## Thinkorswim parity fixtures
+
+Operator-supplied Thinkorswim CSV exports are the only authoritative way to
+validate that MacMarket's deterministic ports of `ST_TrueMomentumScoreSTUDY`,
+`ST_TrueMomentumSTUDY`, and `ST_HiLoEliteSTUDY` actually agree with the source
+studies. The repo ships the **infrastructure** for this validation but not the
+data itself — no fabricated parity values are committed.
+
+### Layout
+
+```
+tests/fixtures/thinkorswim_momentum/
+  README.md                    -- operator workflow + supported CSV columns
+  manifest.example.json        -- template for manifest.json
+  manifest.json                -- (gitignored / not committed) operator-added entries
+  <SYMBOL>_<TF>_bars.csv       -- (operator-supplied) Thinkorswim OHLCV export
+  <SYMBOL>_<TF>_study.csv      -- (operator-supplied) Thinkorswim study export
+  <SYMBOL>_<HTF>_bars.csv      -- (optional) higher-timeframe OHLCV export
+
+tests/helpers/momentum_parity.py   -- forgiving CSV parser + manifest loader
+tests/test_momentum_thinkorswim_parity_scaffold.py   -- the parity test
+tests/test_momentum_parity_helper.py                 -- helper-level unit tests
+```
+
+### Required / optional CSVs per fixture
+
+Each entry in `manifest.json` lists:
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | unique label; appears in test failures |
+| `symbol` | yes | normalized to upper-case |
+| `timeframe` | yes | one of `1D`, `4H`, `1H` |
+| `bars_csv` | yes | OHLCV CSV path relative to the fixture directory |
+| `study_csv` | optional | per-bar Thinkorswim study export; cross-checked when present |
+| `higher_timeframe_bars_csv` | optional | when present, the test asserts `higher_timeframe_source == "provided_higher_timeframe_bars"` |
+| `expected_latest` | yes | operator-supplied values for the latest bar; only known study fields are accepted |
+| `tolerances` | yes (mapping; entries optional) | per-field absolute tolerances; default `1.0` if a field is missing |
+
+Known study fields: `total_score`, `true_momentum`, `true_momentum_ema`,
+`hilo_thrust`, `hilo_output`, `trend_score`, `momo_score`. Any field that is
+not in `expected_latest` is **skipped** by the comparison, so partial fixture
+coverage is fine — operators only need to assert what they have actually
+exported from Thinkorswim.
+
+### Supported CSV columns
+
+The parser is **case- and underscore-insensitive**.
+
+Bars CSV: `Date` / `Datetime` / `Time` / `Timestamp`, `Open` (or `O`), `High`
+(or `H`), `Low` (or `L`), `Close` (or `C` / `Last`), `Volume` (or `Vol` / `V`).
+
+Study CSV: `totalScore` / `TotalScore` / `total_score`; `TrueMomentum` /
+`true_momentum`; `TrueMomentumEMA` / `true_momentum_ema` / `EMA`; `HiLoThrust`
+/ `hilo_thrust`; `HLP_Output` / `hilo_output` / `HLPOutput`; `Trend` /
+`trend_score`; `Momo` / `momo_score`. Date/timestamp columns are accepted via
+the same parser used for bars CSVs.
+
+### How to run
+
+```
+python -m pytest tests/test_momentum_thinkorswim_parity_scaffold.py -q --tb=short
+```
+
+- With **no** `manifest.json`: the test is a no-op pass and surfaces no
+  parity assertions. Helper unit tests
+  (`tests/test_momentum_parity_helper.py`) still exercise the CSV parser and
+  manifest validator independent of fixture availability.
+- With `manifest.json` present: the test parametrizes over each fixture,
+  builds the deterministic momentum payload via `MomentumChartService`,
+  compares the latest payload snapshot against `expected_latest` using the
+  per-field absolute `tolerances`, cross-checks the operator's study CSV
+  values when present, and asserts that `higher_timeframe_source` is
+  `"provided_higher_timeframe_bars"` whenever a fixture supplies an HTF
+  bars CSV. Missing fixture files or unknown study fields fail clearly with
+  the offending path/key.
+
+### Phase B gating
+
+**Phase B (ranking influence) remains blocked until parity fixtures are
+populated and reviewed.** Composite scores must not feed recommendation
+ranking, scoring, or quality gates without measured agreement against the
+source studies. The frontend `momentum-integration` guard test
+(`apps/web/lib/momentum-integration.test.ts`) further enforces that ranking
+and approval modules do not import the momentum types or client.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into
-  `tests/fixtures/thinkorswim_momentum/` and replace
-  `parity_status = pending_thinkorswim_fixture_validation` with measured
-  tolerances.
+  `tests/fixtures/thinkorswim_momentum/` per the section above and update
+  `manifest.json`. Once a fixture passes, change the relevant
+  `parity_status` consumers to surface
+  `validated_against_thinkorswim_fixture` rather than the default
+  `pending_thinkorswim_fixture_validation`.
 - **Phase B (gated, separate authorization)**: ranking influence — only after
-  explicit operator approval is captured in writing. Until then, momentum
-  scores remain context only.
+  explicit operator approval is captured in writing **and** at least one
+  parity fixture is green. Until then, momentum scores remain context only.
 - **Phase C (gated, separate authorization)**: dedicated strategy families
   combining momentum with event/regime/sector filters. Same gate as Phase B.
