@@ -16,6 +16,8 @@ import { isE2EAuthBypassEnabled } from "@/lib/e2e-auth";
 import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
+import { MomentumRankingCard } from "@/components/recommendations/momentum-ranking-card";
+import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
 import { parseManualSymbolEntry, SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
@@ -1890,6 +1892,32 @@ export default function RecommendationsPage() {
         compact
         title="Momentum Intelligence (context only)"
       />
+
+      {(() => {
+        // Phase B2 — render the bounded Momentum Intelligence ranking
+        // contribution for the selected candidate, never crowding the queue
+        // list. Prefers the live queue contribution; falls back to any
+        // contribution captured on the stored recommendation's ranking
+        // provenance. Renders the missing/disabled card branches when no
+        // contribution is present so the operator still sees the framing.
+        const queueContribution = (selectedQueue?.momentum_contribution ?? null) as
+          | MomentumRankingContribution
+          | null;
+        const provenance = getRankingProvenance(selectedRecommendation?.payload ?? null);
+        const provenanceContribution =
+          provenance && typeof provenance.momentum_contribution === "object"
+            ? (provenance.momentum_contribution as MomentumRankingContribution)
+            : null;
+        const contribution = queueContribution ?? provenanceContribution;
+        if (!selectedQueue && !selectedRecommendation) return null;
+        return (
+          <MomentumRankingCard
+            contribution={contribution}
+            compact
+            title="Momentum ranking contribution (context only)"
+          />
+        );
+      })()}
     </section>
   );
 }

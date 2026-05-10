@@ -432,6 +432,116 @@ export MACMARKET_MOMENTUM_RANKING_MODE=active
   off / shadow / active ranking-engine behavior, score-scale clamping,
   and backward-compatible call signature.
 
+## Phase B2 — operator UI surfaces for the ranking contribution
+
+Phase B2 surfaces the Phase B1 contribution in the operator console
+**without** changing ranking math, recommendation approval, paper-order
+behavior, options/replay/HACO behavior, or strategy families. It is
+display-only.
+
+### Operator UI surfaces
+
+| Surface | File |
+|---|---|
+| Frontend types | `apps/web/lib/recommendations.ts` (`MomentumRankingContribution`, `MomentumRankingMode`; `QueueCandidate.momentum_contribution`). |
+| Pure helpers | `apps/web/lib/momentum-ranking.ts` (`momentumRankingModeLabel`, `momentumRankingAppliedLabel`, `momentumContributionTone`, `summarizeMomentumContribution`, `getMomentumContributionReasonLabels`, `hasMomentumRankingWarnings`, `buildMomentumRankingBreakdown`, `momentumScoreContextRow`, `MOMENTUM_RANKING_DETERMINISTIC_NOTE`). |
+| Reusable card | `apps/web/components/recommendations/momentum-ranking-card.tsx` — `<MomentumRankingCard contribution compact title />`. Also exports `<MomentumRankingInlineBadge />` for dense list rows (not used by default). |
+| Recommendations integration | `apps/web/app/(console)/recommendations/page.tsx` renders the card once near the existing chart-context / momentum-summary block when a candidate is selected. The card sources the contribution from the live queue candidate first, then falls back to the stored recommendation's `ranking_provenance.momentum_contribution`. |
+
+### Display copy (off / shadow / active)
+
+| Mode | Mode badge | Applied badge | Header contribution badge | Final-score badge |
+|---|---|---|---|---|
+| `off`    | "Off — not computed" | "Not computed" | n/a | n/a |
+| `shadow` | "Shadow — computed, not applied" | "Computed — final score unchanged" | "Shadow `+X.XX`" | "Final score unchanged" |
+| `active` | "Active — applied to ranking" | "Bounded contribution applied to ranking" | "Applied `+X.XX`" | n/a |
+
+When a contribution is computed but the bounded total has been suppressed
+(direction unknown, parity required gate, etc.), `active` mode still shows
+"Computed — bounded contribution not applied" so operators see the audit
+trail rather than a silent miss.
+
+### Component breakdown rendered
+
+The card exposes the four Phase B1 components per row with per-row hints:
+
+- Momentum alignment (cap `+10`, direction-aligned only)
+- Trend alignment (cap `+8`)
+- HiLo confirmation (cap `+5`)
+- Reversal warning penalty (floor `-12`)
+
+Plus a score-context row: total score / total label / trend / momo.
+
+### Warnings and reason chips
+
+The card renders the typed reason codes as readable chips:
+
+| Reason code | Chip label |
+|---|---|
+| `thinkorswim_parity_pending` | "Thinkorswim parity pending" |
+| `derived_higher_timeframe` | "Derived higher timeframe" |
+| `direction_unknown` | "Direction unknown" |
+| `momentum_no_trade_warning` | "No-trade warning" |
+| `momentum_reversal_warning` | "Reversal warning" |
+| `momentum_pullback_signal` | "Pullback signal" |
+| `momentum_payload_unavailable` | "Momentum payload unavailable" |
+| `active_blocked_parity_required` | "Active blocked — parity required" |
+
+Reversal and no-trade flags additionally trigger a prominent **Warning**
+badge wrapped in `<strong>`. Parity-pending and derived-HTF stay visible
+but **not alarming** (neutral tone).
+
+### Phase B2 guardrails
+
+A static guard test (`apps/web/lib/momentum-integration.test.ts`) pins:
+
+- Momentum-ranking display helpers are **not** imported into
+  order/paper-position/paper-trade/options-paper-structure/replay-preview
+  routes.
+- Recommendation-approval / order helper files (`lib/orders-helpers.ts`,
+  `lib/api-client.ts`, `lib/guided-workflow.ts`, `lib/lineage-format.ts`)
+  do not import `@/lib/momentum-ranking` or the card.
+- The card and helper modules do not contain `approve trade`, `auto
+  approve`, `route order`, `buy now`, `sell now`, `enter now`, or
+  `short now` copy.
+- The Recommendations page wires the card and reads `momentum_contribution`
+  off candidates.
+
+A backend serialization test
+(`tests/test_momentum_ranking_serialization.py`) pins that every
+`RankedCandidate` in the queue payload carries the full contribution shape
+in shadow mode, that off mode emits a stable disabled shape, and that
+contribution payloads never surface `approved` / `rejected` / `side` /
+`shares` / `order_id` / `route` keys.
+
+### What Phase B2 does NOT do
+
+- **No ranking math changes** beyond Phase B1. The Phase B1 scoring helper
+  and the engine wire-up are untouched.
+- **No default mode change.** Default remains `shadow`.
+- **No active mode flip.** Operators must opt in via
+  `MACMARKET_MOMENTUM_RANKING_MODE=active`.
+- **No recommendation approval, paper-order, options, replay, HACO
+  changes.**
+- **No strategy families.**
+- **No DB migrations.** Contribution is an in-flight ranked-candidate
+  field only.
+
+### Tests (Phase B2)
+
+- `apps/web/lib/momentum-ranking.test.ts` — mode/applied label formatting,
+  shadow vs active framing, tone selection, reason-code translation
+  including dedupe and humanization, warning detection, null/off handling,
+  breakdown rows, deterministic-note no-action-language guard.
+- `apps/web/components/recommendations/momentum-ranking-card.test.tsx` —
+  renders missing / off / shadow / active states, breakdown, score
+  context, parity-pending / derived-HTF / direction-unknown chips,
+  reversal+no-trade prominence, deterministic-context note, compact mode,
+  inline badge variants.
+- `apps/web/lib/momentum-integration.test.ts` — strengthened with the
+  Phase B2 display guards.
+- `tests/test_momentum_ranking_serialization.py` — backend contract pin.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

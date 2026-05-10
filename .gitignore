@@ -101,3 +101,7 @@ __pycache__/
 ST_TrueMomentumScoreSTUDY.ts
 ST_TrueMomentumSTUDY.ts
 ST_HiLoEliteSTUDY.ts
+
+# Frontend / Playwright test artifacts
+apps/web/test-results/
+apps/web/playwright-report/

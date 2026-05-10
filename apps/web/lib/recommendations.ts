@@ -1,5 +1,34 @@
 import { fetchWorkflowApi, type NormalizedApiResult } from "@/lib/api-client";
 
+// Phase B1/B2 — bounded Momentum Intelligence ranking contribution as it
+// appears on RankedCandidate payloads. All fields are optional/permissive so
+// older API responses without the contribution stay valid.
+export type MomentumRankingMode = "off" | "shadow" | "active";
+
+export type MomentumRankingContribution = {
+  mode?: MomentumRankingMode | string;
+  enabled?: boolean;
+  applied?: boolean;
+  total_contribution?: number;
+  shadow_contribution?: number;
+  momentum_alignment_score?: number;
+  trend_alignment_score?: number;
+  hilo_confirmation_bonus?: number;
+  reversal_warning_penalty?: number;
+  no_trade_warning?: boolean;
+  pullback_signal?: boolean;
+  reversal_warning?: boolean;
+  parity_status?: string | null;
+  higher_timeframe_source?: string | null;
+  total_score?: number | null;
+  total_label?: string | null;
+  trend_score?: number | null;
+  momo_score?: number | null;
+  inferred_direction?: "long" | "short" | "unknown" | string;
+  calculation_notes?: string[];
+  reason_codes?: string[];
+};
+
 export type QueueCandidate = {
   recommendation_id?: string;
   rank: number;
@@ -15,6 +44,7 @@ export type QueueCandidate = {
   status: string;
   score: number;
   score_breakdown?: Record<string, number>;
+  momentum_contribution?: MomentumRankingContribution | null;
   expected_rr: number;
   confidence: number;
   reason_text: string;
