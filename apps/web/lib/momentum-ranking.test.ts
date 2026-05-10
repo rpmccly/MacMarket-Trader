@@ -180,6 +180,22 @@ describe("getMomentumContributionReasonLabels", () => {
   it("falls back to humanized labels for unknown reason codes", () => {
     expect(getMomentumContributionReasonLabels(["some_new_reason"])).toEqual(["some new reason"]);
   });
+
+  it("translates Phase B4.2 direction-inference reason codes", () => {
+    expect(
+      getMomentumContributionReasonLabels([
+        "direction_from_candidate_metadata",
+        "direction_from_strategy_metadata",
+        "bullish_strategy_direction_inferred",
+        "direction_inferred_from_strategy",
+      ]),
+    ).toEqual([
+      "Direction from candidate metadata",
+      "Direction from strategy metadata",
+      "Bullish strategy direction inferred",
+      "Direction inferred from strategy",
+    ]);
+  });
 });
 
 describe("hasMomentumRankingWarnings", () => {

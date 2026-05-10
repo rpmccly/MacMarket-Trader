@@ -207,6 +207,10 @@ class DeterministicRankingEngine:
                 total = metrics["total_score"]
 
                 # Phase B1: bounded momentum ranking contribution.
+                # Phase B4.2: enrich the inference context with the
+                # registry's strategy_id and directional_profile so
+                # known bullish/bearish strategies surface the inferred
+                # direction instead of falling back to unknown.
                 contribution_dict: dict[str, Any] = {}
                 if active_config.mode != "off":
                     payload = momentum_by_symbol.get(symbol)
@@ -214,6 +218,8 @@ class DeterministicRankingEngine:
                         payload,
                         recommendation_context={
                             "strategy": entry.display_name,
+                            "strategy_id": entry.strategy_id,
+                            "directional_profile": entry.directional_profile,
                             "recent_trend": recent_trend,
                         },
                         config=active_config,

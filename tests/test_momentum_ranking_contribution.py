@@ -370,6 +370,219 @@ def test_fade_strategies_keep_direction_unknown_without_explicit_side() -> None:
     assert out.applied is False
 
 
+# ── Phase B4.2 direction-inference tests ─────────────────────────────────
+
+
+def test_breakout_prior_day_high_infers_long_via_strategy_id() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Breakout / Prior-Day High", "strategy_id": "breakout_prior_day_high"},
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "direction_unknown" not in out.reason_codes
+    assert "bullish_strategy_direction_inferred" in out.reason_codes
+    assert out.applied is True
+    assert out.total_contribution > 0
+
+
+def test_breakout_prior_day_high_infers_long_via_label_only() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Breakout / Prior-Day High"},  # no strategy_id, no profile
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "direction_unknown" not in out.reason_codes
+    assert "bullish_strategy_direction_inferred" in out.reason_codes
+
+
+def test_event_continuation_label_infers_long_without_recent_trend() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Event Continuation"},
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "bullish_strategy_direction_inferred" in out.reason_codes
+    assert "direction_unknown" not in out.reason_codes
+
+
+def test_pullback_trend_continuation_label_infers_long() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Pullback / Trend Continuation"},
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "bullish_strategy_direction_inferred" in out.reason_codes
+
+
+def test_directional_profile_bullish_yields_long_via_registry_metadata() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {
+            "strategy": "Some Strategy We Don't Know",
+            "strategy_id": "completely_unknown_id",
+            "directional_profile": "bullish",
+        },
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "direction_from_strategy_metadata" in out.reason_codes
+    assert "direction_unknown" not in out.reason_codes
+
+
+def test_directional_profile_bearish_yields_short_via_registry_metadata() -> None:
+    config = MomentumRankingConfig(mode="active")
+    bear_snap = _snapshot(total_label="Bear", total_state="bear", trend_score=-80, hilo_score=-15)
+    out = build_momentum_ranking_contribution(
+        _payload(bear_snap),
+        {
+            "strategy": "Bear Put Debit Spread",
+            "strategy_id": "bear_put_debit_spread",
+            "directional_profile": "bearish",
+        },
+        config,
+    )
+    assert out.inferred_direction == "short"
+    assert "direction_from_strategy_metadata" in out.reason_codes
+    assert "direction_unknown" not in out.reason_codes
+    assert out.applied is True
+
+
+def test_directional_profile_neutral_does_not_infer_long_even_with_bullish_label() -> None:
+    """When the registry explicitly says neutral/carry/volatility the
+    label fallback must not override it."""
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {
+            "strategy": "Breakout / Prior-Day High",
+            "strategy_id": "breakout_prior_day_high",
+            "directional_profile": "neutral",
+        },
+        config,
+    )
+    assert out.inferred_direction == "unknown"
+    assert "direction_unknown" in out.reason_codes
+    assert "bullish_strategy_direction_inferred" not in out.reason_codes
+    assert out.applied is False
+
+
+def test_explicit_candidate_metadata_beats_registry_metadata() -> None:
+    config = MomentumRankingConfig(mode="active")
+    bear_snap = _snapshot(total_label="Bear", total_state="bear", trend_score=-80, hilo_score=-15)
+    out = build_momentum_ranking_contribution(
+        _payload(bear_snap),
+        {
+            "strategy": "Event Continuation",
+            "strategy_id": "event_continuation",
+            "directional_profile": "bullish",
+            "side": "short",  # explicit metadata wins
+        },
+        config,
+    )
+    assert out.inferred_direction == "short"
+    assert "direction_from_candidate_metadata" in out.reason_codes
+    assert "direction_from_strategy_metadata" not in out.reason_codes
+    assert "bullish_strategy_direction_inferred" not in out.reason_codes
+
+
+def test_explicit_direction_alias_uses_candidate_metadata_reason() -> None:
+    config = MomentumRankingConfig(mode="shadow")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"direction": "long"},
+        config,
+    )
+    assert out.inferred_direction == "long"
+    assert "direction_from_candidate_metadata" in out.reason_codes
+
+
+def test_truly_unknown_strategy_stays_unknown_and_unapplied() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Some Mystery Strategy Without Hints"},
+        config,
+    )
+    assert out.inferred_direction == "unknown"
+    assert "direction_unknown" in out.reason_codes
+    assert out.applied is False
+
+
+def test_mean_reversion_stays_unknown_via_strategy_id() -> None:
+    config = MomentumRankingConfig(mode="active")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Mean Reversion", "strategy_id": "mean_reversion"},
+        config,
+    )
+    assert out.inferred_direction == "unknown"
+    assert "direction_unknown" in out.reason_codes
+
+
+def test_bullish_inference_still_respects_total_contribution_cap() -> None:
+    """Phase B4.2 must not change contribution caps; bullish inference
+    only allows the existing bounded contribution to apply."""
+    config = MomentumRankingConfig(mode="active")
+    extreme = _snapshot(
+        total_score=130, total_label="Max Bull", total_state="max_bull",
+        trend_score=130.0, momo_score=130.0, hilo_score=20,
+    )
+    out = build_momentum_ranking_contribution(
+        _payload(extreme),
+        {"strategy": "Breakout / Prior-Day High", "strategy_id": "breakout_prior_day_high"},
+        config,
+    )
+    assert out.shadow_contribution == pytest.approx(config.max_total_contribution)
+    assert out.total_contribution == pytest.approx(config.max_total_contribution)
+
+
+def test_breakout_in_shadow_mode_does_not_apply_but_carries_inferred_reason() -> None:
+    config = MomentumRankingConfig(mode="shadow")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Breakout / Prior-Day High", "strategy_id": "breakout_prior_day_high"},
+        config,
+    )
+    assert out.mode == "shadow"
+    assert out.applied is False
+    assert out.inferred_direction == "long"
+    assert "bullish_strategy_direction_inferred" in out.reason_codes
+
+
+def test_off_mode_does_not_run_inference() -> None:
+    config = MomentumRankingConfig(mode="off")
+    out = build_momentum_ranking_contribution(
+        _payload(),
+        {"strategy": "Breakout / Prior-Day High", "strategy_id": "breakout_prior_day_high"},
+        config,
+    )
+    assert out.mode == "off"
+    assert out.applied is False
+    assert "bullish_strategy_direction_inferred" not in out.reason_codes
+    assert "direction_from_strategy_metadata" not in out.reason_codes
+
+
+def test_label_normalization_handles_punctuation_and_casing() -> None:
+    config = MomentumRankingConfig(mode="active")
+    for label in (
+        "BREAKOUT / Prior-Day High",
+        "  breakout   prior-day  high  ",
+        "Prior-Day High Breakout",
+    ):
+        out = build_momentum_ranking_contribution(_payload(), {"strategy": label}, config)
+        assert out.inferred_direction == "long", f"failed to infer long from label: {label!r}"
+        assert "bullish_strategy_direction_inferred" in out.reason_codes
+
+
 # ── Mode resolution ───────────────────────────────────────────────────────
 
 

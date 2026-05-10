@@ -20,6 +20,7 @@ See ``docs/momentum-intelligence-layer.md`` for the full design.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -89,6 +90,47 @@ def momentum_ranking_config_from_settings(settings: Any) -> MomentumRankingConfi
 _BULL_STATES = {"max_bull", "bull"}
 _BEAR_STATES = {"max_bear", "bear"}
 
+# Phase B4.2 — registry directional_profile values resolve to a canonical
+# direction. Only ``bullish`` and ``bearish`` produce a directional inference;
+# all other profiles (``neutral``, ``carry``, ``volatility``) explicitly stay
+# unknown so the bounded contribution is never applied for ambiguous setups.
+_PROFILE_TO_DIRECTION: dict[str, Literal["long", "short", "unknown"]] = {
+    "bullish": "long",
+    "bearish": "short",
+    "long": "long",
+    "short": "short",
+    "neutral": "unknown",
+    "carry": "unknown",
+    "volatility": "unknown",
+}
+
+# Phase B4.2 — strategy_id fallbacks for callers that don't resolve the
+# registry. Keep this list conservative; never infer bearish from a label
+# fallback (the registry's bearish profile already covers the explicit case).
+_STRATEGY_ID_LONG_BIAS: frozenset[str] = frozenset(
+    {
+        "event_continuation",
+        "breakout_prior_day_high",
+        "pullback_trend_continuation",
+    }
+)
+
+# Strategy IDs that should explicitly remain unknown even when no registry
+# directional_profile is available. Keeps fades / mean-reversion safe.
+_STRATEGY_ID_UNKNOWN: frozenset[str] = frozenset({"mean_reversion"})
+
+# Label fallback: normalized canonical labels that signal long bias when
+# neither explicit metadata nor registry directional_profile is provided.
+_LABEL_LONG_BIAS: tuple[str, ...] = (
+    "event continuation",
+    "breakout prior day high",
+    "prior day high breakout",
+    "pullback trend continuation",
+)
+
+# Label tokens that keep direction unknown regardless of other signals.
+_LABEL_UNKNOWN_TOKENS: tuple[str, ...] = ("fade", "mean reversion")
+
 
 def _normalize_direction(value: Any) -> Literal["long", "short", "unknown"]:
     if value is None:
@@ -101,40 +143,90 @@ def _normalize_direction(value: Any) -> Literal["long", "short", "unknown"]:
     return "unknown"
 
 
+def _normalize_label(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    # Replace any non-alphanumeric with a single space, collapse runs.
+    cleaned = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _direction_from_profile(value: Any) -> Literal["long", "short", "unknown"]:
+    if value is None:
+        return "unknown"
+    text = str(value).strip().lower()
+    if not text:
+        return "unknown"
+    return _PROFILE_TO_DIRECTION.get(text, "unknown")
+
+
 def _infer_direction(
     context: Mapping[str, Any] | None,
 ) -> tuple[Literal["long", "short", "unknown"], str | None]:
     """Infer the recommendation's intended direction.
 
-    Returns (direction, reason_code_for_unknown_or_None).
+    Priority (Phase B4.2):
+      1. Explicit candidate metadata: ``direction`` / ``side`` / ``bias``.
+      2. Strategy registry metadata: ``directional_profile`` resolved by the
+         caller from :mod:`macmarket_trader.strategy_registry`.
+      3. Known strategy IDs / labels — conservative long-bias mapping only.
+      4. Unknown.
+
+    Returns ``(direction, reason_code_or_None)``. The reason code is
+    appended verbatim to ``MomentumRankingContribution.reason_codes`` by
+    the caller.
     """
     if not context:
         return "unknown", "direction_unknown"
 
-    explicit = _normalize_direction(context.get("direction") or context.get("side"))
-    if explicit != "unknown":
-        return explicit, None
+    # 1. Explicit candidate-side metadata wins.
+    for key in ("direction", "side", "bias"):
+        explicit = _normalize_direction(context.get(key))
+        if explicit != "unknown":
+            return explicit, "direction_from_candidate_metadata"
 
-    strategy = str(context.get("strategy") or "").strip().lower()
-    if "fade" in strategy:
-        # Failed-event fades flip direction relative to the catalyst — at the
-        # ranking layer we don't have catalyst polarity, so stay conservative.
-        return "unknown", "direction_unknown"
-    if "mean reversion" in strategy:
+    # 2. Registry directional_profile (resolved by the caller).
+    profile_raw = context.get("directional_profile")
+    if isinstance(profile_raw, str) and profile_raw.strip():
+        profile_direction = _direction_from_profile(profile_raw)
+        if profile_direction != "unknown":
+            return profile_direction, "direction_from_strategy_metadata"
+        # If the registry says neutral/carry/volatility, the registry has
+        # spoken — do not fall through to label inference for that profile.
         return "unknown", "direction_unknown"
 
-    # Recent-bar trend hint: ranking-engine candidates expose a 5-bar net change
-    # via context["recent_trend"] (≥ 0 → long bias, < 0 → short bias). Used only
-    # for momentum-aligned strategies, never for fades.
-    recent = context.get("recent_trend")
-    if recent is not None:
-        try:
-            recent_float = float(recent)
-        except (TypeError, ValueError):
-            recent_float = None
-        else:
-            if "continuation" in strategy or "pullback" in strategy:
-                return ("long" if recent_float >= 0.0 else "short"), None
+    # 3a. Strategy ID fallback for callers that didn't resolve the registry.
+    strategy_id = str(context.get("strategy_id") or "").strip().lower()
+    if strategy_id:
+        if strategy_id in _STRATEGY_ID_UNKNOWN:
+            return "unknown", "direction_unknown"
+        if strategy_id in _STRATEGY_ID_LONG_BIAS:
+            return "long", "bullish_strategy_direction_inferred"
+
+    # 3b. Strategy label fallback.
+    strategy_label = _normalize_label(context.get("strategy"))
+    if strategy_label:
+        for token in _LABEL_UNKNOWN_TOKENS:
+            if token in strategy_label:
+                return "unknown", "direction_unknown"
+        for canonical in _LABEL_LONG_BIAS:
+            if canonical in strategy_label:
+                return "long", "bullish_strategy_direction_inferred"
+
+        # Backward-compatibility: legacy callers may still pass a
+        # ``recent_trend`` hint together with a continuation/pullback
+        # label that did not match the canonical list above. Use it only
+        # when the label is clearly long-biased.
+        recent = context.get("recent_trend")
+        if recent is not None and ("continuation" in strategy_label or "pullback" in strategy_label):
+            try:
+                recent_float = float(recent)
+            except (TypeError, ValueError):
+                recent_float = None
+            else:
+                direction: Literal["long", "short"] = "long" if recent_float >= 0.0 else "short"
+                return direction, "bullish_strategy_direction_inferred"
 
     return "unknown", "direction_unknown"
 

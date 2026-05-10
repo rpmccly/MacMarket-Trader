@@ -187,6 +187,79 @@ def test_active_mode_does_not_apply_for_unknown_direction_strategies() -> None:
     assert active["score"] == off_score
 
 
+# ── Phase B4.2 — registry-driven direction inference through the engine ────
+
+
+def test_breakout_prior_day_high_infers_long_through_engine() -> None:
+    """The ranking engine must enrich the contribution context with the
+    registry directional_profile so Breakout / Prior-Day High candidates
+    surface inferred_direction='long' instead of falling back to unknown.
+    """
+    bars_by_symbol = _bars_by_symbol(("AAPL", _bullish_bars()))
+    out = DeterministicRankingEngine(MomentumRankingConfig(mode="shadow")).rank_candidates(
+        bars_by_symbol=bars_by_symbol,
+        strategies=["Breakout / Prior-Day High"],
+        market_mode=MarketMode.EQUITIES,
+        timeframe="1D",
+    )
+    contrib = out["queue"][0]["momentum_contribution"]
+    assert contrib["inferred_direction"] == "long"
+    assert "direction_unknown" not in contrib["reason_codes"]
+    # Registry directional_profile is the canonical source for known strategies.
+    assert "direction_from_strategy_metadata" in contrib["reason_codes"]
+
+
+def test_event_continuation_infers_long_through_engine() -> None:
+    bars_by_symbol = _bars_by_symbol(("AAPL", _bullish_bars()))
+    out = DeterministicRankingEngine(MomentumRankingConfig(mode="shadow")).rank_candidates(
+        bars_by_symbol=bars_by_symbol,
+        strategies=["Event Continuation"],
+        market_mode=MarketMode.EQUITIES,
+        timeframe="1D",
+    )
+    contrib = out["queue"][0]["momentum_contribution"]
+    assert contrib["inferred_direction"] == "long"
+    assert "direction_from_strategy_metadata" in contrib["reason_codes"]
+
+
+def test_pullback_trend_continuation_infers_long_through_engine() -> None:
+    bars_by_symbol = _bars_by_symbol(("AAPL", _bullish_bars()))
+    out = DeterministicRankingEngine(MomentumRankingConfig(mode="shadow")).rank_candidates(
+        bars_by_symbol=bars_by_symbol,
+        strategies=["Pullback / Trend Continuation"],
+        market_mode=MarketMode.EQUITIES,
+        timeframe="1D",
+    )
+    contrib = out["queue"][0]["momentum_contribution"]
+    assert contrib["inferred_direction"] == "long"
+    assert "direction_from_strategy_metadata" in contrib["reason_codes"]
+
+
+def test_active_mode_applies_for_breakout_with_bull_momentum() -> None:
+    """Phase B4.2 must enable the bounded contribution to actually
+    apply for Breakout / Prior-Day High when Momentum is bullish — the
+    pre-Phase-B4.2 bug was the inference dropping to unknown which left
+    the bounded contribution unapplied."""
+    bars_by_symbol = _bars_by_symbol(("AAPL", _bullish_bars()))
+    off_score = DeterministicRankingEngine(MomentumRankingConfig(mode="off")).rank_candidates(
+        bars_by_symbol=bars_by_symbol,
+        strategies=["Breakout / Prior-Day High"],
+        market_mode=MarketMode.EQUITIES,
+        timeframe="1D",
+    )["queue"][0]["score"]
+
+    active = DeterministicRankingEngine(MomentumRankingConfig(mode="active")).rank_candidates(
+        bars_by_symbol=bars_by_symbol,
+        strategies=["Breakout / Prior-Day High"],
+        market_mode=MarketMode.EQUITIES,
+        timeframe="1D",
+    )["queue"][0]
+    contrib = active["momentum_contribution"]
+    assert contrib["applied"] is True
+    assert contrib["inferred_direction"] == "long"
+    assert active["score"] != off_score
+
+
 # ── stable shape & non-regression ─────────────────────────────────────────
 
 

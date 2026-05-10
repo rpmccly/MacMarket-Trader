@@ -737,6 +737,119 @@ A canonical operator note is rendered in every state:
   helpers/component stay out of order/paper-position/paper-trade/options-
   paper/replay-preview routes and helper files, no forbidden language.
 
+## Phase B4.2 — improved direction inference for bullish strategy families
+
+Before Phase B4.2, candidates for strategies like `Breakout / Prior-Day
+High` showed `direction_unknown` in the Momentum Shadow Impact Review and
+received a `0.00` bounded contribution even when Momentum was Bull /
+Max Bull. Phase B4.2 fixes that by **centralizing** direction inference
+behind a single helper and feeding it the strategy registry's
+`directional_profile` metadata. **No ranking math, contribution caps,
+default mode, queue sorting, approval, paper-order, options/replay/HACO,
+or strategy-family code is changed.**
+
+### Priority cascade
+
+`_infer_direction(context)` in
+`src/macmarket_trader/recommendation/momentum_ranking.py` now follows
+this explicit priority order:
+
+1. **Explicit candidate metadata** — `direction` / `side` / `bias` on
+   the contribution context wins over everything else. Reason code:
+   `direction_from_candidate_metadata`.
+2. **Strategy registry metadata** — when the ranking engine resolves a
+   `StrategyRegistryEntry`, it passes the entry's `directional_profile`
+   to the contribution context. `bullish` → `long`, `bearish` → `short`,
+   anything else (`neutral`, `carry`, `volatility`) explicitly stays
+   `unknown`. Reason code: `direction_from_strategy_metadata`.
+3. **Strategy ID fallback** — if no registry profile was passed,
+   conservative known IDs (`event_continuation`,
+   `breakout_prior_day_high`, `pullback_trend_continuation`) map to
+   `long`. `mean_reversion` and any ID containing `fade` stay `unknown`.
+   Reason code: `bullish_strategy_direction_inferred`.
+4. **Strategy label fallback** — normalized (lowercased, punctuation
+   collapsed) labels are matched against:
+   - `event continuation`
+   - `breakout prior day high`
+   - `prior day high breakout`
+   - `pullback trend continuation`
+   Labels containing `fade` or `mean reversion` stay `unknown`. Reason
+   code: `bullish_strategy_direction_inferred`.
+5. **Unknown** — anything else returns `direction_unknown` and the
+   bounded contribution stays unapplied in active mode.
+
+### Phase B4.2 rules
+
+- Bearish/short is **only** inferred from explicit candidate metadata or
+  the registry's `bearish` profile. Label fallback never infers bearish
+  — Phase B4.2 stays conservative.
+- A neutral / carry / volatility registry profile **overrides** the
+  label fallback. The registry has the last word for those entries.
+- All existing contribution caps (`max_total_contribution`,
+  per-component caps, parity gate) are unchanged — Phase B4.2 only
+  unlocks the bounded contribution for strategies that were
+  incorrectly marked `direction_unknown` before.
+
+### Ranking-engine wiring
+
+`DeterministicRankingEngine.rank_candidates` now passes
+`strategy_id` and `directional_profile` from the resolved
+`StrategyRegistryEntry` into the contribution context:
+
+```python
+recommendation_context={
+    "strategy": entry.display_name,
+    "strategy_id": entry.strategy_id,
+    "directional_profile": entry.directional_profile,
+    "recent_trend": recent_trend,
+}
+```
+
+Frontend rendering picks up the new reason codes via
+`apps/web/lib/momentum-ranking.ts::REASON_CODE_LABELS`:
+
+| Reason code | Operator-facing label |
+|---|---|
+| `direction_from_candidate_metadata` | Direction from candidate metadata |
+| `direction_from_strategy_metadata` | Direction from strategy metadata |
+| `bullish_strategy_direction_inferred` | Bullish strategy direction inferred |
+| `direction_inferred_from_strategy` | Direction inferred from strategy |
+
+The Momentum Shadow Impact Review's `direction_unknown_count` now drops
+to zero for queues consisting of these strategies.
+
+### What Phase B4.2 does NOT change
+
+- **Ranking math / caps.** `build_momentum_ranking_contribution` body
+  is unchanged beyond the inference helper. All caps and clamps from
+  Phase B1 hold.
+- **Default mode.** Still `shadow`.
+- **Queue sorting.** Live queue ordering is preserved; the impact
+  review still re-derives estimated rank-after locally without
+  touching the live queue.
+- **Recommendation approval, promote, save, paper-order, settle,
+  replay, options preview, HACO/HACOLT behavior.** Untouched.
+- **Strategy families.** No new strategy registry entries; no new
+  setup-engine paths; no new `setup_type` values.
+
+### Tests (Phase B4.2)
+
+- `tests/test_momentum_ranking_contribution.py` — 15 new direction
+  inference tests (priority cascade, label normalization, explicit
+  metadata precedence, registry override, neutral registry overrides
+  bullish label, off-mode short-circuit, cap preservation, shadow
+  mode carries inferred reason without applying).
+- `tests/test_momentum_ranking_engine_integration.py` — 4 new
+  end-to-end tests through `DeterministicRankingEngine` confirming
+  Breakout / Prior-Day High, Event Continuation, and Pullback /
+  Trend Continuation now infer `long` via registry metadata and the
+  bounded contribution applies in active mode for bullish Momentum.
+- `apps/web/lib/momentum-ranking.test.ts` — Phase B4.2 reason-code
+  translations.
+- `apps/web/lib/momentum-impact.test.ts` — bullish-inferred rows do
+  not count toward `direction_unknown_count`; rows that still carry
+  `direction_unknown` continue to count.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

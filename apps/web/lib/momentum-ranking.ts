@@ -109,6 +109,11 @@ const REASON_CODE_LABELS: Record<string, string> = {
   momentum_reversal_warning: "Reversal warning",
   momentum_pullback_signal: "Pullback signal",
   active_blocked_parity_required: "Active blocked — parity required",
+  // Phase B4.2 — direction inference reason codes.
+  direction_from_candidate_metadata: "Direction from candidate metadata",
+  direction_from_strategy_metadata: "Direction from strategy metadata",
+  bullish_strategy_direction_inferred: "Bullish strategy direction inferred",
+  direction_inferred_from_strategy: "Direction inferred from strategy",
 };
 
 export function getMomentumContributionReasonLabels(

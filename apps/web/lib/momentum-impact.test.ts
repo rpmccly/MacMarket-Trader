@@ -221,6 +221,44 @@ describe("summarizeMomentumImpact", () => {
   });
 });
 
+describe("Phase B4.2 direction-inference impact on summaries", () => {
+  it("bullish-strategy-inferred candidates do not count toward direction_unknown", () => {
+    const rows = buildMomentumImpactRows([
+      candidate({
+        symbol: "AAPL",
+        momentum_contribution: contribution({
+          shadow_contribution: 15,
+          inferred_direction: "long",
+          reason_codes: ["thinkorswim_parity_pending", "bullish_strategy_direction_inferred"],
+        }),
+      }),
+      candidate({
+        symbol: "MSFT",
+        rank: 2,
+        momentum_contribution: contribution({
+          shadow_contribution: 12,
+          inferred_direction: "long",
+          reason_codes: ["direction_from_strategy_metadata"],
+        }),
+      }),
+    ]);
+    const summary = summarizeMomentumImpact(rows);
+    expect(summary.direction_unknown_count).toBe(0);
+  });
+
+  it("direction_unknown_count still counts rows that explicitly carry the code", () => {
+    const rows = buildMomentumImpactRows([
+      candidate({
+        momentum_contribution: contribution({
+          reason_codes: ["direction_unknown"],
+        }),
+      }),
+    ]);
+    const summary = summarizeMomentumImpact(rows);
+    expect(summary.direction_unknown_count).toBe(1);
+  });
+});
+
 describe("estimateActiveRankDelta", () => {
   it("counts upgraded/downgraded/unchanged rows", () => {
     const rows = buildMomentumImpactRows([
