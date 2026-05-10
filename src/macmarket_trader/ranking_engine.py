@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from statistics import mean
+from typing import Any
 
+from macmarket_trader.charts.momentum_service import MomentumChartService
+from macmarket_trader.config import settings as _settings
 from macmarket_trader.domain.enums import MarketMode
-from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.schemas import Bar, MomentumRankingContribution
+from macmarket_trader.recommendation.momentum_ranking import (
+    MomentumRankingConfig,
+    build_momentum_ranking_contribution,
+    momentum_ranking_config_from_settings,
+)
 from macmarket_trader.strategy_registry import StrategyRegistryEntry, list_strategies
 
 
@@ -31,6 +39,10 @@ class RankedCandidate:
     invalidation: str
     targets: str
     reason_text: str
+    # Phase B1 momentum ranking influence — optional, mode-aware. Always
+    # present (with mode='off' / enabled=False) when no Momentum payload is
+    # available so frontend clients can rely on a stable shape.
+    momentum_contribution: dict[str, Any] = field(default_factory=dict)
 
 
 def _regime_alignment_bonus(bars: list[Bar], strategy: str) -> float:
@@ -117,7 +129,43 @@ def _score_symbol(bars: list[Bar], strategy: str) -> dict[str, float]:
     }
 
 
+def _recent_trend(bars: list[Bar]) -> float:
+    """5-bar net close change. Positive = recent upward bias; used as a
+    direction hint for momentum-aligned strategies in Phase B1 only."""
+    if len(bars) < 6:
+        return 0.0
+    return float(bars[-1].close - bars[-6].close)
+
+
+def _build_momentum_payload(bars: list[Bar], symbol: str, timeframe: str) -> Any:
+    """Compute the Momentum chart payload locally from already-loaded bars.
+
+    Phase B1 fail-soft: any error returns None so the contribution falls
+    through to ``momentum_payload_unavailable`` rather than raising into the
+    ranking engine.
+    """
+    try:
+        return MomentumChartService().build_payload(
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=list(bars),
+        )
+    except Exception:  # noqa: BLE001 - fail-soft per Phase B1 design
+        return None
+
+
 class DeterministicRankingEngine:
+    def __init__(self, momentum_config: MomentumRankingConfig | None = None) -> None:
+        # Falls back to settings on every call, so an env-var change between
+        # process starts is honored even when callers don't pass an explicit
+        # config. Tests can pass a custom MomentumRankingConfig directly.
+        self._momentum_config = momentum_config
+
+    def _resolve_momentum_config(self) -> MomentumRankingConfig:
+        if self._momentum_config is not None:
+            return self._momentum_config
+        return momentum_ranking_config_from_settings(_settings)
+
     def rank_candidates(
         self,
         *,
@@ -126,6 +174,7 @@ class DeterministicRankingEngine:
         market_mode: MarketMode,
         timeframe: str,
         top_n: int = 5,
+        momentum_config: MomentumRankingConfig | None = None,
     ) -> dict[str, object]:
         allowed = {entry.display_name: entry for entry in list_strategies(market_mode)}
         selected: list[StrategyRegistryEntry] = [allowed[name] for name in strategies if name in allowed]
@@ -135,6 +184,16 @@ class DeterministicRankingEngine:
                 return {"queue": [], "top_candidates": [], "watchlist_only": [], "no_trade": [], "summary": {"total": 0, "top_candidate_count": 0, "watchlist_count": 0, "no_trade_count": 0}}
             selected = [fallback_entry]
 
+        active_config = momentum_config or self._resolve_momentum_config()
+        # Compute the momentum payload **once per symbol** even if multiple
+        # strategies are scored — momentum is a per-bar context, not
+        # strategy-specific.
+        momentum_by_symbol: dict[str, Any] = {}
+        if active_config.mode != "off":
+            for symbol, (bars, _, _) in bars_by_symbol.items():
+                if bars:
+                    momentum_by_symbol[symbol] = _build_momentum_payload(bars, symbol, timeframe)
+
         output: list[RankedCandidate] = []
         for symbol, (bars, source, fallback_mode) in bars_by_symbol.items():
             if not bars:
@@ -142,9 +201,37 @@ class DeterministicRankingEngine:
             latest = bars[-1]
             prior = bars[-2] if len(bars) > 1 else latest
             workflow_source = f"fallback ({source})" if fallback_mode else source
+            recent_trend = _recent_trend(bars)
             for entry in selected:
                 metrics = _score_symbol(bars, entry.display_name)
                 total = metrics["total_score"]
+
+                # Phase B1: bounded momentum ranking contribution.
+                contribution_dict: dict[str, Any] = {}
+                if active_config.mode != "off":
+                    payload = momentum_by_symbol.get(symbol)
+                    contribution = build_momentum_ranking_contribution(
+                        payload,
+                        recommendation_context={
+                            "strategy": entry.display_name,
+                            "recent_trend": recent_trend,
+                        },
+                        config=active_config,
+                    )
+                    contribution_dict = contribution.model_dump(mode="json")
+                    if active_config.mode == "active" and contribution.applied:
+                        # Translate the bounded score-unit contribution into
+                        # the engine's [0,1] score scale, then re-clamp the
+                        # final score so we never exit the engine's domain.
+                        delta = contribution.total_contribution / max(active_config.ranking_score_scale, 1.0)
+                        total = max(0.0, min(1.0, total + delta))
+                else:
+                    # off-mode: still emit a stable shape so clients/tests
+                    # can read momentum_contribution without conditional logic.
+                    contribution_dict = MomentumRankingContribution(
+                        mode="off", enabled=False, applied=False
+                    ).model_dump(mode="json")
+
                 status = "top_candidate" if total >= 0.62 else "watchlist"
                 if metrics["confidence"] < 0.45:
                     status = "no_trade"
@@ -167,7 +254,7 @@ class DeterministicRankingEngine:
                         timeframe=timeframe,
                         status=status,
                         conviction_tier=tier,
-                        score=total,
+                        score=round(total, 3),
                         score_breakdown={k: v for k, v in metrics.items() if k not in {"expected_rr", "confidence", "total_score"}},
                         expected_rr=metrics["expected_rr"],
                         confidence=metrics["confidence"],
@@ -177,6 +264,7 @@ class DeterministicRankingEngine:
                         invalidation=f"{prior.low * 0.995:.2f}",
                         targets=f"{latest.close * 1.02:.2f} / {latest.close * 1.04:.2f}",
                         reason_text=reason_text,
+                        momentum_contribution=contribution_dict,
                     )
                 )
 

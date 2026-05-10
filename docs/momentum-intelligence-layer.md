@@ -309,23 +309,135 @@ python -m pytest tests/test_momentum_thinkorswim_parity_scaffold.py -q --tb=shor
 
 ### Phase B gating
 
-**Phase B (ranking influence) remains blocked until parity fixtures are
-populated and reviewed.** Composite scores must not feed recommendation
-ranking, scoring, or quality gates without measured agreement against the
-source studies. The frontend `momentum-integration` guard test
-(`apps/web/lib/momentum-integration.test.ts`) further enforces that ranking
-and approval modules do not import the momentum types or client.
+**Phase B (ranking influence) is bounded and gated by mode** — see the
+Phase B1 section below. Until Thinkorswim parity fixtures land and have
+been reviewed, Phase B1 stays in the safe-by-default `shadow` mode and
+flipping to `active` requires explicit operator authorization. A future
+config flag (`parity_required_for_active`) will additionally block
+`active` mode while parity is still pending.
+
+## Phase B1 — bounded ranking influence (mode-aware)
+
+Phase B1 introduces a **bounded, audited, mode-aware** Momentum
+Intelligence ranking contribution. It does **not** change recommendation
+approval, paper-order, or live-trading behavior. It does **not** create a
+strategy family. It only attaches an explanation/contribution to the
+ranking-engine output that downstream surfaces can render or apply.
+
+### Mode
+
+The mode is read from `Settings.momentum_ranking_mode` (env var
+`MACMARKET_MOMENTUM_RANKING_MODE` or `MOMENTUM_RANKING_MODE`). Allowed
+values: `off`, `shadow`, `active`. **Default: `shadow`**.
+
+| Mode | Computes contribution? | Applies to score? | Use when |
+|---|---|---|---|
+| `off`    | No  | No  | Disable Phase B1 entirely (e.g., regression hunts). |
+| `shadow` | Yes | No  | **Default.** Surface explanation; final scores/order unchanged. |
+| `active` | Yes | Yes (within cap) | Operator has authorized momentum to influence ranking. |
+
+The default stays `shadow` while Thinkorswim parity fixtures remain pending
+so live/paper behavior never silently shifts.
+
+### Bounded components
+
+`MomentumRankingConfig` exposes per-component absolute caps. Defaults:
+
+| Component | Cap | Behavior |
+|---|---|---|
+| `momentum_alignment_score`  | `+0..+10` | Direction-aligned bull/bear state (Max Bull → +10 long, Max Bear → +10 short). Opposed direction → 0 (never positive). |
+| `trend_alignment_score`     | `+0..+8`  | Magnitude of `trend_score` when its sign agrees with the inferred direction. |
+| `hilo_confirmation_bonus`   | `+0..+5`  | HiLo composite (`hilo_score` from `HLP_Output`) magnitude when it agrees with the inferred direction. |
+| `reversal_warning_penalty`  | `-0..-12` | Full cap fires on an explicit reversal warning. |
+| **`total_contribution`**    | `[-12, +20]` | Final clamp on the sum of components. |
+
+`no_trade_warning` is a **warning only** — it suppresses the positive
+components (and adds the `momentum_no_trade_warning` reason code) but does
+**not** hard-reject the candidate. Reversal warnings emit
+`momentum_reversal_warning`. Pullback signals emit
+`momentum_pullback_signal`.
+
+### Active-mode behavior
+
+In `active` mode the bounded `total_contribution` (in score units of the
+±20 cap) is converted into the ranking engine's `[0, 1]` score scale via
+`ranking_score_scale = 100.0` and added to the candidate's score. The final
+score is then re-clamped to `[0, 1]`. Re-ranking happens after the active
+adjustment.
+
+### Shadow-mode behavior
+
+In `shadow` mode the contribution is computed and attached to each
+`RankedCandidate.momentum_contribution`, but `applied=False` and
+`total_contribution=0.0`. Scores and ordering are byte-identical to `off`
+mode for the same inputs. Tests pin this invariant
+(`tests/test_momentum_ranking_engine_integration.py`).
+
+### Direction inference
+
+The contribution function takes a `recommendation_context` with optional
+`direction` / `side`. When neither is provided, the ranking engine passes a
+`recent_trend` hint (5-bar net close change) and the strategy name; the
+helper infers `long`/`short` only for momentum-aligned strategies
+(`continuation`, `pullback`). Fade and mean-reversion strategies stay
+`direction = "unknown"` and the active-mode contribution is **not applied**
+in that case (reason code `direction_unknown`).
+
+### Parity-pending caveat
+
+While Thinkorswim parity fixtures remain pending the contribution still
+emits the `thinkorswim_parity_pending` reason code. A future flag,
+`parity_required_for_active`, can be set to `True` to refuse active-mode
+application until a fixture has been validated; the current default is
+`False` so operators can opt in to active mode before parity lands. The
+unit test
+`tests/test_momentum_ranking_contribution.py::test_parity_required_for_active_blocks_when_pending`
+pins the gate.
+
+### What Phase B1 does NOT do
+
+- **No strategy families**: no new strategy registry entries. No new setup
+  engine paths.
+- **No recommendation-approval changes**: `recommendation_service.generate`,
+  the quality gates, and the queue-promote flow are unchanged.
+- **No paper-order changes**: paper open/close/lifecycle endpoints, sizing,
+  commissions, and review surfaces are unchanged.
+- **No live-trading**: `LIVE_TRADING_ALLOWED` and `BROKER_PROVIDER` defaults
+  remain. The contribution function refuses to surface
+  `approve`/`reject`/`side`/`shares`/`order_id`/`route` keys (test
+  `test_contribution_payload_does_not_include_approval_or_routing_fields`).
+- **No DB migrations**: `momentum_contribution` is an in-flight payload
+  field on the ranking-engine output only. Persisted recommendation rows
+  are unchanged.
+
+### How to switch modes
+
+```bash
+# Default — safest. Computes context but does not apply.
+unset MACMARKET_MOMENTUM_RANKING_MODE  # or set to "shadow"
+
+# Disable entirely (regression hunts, comparison runs).
+export MACMARKET_MOMENTUM_RANKING_MODE=off
+
+# Apply bounded contribution to ranking. Requires explicit operator decision.
+export MACMARKET_MOMENTUM_RANKING_MODE=active
+```
+
+### Tests
+
+- `tests/test_momentum_ranking_contribution.py` — 22 tests pinning bounded
+  components, sanitation, reason codes, parity gate, dict-shape acceptance,
+  and the no-approval/no-routing payload guardrails.
+- `tests/test_momentum_ranking_engine_integration.py` — 6 tests pinning
+  off / shadow / active ranking-engine behavior, score-scale clamping,
+  and backward-compatible call signature.
 
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into
-  `tests/fixtures/thinkorswim_momentum/` per the section above and update
-  `manifest.json`. Once a fixture passes, change the relevant
-  `parity_status` consumers to surface
-  `validated_against_thinkorswim_fixture` rather than the default
-  `pending_thinkorswim_fixture_validation`.
-- **Phase B (gated, separate authorization)**: ranking influence — only after
-  explicit operator approval is captured in writing **and** at least one
-  parity fixture is green. Until then, momentum scores remain context only.
+  `tests/fixtures/thinkorswim_momentum/` per the parity-fixtures section
+  above and update `manifest.json`. Once a fixture passes, flip
+  `parity_required_for_active` to `True` so active mode requires measured
+  parity rather than relying on operator discretion alone.
 - **Phase C (gated, separate authorization)**: dedicated strategy families
   combining momentum with event/regime/sector filters. Same gate as Phase B.

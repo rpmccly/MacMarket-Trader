@@ -1331,6 +1331,38 @@ class MomentumChartRequest(BaseModel):
         return timeframe
 
 
+class MomentumRankingContribution(BaseModel):
+    """Bounded Momentum Intelligence ranking contribution attached to a candidate.
+
+    Phase B1 surface. Always returned in shadow/active modes; ``applied``
+    indicates whether the bounded ``total_contribution`` was actually added
+    to the candidate's score. ``mode == "off"`` means the contribution was
+    not computed at all (``enabled`` is then False).
+    """
+
+    mode: Literal["off", "shadow", "active"] = "off"
+    enabled: bool = False
+    applied: bool = False
+    total_contribution: float = 0.0
+    shadow_contribution: float = 0.0
+    momentum_alignment_score: float = 0.0
+    trend_alignment_score: float = 0.0
+    hilo_confirmation_bonus: float = 0.0
+    reversal_warning_penalty: float = 0.0
+    no_trade_warning: bool = False
+    pullback_signal: bool = False
+    reversal_warning: bool = False
+    parity_status: str | None = None
+    higher_timeframe_source: str | None = None
+    total_score: int | None = None
+    total_label: str | None = None
+    trend_score: float | None = None
+    momo_score: float | None = None
+    inferred_direction: Literal["long", "short", "unknown"] = "unknown"
+    calculation_notes: list[str] = Field(default_factory=list)
+    reason_codes: list[str] = Field(default_factory=list)
+
+
 class MomentumChartPayload(BaseModel):
     symbol: str
     timeframe: str

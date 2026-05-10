@@ -122,6 +122,22 @@ class Settings(BaseSettings):
     max_event_continuation_volatility: float = 0.045
     min_catalyst_source_quality_score: float = 0.0
 
+    # Momentum Intelligence Layer ranking influence (Phase B1).
+    # off    = do not compute or attach a momentum ranking contribution.
+    # shadow = compute and attach the contribution as explanation only;
+    #          rank/score is unchanged. (Default — safest while Thinkorswim
+    #          parity fixtures remain pending.)
+    # active = apply bounded contribution (≤ ±20 score points) to the rank.
+    # The contribution is bounded, audited, and never approves, rejects,
+    # sizes, or routes trades. See docs/momentum-intelligence-layer.md.
+    momentum_ranking_mode: str = Field(
+        default="shadow",
+        validation_alias=AliasChoices(
+            "MACMARKET_MOMENTUM_RANKING_MODE",
+            "MOMENTUM_RANKING_MODE",
+        ),
+    )
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
     @model_validator(mode="after")
