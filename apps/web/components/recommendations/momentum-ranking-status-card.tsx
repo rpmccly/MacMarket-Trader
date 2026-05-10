@@ -219,6 +219,12 @@ export function MomentumRankingStatusCard({
         <p style={NOTE_STYLE} data-testid="momentum-ranking-status-deterministic-note">
           {DETERMINISTIC_NOTE}
         </p>
+        <p
+          style={{ ...NOTE_STYLE, marginTop: 0 }}
+          data-testid="momentum-ranking-status-impact-review-pointer"
+        >
+          Review shadow impact in <a href="/recommendations">Recommendations</a>.
+        </p>
       </div>
     </Card>
   );

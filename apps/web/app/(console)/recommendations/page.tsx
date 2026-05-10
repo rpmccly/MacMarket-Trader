@@ -17,6 +17,7 @@ import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 import { MomentumRankingCard } from "@/components/recommendations/momentum-ranking-card";
+import { MomentumImpactReview } from "@/components/recommendations/momentum-impact-review";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -1918,6 +1919,18 @@ export default function RecommendationsPage() {
           />
         );
       })()}
+
+      {/*
+        Phase B4 — Momentum Shadow Impact Review. Operator-facing review
+        of how Momentum Intelligence would affect ranking under the
+        current mode (off / shadow / active). Uses already-loaded queue
+        rows; does not refetch, does not change queue sorting, approval,
+        promote, save, paper-order, settle, replay, or options preview
+        flows.
+      */}
+      {queue.length > 0 ? (
+        <MomentumImpactReview candidates={queue} compact />
+      ) : null}
     </section>
   );
 }

@@ -640,6 +640,103 @@ lands and adds the `active_blocked_parity_required` reason code.
   and helper files; confirm the Settings page wires the section and
   the proxy route forwards correctly.
 
+## Phase B4 — Momentum Shadow Impact Review
+
+Phase B4 adds an operator-facing **review** of how Momentum Intelligence
+would affect recommendation ranking under the current mode. It is
+**display-only**: no ranking math, queue sorting, approval, paper-order,
+options/replay/HACO behavior, or strategy-family code is touched.
+
+### Surfaces
+
+| Surface | File |
+|---|---|
+| Pure helpers | `apps/web/lib/momentum-impact.ts` (`MomentumImpactRow`, `MomentumImpactSummary`, `buildMomentumImpactRows`, `summarizeMomentumImpact`, `estimateActiveScore`, `estimateActiveRankDelta`, `momentumImpactTone`, `sortMomentumImpactRows`, `formatRankDelta`, `formatScoreUnit`, `formatUnitScore`, `MOMENTUM_IMPACT_DETERMINISTIC_NOTE`). |
+| Reusable component | `apps/web/components/recommendations/momentum-impact-review.tsx` (`<MomentumImpactReview candidates compact title />`). |
+| Recommendations integration | `apps/web/app/(console)/recommendations/page.tsx` renders the review at the bottom of the page using the already-loaded `queue` rows — no extra fetch, no sorting change, no approval/promote/paper-order impact. |
+| Settings pointer | `apps/web/components/recommendations/momentum-ranking-status-card.tsx` now includes a one-line "Review shadow impact in Recommendations." pointer (link only — no new navigation). |
+
+### Estimated active score logic
+
+For each in-memory candidate the review computes:
+
+```
+shadow mode  → estimated_active = clamp01(candidate.score + shadow_contribution / 100)
+active mode  → estimated_active = candidate.score        # already applied — no double count
+off / missing / direction_unknown → estimated_active = candidate.score
+```
+
+- Inputs are sanitized: `NaN` / `Infinity` / non-numeric values collapse to `0`.
+- The estimated score is always finite and always inside `[0, 1]`.
+- The helper never mutates the candidate, never refetches, never recomputes Momentum indicator math (the contribution is consumed verbatim from the queue payload).
+
+### Estimated rank movement
+
+`buildMomentumImpactRows` derives a per-row `estimatedRankBefore` /
+`estimatedRankAfter` / `estimatedRankDelta` by stable-sorting the
+estimated active scores. Positive delta = rank would improve; negative =
+rank would drop. This is **estimate-only**: the live queue's sorting
+never changes.
+
+### Mode-specific framing copy
+
+| Mode | Framing line |
+|---|---|
+| `shadow` | "Shadow mode is enabled. Final scores are unchanged. The estimated active score shows what would happen if active mode were enabled." |
+| `active` | "Active mode is enabled. The bounded contribution is already applied to the current score — these estimates do not double-count it." |
+| `off`    | "Momentum contribution is disabled (off) or not computed. No estimated movement is shown." |
+
+The component also renders summary chips for: candidates reviewed,
+positive/negative/zero contribution counts, warnings count, parity-pending
+count, direction-unknown count, contribution-missing count, net Δ score,
+and how many candidates would move up/down.
+
+### Warning and reason chips
+
+The review surfaces the same reason-code labels as the Phase B2 card:
+`Thinkorswim parity pending`, `Derived higher timeframe`, `Direction
+unknown`, `No-trade warning`, `Reversal warning`, `Pullback signal`,
+`Momentum payload unavailable`. Reversal/no-trade warnings tone as `warn`
+and trigger the warning count.
+
+A canonical operator note is rendered in every state:
+
+> *This review estimates impact only. It does not change queue sorting,
+> approval, sizing, or order routing.*
+
+### What Phase B4 does NOT do
+
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, and the bounded-component caps from
+  Phase B1 are byte-identical.
+- **No default mode change.** Default remains `shadow`.
+- **No active-mode enablement.** The review describes what active mode
+  *would* look like but never flips the flag.
+- **No queue sorting change.** The live queue order is preserved; the
+  review's `estimatedRankAfter` is a per-row label only.
+- **No recommendation approval / promote / save / paper-order / settle
+  / replay / options-preview changes.**
+- **No strategy families.**
+- **No DB migrations.** The review reads in-memory candidates.
+
+### Tests (Phase B4)
+
+- `apps/web/lib/momentum-impact.test.ts` — 25 tests: shadow/active/off
+  estimation, clamp to `[0, 1]`, no NaN/inf, no mutation of inputs,
+  estimated rank-after derivation, summary counts (positive/negative/
+  zero/warnings/parity/direction-unknown/missing), `observed_modes`,
+  tone selection, sort-mode behavior, formatting helpers, deterministic
+  note guard.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 8 render tests: empty, summary counts, mode framing (shadow/active/
+  off), parity / direction-unknown / reversal chips, rank-up/down
+  badges, deterministic-context note in every branch, no forbidden
+  action language.
+- `apps/web/lib/momentum-integration.test.ts` — strengthened with
+  Phase B4 guards: Recommendations page imports `<MomentumImpactReview>`,
+  helpers/component stay out of order/paper-position/paper-trade/options-
+  paper/replay-preview routes and helper files, no forbidden language.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

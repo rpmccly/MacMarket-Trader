@@ -91,6 +91,13 @@ describe("Momentum Intelligence Phase B2 display guards", () => {
     "MomentumRankingStatusCard",
     "MomentumRankingStatusSection",
     "fetchMomentumRankingStatus",
+    // Phase B4 impact-review surfaces — same isolation.
+    "@/lib/momentum-impact",
+    "@/components/recommendations/momentum-impact-review",
+    "MomentumImpactReview",
+    "buildMomentumImpactRows",
+    "summarizeMomentumImpact",
+    "estimateActiveScore",
   ];
 
   function readSafe(relative: string): string | null {
@@ -145,6 +152,9 @@ describe("Momentum Intelligence Phase B2 display guards", () => {
       // Phase B3 status surfaces — same no-action-language guard.
       "lib/momentum-ranking-status.ts",
       "components/recommendations/momentum-ranking-status-card.tsx",
+      // Phase B4 impact-review surfaces — same guard.
+      "lib/momentum-impact.ts",
+      "components/recommendations/momentum-impact-review.tsx",
     ];
     const forbidden = [
       "approve trade",
@@ -229,6 +239,90 @@ describe("Momentum Intelligence Phase B3 status guards", () => {
       if (source === null) continue;
       for (const pattern of patterns) {
         expect(source).not.toContain(pattern);
+      }
+    }
+  });
+});
+
+describe("Momentum Intelligence Phase B4 impact-review guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Recommendations page imports MomentumImpactReview and passes the existing queue", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("@/components/recommendations/momentum-impact-review");
+    expect(source).toContain("MomentumImpactReview");
+    expect(source).toContain("candidates={queue}");
+  });
+
+  it("impact-review helpers/component are not imported into order, paper-position, paper-trade, options-paper, or replay-preview routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-impact",
+      "@/components/recommendations/momentum-impact-review",
+      "MomentumImpactReview",
+      "buildMomentumImpactRows",
+      "estimateActiveScore",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("impact-review helpers/component do not leak into approval/order helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-impact",
+      "@/components/recommendations/momentum-impact-review",
+      "MomentumImpactReview",
+      "buildMomentumImpactRows",
+      "estimateActiveScore",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("impact-review surfaces avoid forbidden trade-approval/order-routing language", () => {
+    const surfaces = [
+      "lib/momentum-impact.ts",
+      "components/recommendations/momentum-impact-review.tsx",
+    ];
+    const forbidden = ["approve trade", "auto approve", "route order", "buy now", "sell now", "enter now", "short now"];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
       }
     }
   });
