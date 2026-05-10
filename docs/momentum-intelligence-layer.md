@@ -542,6 +542,104 @@ contribution payloads never surface `approved` / `rejected` / `side` /
   Phase B2 display guards.
 - `tests/test_momentum_ranking_serialization.py` — backend contract pin.
 
+## Phase B3 — operator status visibility
+
+Phase B3 surfaces the Momentum ranking mode + parity state in the
+operator UI without touching ranking math, recommendation approval,
+paper-order, options/replay/HACO behavior, or strategy families. It is
+**status-only**.
+
+### Where the operator sees it
+
+| Surface | File |
+|---|---|
+| Backend status schema | `src/macmarket_trader/domain/schemas.py` (`MomentumRankingStatus`) |
+| Backend status builder | `src/macmarket_trader/recommendation/momentum_ranking.py::build_momentum_ranking_status` |
+| Read-only API endpoint | `GET /user/momentum-ranking-status` (approved user; in `admin.py` user_router; no DB writes, no provider calls) |
+| Frontend proxy route | `apps/web/app/api/user/momentum-ranking-status/route.ts` |
+| Frontend client | `apps/web/lib/momentum-ranking-status.ts` (`fetchMomentumRankingStatus`, `MomentumRankingStatus` type) |
+| Status card | `apps/web/components/recommendations/momentum-ranking-status-card.tsx` (`<MomentumRankingStatusCard>` + auto-fetching `<MomentumRankingStatusSection>`) |
+| Operator integration | `apps/web/app/(console)/settings/page.tsx` — mounts `<MomentumRankingStatusSection>` at the bottom of Settings as operator readiness context (does **not** appear in Recommendations workflow). |
+
+### What the status surfaces
+
+| Field | Meaning |
+|---|---|
+| `mode` | Resolved `off` / `shadow` / `active` after env normalization. Invalid env values resolve to `shadow`. |
+| `default_mode` | Always `shadow`. |
+| `env_var` | `MACMARKET_MOMENTUM_RANKING_MODE`. |
+| `raw_env_value` | The raw value as read from settings (for audit). |
+| `invalid_env_value` | True when the configured value was unrecognized. |
+| `enabled` | True for `shadow` / `active`. |
+| `applied_by_default` | True only for `active`. |
+| `parity_status` | `validated_against_thinkorswim_fixture` when the parity manifest exists, otherwise `pending_thinkorswim_fixture_validation`. |
+| `parity_fixture_manifest_present` | Presence check of `tests/fixtures/thinkorswim_momentum/manifest.json`. Read-only; never parses content. |
+| `parity_fixture_manifest_path` | Absolute path to the manifest when present. |
+| `parity_required_for_active` | Mirrors `MomentumRankingConfig.parity_required_for_active`; informational only. |
+| `real_thinkorswim_parity_pending` | True until a manifest is present. |
+| `active_mode_warning` | Set when `mode=active` and parity is pending. Operator-facing message — never an approval. |
+| `reason_codes` | Audit codes: `invalid_env_value_resolved_to_shadow`, `thinkorswim_parity_pending`, `active_mode_with_parity_pending`, `active_blocked_parity_required`. |
+| `guardrails` | Always includes the three deterministic-context lines; appends "Real Thinkorswim parity fixtures are still pending." when applicable. |
+
+### How `MACMARKET_MOMENTUM_RANKING_MODE` works
+
+The endpoint reads `settings.momentum_ranking_mode`, which is bound to
+`MACMARKET_MOMENTUM_RANKING_MODE` (preferred) or `MOMENTUM_RANKING_MODE`
+(alias) via the same Pydantic-settings binding introduced in Phase B1.
+Allowed values: `off`, `shadow`, `active` (case-insensitive). Unknown
+values resolve to `shadow` and emit
+`invalid_env_value_resolved_to_shadow` so operators see the fallback in
+the status card rather than the application silently masking a typo.
+
+### Default remains shadow
+
+Phase B3 does **not** change the default. The status card pins this:
+`default_mode` is always `shadow`, and the resolved `mode` for an
+unconfigured environment is `shadow`.
+
+### Active-mode warning while parity is pending
+
+When `mode=active` and `real_thinkorswim_parity_pending=true`, the
+status card renders a prominent `role="alert"` warning explaining that
+the bounded contribution is applying while Thinkorswim parity fixtures
+are still pending review. If `parity_required_for_active=true`, the
+warning instead states that active mode is **blocked** until parity
+lands and adds the `active_blocked_parity_required` reason code.
+
+### What Phase B3 does NOT do
+
+- **No ranking math changes.** `build_momentum_ranking_contribution`
+  and the engine wire-up are untouched.
+- **No default mode change.** Default remains `shadow`.
+- **No active-mode enablement.** Operators must still opt in via the
+  env var.
+- **No `parity_required_for_active` flip.** Pinned to `False` per
+  Phase B1.
+- **No strategy families.**
+- **No recommendation approval / paper-order / options / replay /
+  HACO changes.**
+- **No DB migrations.** Status is computed on read.
+
+### Tests (Phase B3)
+
+- `tests/test_momentum_ranking_status.py` — 15 tests pinning the pure
+  status builder (default/off/active/invalid-env/manifest-present),
+  the endpoint (auth required, shadow/off/active/invalid responses, no
+  market provider side effects), and the no-approval/no-routing
+  payload guard.
+- `apps/web/lib/momentum-ranking-status.test.ts` — client delegates to
+  `fetchWorkflowApi`, surfaces non-OK and auth-pending states without
+  throwing.
+- `apps/web/components/recommendations/momentum-ranking-status-card.test.tsx`
+  — empty/loading/error/shadow/off/active branches, parity-pending +
+  invalid-env warnings rendered as `<strong>`/`role="alert"`,
+  parity-validated good tone, deterministic-context note, and a
+  no-action-language guard.
+- `apps/web/lib/momentum-integration.test.ts` — extended Phase B3
+  guards keep the status helper/component out of order/approval routes
+  and helper files; confirm the Settings page wires the section and
+  the proxy route forwards correctly.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from macmarket_trader.domain.schemas import (
     MomentumChartPayload,
     MomentumRankingContribution,
+    MomentumRankingStatus,
     MomentumScoreSnapshot,
 )
 
@@ -465,9 +467,125 @@ def _reversal_penalty(snapshot: _SnapshotView, config: MomentumRankingConfig) ->
     return 0.0
 
 
+# ── Phase B3 status builder ────────────────────────────────────────────────
+
+
+_DEFAULT_PARITY_MANIFEST_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "tests"
+    / "fixtures"
+    / "thinkorswim_momentum"
+    / "manifest.json"
+)
+
+
+_GUARDRAILS = (
+    "Shadow mode computes contribution but does not alter final ranking.",
+    "Active mode applies a bounded contribution only.",
+    "This does not approve, reject, size, or route trades.",
+)
+
+
+def build_momentum_ranking_status(
+    settings: Any,
+    *,
+    manifest_path: Path | None = None,
+    config: MomentumRankingConfig | None = None,
+) -> MomentumRankingStatus:
+    """Build the operator-facing Momentum ranking status payload.
+
+    Pure / read-only:
+
+    - never mutates settings,
+    - never opens network sockets,
+    - never reads market data,
+    - never raises on bad env input.
+
+    ``manifest_path`` defaults to the canonical
+    ``tests/fixtures/thinkorswim_momentum/manifest.json`` location used by
+    the parity scaffold. The status only reports presence — it never
+    parses or validates the fixture content from this surface.
+    """
+    raw_value = getattr(settings, "momentum_ranking_mode", None)
+    raw_str: str | None = None
+    if raw_value is not None:
+        raw_str = str(raw_value)
+    mode = resolve_momentum_ranking_mode(raw_value)
+
+    invalid_env = False
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized and normalized not in _VALID_MODES:
+            invalid_env = True
+
+    resolved_config = config or MomentumRankingConfig(mode=mode)
+
+    manifest_resolved = (manifest_path or _DEFAULT_PARITY_MANIFEST_PATH).resolve()
+    try:
+        manifest_present = manifest_resolved.exists()
+    except OSError:
+        manifest_present = False
+
+    parity_status = (
+        "validated_against_thinkorswim_fixture"
+        if manifest_present
+        else "pending_thinkorswim_fixture_validation"
+    )
+    real_thinkorswim_parity_pending = not manifest_present
+
+    enabled = mode in {"shadow", "active"}
+    applied_by_default = mode == "active"
+
+    reason_codes: list[str] = []
+    if invalid_env:
+        reason_codes.append("invalid_env_value_resolved_to_shadow")
+    if real_thinkorswim_parity_pending:
+        reason_codes.append("thinkorswim_parity_pending")
+    if mode == "active" and real_thinkorswim_parity_pending:
+        reason_codes.append("active_mode_with_parity_pending")
+    if mode == "active" and resolved_config.parity_required_for_active and real_thinkorswim_parity_pending:
+        reason_codes.append("active_blocked_parity_required")
+
+    active_mode_warning: str | None = None
+    if mode == "active":
+        if real_thinkorswim_parity_pending and resolved_config.parity_required_for_active:
+            active_mode_warning = (
+                "Active mode is configured but blocked: parity_required_for_active=True "
+                "and Thinkorswim parity fixtures are still pending."
+            )
+        elif real_thinkorswim_parity_pending:
+            active_mode_warning = (
+                "Active mode is applying a bounded momentum contribution while "
+                "Thinkorswim parity fixtures are still pending review."
+            )
+
+    guardrails = list(_GUARDRAILS)
+    if real_thinkorswim_parity_pending:
+        guardrails.append("Real Thinkorswim parity fixtures are still pending.")
+
+    return MomentumRankingStatus(
+        mode=mode,
+        default_mode="shadow",
+        env_var="MACMARKET_MOMENTUM_RANKING_MODE",
+        raw_env_value=raw_str,
+        invalid_env_value=invalid_env,
+        enabled=enabled,
+        applied_by_default=applied_by_default,
+        parity_status=parity_status,
+        parity_fixture_manifest_present=manifest_present,
+        parity_fixture_manifest_path=str(manifest_resolved) if manifest_present else None,
+        parity_required_for_active=resolved_config.parity_required_for_active,
+        real_thinkorswim_parity_pending=real_thinkorswim_parity_pending,
+        active_mode_warning=active_mode_warning,
+        reason_codes=reason_codes,
+        guardrails=guardrails,
+    )
+
+
 __all__ = [
     "MomentumRankingConfig",
     "build_momentum_ranking_contribution",
+    "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",
     "resolve_momentum_ranking_mode",
 ]

@@ -85,6 +85,12 @@ describe("Momentum Intelligence Phase B2 display guards", () => {
     "from \"@/components/recommendations/momentum-ranking-card\"",
     "MomentumRankingCard",
     "MomentumRankingInlineBadge",
+    // Phase B3 status surfaces — must also stay out of order/approval paths.
+    "@/lib/momentum-ranking-status",
+    "@/components/recommendations/momentum-ranking-status-card",
+    "MomentumRankingStatusCard",
+    "MomentumRankingStatusSection",
+    "fetchMomentumRankingStatus",
   ];
 
   function readSafe(relative: string): string | null {
@@ -136,6 +142,9 @@ describe("Momentum Intelligence Phase B2 display guards", () => {
     const surfaces = [
       "lib/momentum-ranking.ts",
       "components/recommendations/momentum-ranking-card.tsx",
+      // Phase B3 status surfaces — same no-action-language guard.
+      "lib/momentum-ranking-status.ts",
+      "components/recommendations/momentum-ranking-status-card.tsx",
     ];
     const forbidden = [
       "approve trade",
@@ -161,5 +170,66 @@ describe("Momentum Intelligence Phase B2 display guards", () => {
     expect(source).toContain("@/components/recommendations/momentum-ranking-card");
     expect(source).toContain("MomentumRankingCard");
     expect(source).toContain("momentum_contribution");
+  });
+});
+
+describe("Momentum Intelligence Phase B3 status guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Settings page wires the Momentum ranking status section", () => {
+    const source = read("app/(console)/settings/page.tsx");
+    expect(source).toContain("@/components/recommendations/momentum-ranking-status-card");
+    expect(source).toContain("MomentumRankingStatusSection");
+  });
+
+  it("Momentum ranking status proxy route forwards to the backend status endpoint", () => {
+    const source = read("app/api/user/momentum-ranking-status/route.ts");
+    expect(source).toContain("proxyWorkflowRequest");
+    expect(source).toContain("/user/momentum-ranking-status");
+  });
+
+  it("status card and client never use trade-approval or order-routing copy", () => {
+    const surfaces = [
+      "lib/momentum-ranking-status.ts",
+      "components/recommendations/momentum-ranking-status-card.tsx",
+    ];
+    const forbidden = ["approve trade", "auto approve", "route order", "buy now", "sell now", "enter now", "short now"];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("status helpers do not leak into recommendation-approval/order helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-ranking-status",
+      "@/components/recommendations/momentum-ranking-status-card",
+      "MomentumRankingStatusCard",
+      "MomentumRankingStatusSection",
+      "fetchMomentumRankingStatus",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
   });
 });

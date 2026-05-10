@@ -604,6 +604,24 @@ def get_user_settings(user=Depends(require_approved_user)):
     return _serialize_user_settings(user)
 
 
+@user_router.get("/momentum-ranking-status")
+def momentum_ranking_status(_user=Depends(require_approved_user)):
+    """Phase B3 read-only operator status for the Momentum ranking layer.
+
+    No DB writes, no provider calls, no market-data calls. Resolves the
+    current mode from settings, surfaces parity-fixture presence, and
+    returns operator-facing guardrails and warnings. Invalid env values
+    resolve to ``shadow`` and emit the
+    ``invalid_env_value_resolved_to_shadow`` reason code.
+    """
+    from macmarket_trader.recommendation.momentum_ranking import (
+        build_momentum_ranking_status,
+    )
+
+    status = build_momentum_ranking_status(settings)
+    return status.model_dump(mode="json")
+
+
 def _update_user_settings(req: dict[str, object], user) -> dict[str, object]:
     """Update operator-controlled settings for sizing and commission defaults."""
     allowed_keys = {

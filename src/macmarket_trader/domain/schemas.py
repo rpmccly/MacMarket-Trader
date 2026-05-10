@@ -1331,6 +1331,34 @@ class MomentumChartRequest(BaseModel):
         return timeframe
 
 
+class MomentumRankingStatus(BaseModel):
+    """Operator-facing read-only status of the Momentum Intelligence
+    ranking influence layer (Phase B3 surface).
+
+    This model is **status-only**: it never approves trades, mutates
+    state, or talks to providers. The settings/admin UI consumes this
+    payload to surface the resolved mode, parity state, and operator
+    guardrails. ``parity_required_for_active`` is exposed as
+    informational metadata only — Phase B1 logic still owns the gate.
+    """
+
+    mode: Literal["off", "shadow", "active"] = "shadow"
+    default_mode: Literal["off", "shadow", "active"] = "shadow"
+    env_var: str = "MACMARKET_MOMENTUM_RANKING_MODE"
+    raw_env_value: str | None = None
+    invalid_env_value: bool = False
+    enabled: bool = True
+    applied_by_default: bool = False
+    parity_status: str = "pending_thinkorswim_fixture_validation"
+    parity_fixture_manifest_present: bool = False
+    parity_fixture_manifest_path: str | None = None
+    parity_required_for_active: bool = False
+    real_thinkorswim_parity_pending: bool = True
+    active_mode_warning: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
+
+
 class MomentumRankingContribution(BaseModel):
     """Bounded Momentum Intelligence ranking contribution attached to a candidate.
 

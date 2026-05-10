@@ -11,6 +11,7 @@ import {
   OPTIONS_COMMISSION_FORMULA_TEXT,
   OPTIONS_COMMISSION_NOT_PER_SHARE_TEXT,
 } from "@/lib/recommendations";
+import { MomentumRankingStatusSection } from "@/components/recommendations/momentum-ranking-status-card";
 
 type UserMe = {
   id: number;
@@ -303,6 +304,8 @@ export default function SettingsPage() {
           </div>
         )}
       </Card>
+
+      <MomentumRankingStatusSection title="Momentum ranking status (operator readiness)" />
     </section>
   );
 }

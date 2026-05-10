@@ -9,6 +9,7 @@ sizing, or routing trades. See ``docs/momentum-intelligence-layer.md``.
 from macmarket_trader.recommendation.momentum_ranking import (
     MomentumRankingConfig,
     build_momentum_ranking_contribution,
+    build_momentum_ranking_status,
     momentum_ranking_config_from_settings,
     resolve_momentum_ranking_mode,
 )
@@ -16,6 +17,7 @@ from macmarket_trader.recommendation.momentum_ranking import (
 __all__ = [
     "MomentumRankingConfig",
     "build_momentum_ranking_contribution",
+    "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",
     "resolve_momentum_ranking_mode",
 ]
