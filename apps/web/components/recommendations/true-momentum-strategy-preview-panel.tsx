@@ -402,16 +402,26 @@ MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true`}
           />
         ) : null}
 
-        <p
-          style={NOTE_STYLE}
-          data-testid="true-momentum-strategy-preview-deterministic-note"
-        >
-          {TRUE_MOMENTUM_STRATEGY_PREVIEW_DETERMINISTIC_NOTE}
-        </p>
-        <p style={NOTE_STYLE} data-testid="true-momentum-strategy-preview-still-pending">
-          Still pending: accumulated B8 outcome evidence · Thinkorswim fixture parity
-          · operator authorization before any active Phase C.
-        </p>
+        {/*
+          Phase C2.1 — when the evidence panel is mounted (previews
+          exist), it already renders the deterministic guardrail copy
+          and the "Still pending" caveat line. Avoid duplicating those
+          paragraphs immediately below the evidence panel.
+        */}
+        {previews.length === 0 ? (
+          <>
+            <p
+              style={NOTE_STYLE}
+              data-testid="true-momentum-strategy-preview-deterministic-note"
+            >
+              {TRUE_MOMENTUM_STRATEGY_PREVIEW_DETERMINISTIC_NOTE}
+            </p>
+            <p style={NOTE_STYLE} data-testid="true-momentum-strategy-preview-still-pending">
+              Still pending: accumulated B8 outcome evidence · Thinkorswim fixture parity
+              · operator authorization before any active Phase C.
+            </p>
+          </>
+        ) : null}
       </div>
     </Card>
   );

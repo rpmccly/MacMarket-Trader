@@ -22,8 +22,16 @@ import {
 } from "@/lib/true-momentum-preview-evidence";
 import { trueMomentumPreviewReasonLabels } from "@/lib/true-momentum-strategy-preview";
 import type { TrueMomentumStrategyPreviewResult } from "@/lib/true-momentum-strategy-preview";
-import type { MomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
-import type { MomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
+import {
+  MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY,
+  validateMomentumTrialSnapshot,
+  type MomentumTrialSnapshot,
+} from "@/lib/momentum-trial-journal";
+import {
+  MOMENTUM_TRIAL_OUTCOME_STORAGE_KEY,
+  validateMomentumTrialOutcomeReview,
+  type MomentumTrialOutcomeReview,
+} from "@/lib/momentum-trial-outcomes";
 import type { QueueCandidate } from "@/lib/recommendations";
 import type { TrueMomentumStrategyPreviewFamilyId } from "@/lib/true-momentum-strategy-preview";
 
@@ -202,6 +210,100 @@ function clearPersistedBundle(): void {
   }
 }
 
+// Phase C2.1 — read-only rehydration of the Phase B7 trial snapshot
+// and Phase B8 outcome review from localStorage. Lets the evidence
+// panel surface "linked / missing / mismatch" status without lifting
+// state into the Recommendations page.
+function readPersistedB8Snapshot(): MomentumTrialSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const result = validateMomentumTrialSnapshot(parsed);
+    return result.ok ? result.snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPersistedB8OutcomeReview(
+  snapshot: MomentumTrialSnapshot | null,
+): MomentumTrialOutcomeReview | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(MOMENTUM_TRIAL_OUTCOME_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // The outcome review is persisted as a flat
+    // ``{ snapshot_generated_at, outcomes, global_conclusion }`` envelope
+    // (see ``momentum-trial-outcome-review.tsx``). Rebuild the full
+    // ``MomentumTrialOutcomeReview`` shape against the live snapshot
+    // so the C2 resolver can compare snapshot signatures.
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.snapshot_generated_at === "string" &&
+      Array.isArray(parsed.outcomes) &&
+      snapshot &&
+      snapshot.generated_at === parsed.snapshot_generated_at
+    ) {
+      const candidateOutcomes: MomentumTrialOutcomeReview["candidate_outcomes"] = [];
+      for (const raw of parsed.outcomes) {
+        if (!raw || typeof raw !== "object") continue;
+        candidateOutcomes.push({
+          symbol: typeof raw.symbol === "string" ? raw.symbol : "",
+          strategy: typeof raw.strategy === "string" ? raw.strategy : "",
+          rank: typeof raw.rank === "number" ? raw.rank : 0,
+          tag: raw.tag ?? "unclear",
+          note: typeof raw.note === "string" ? raw.note : "",
+          reason_codes: Array.isArray(raw.reason_codes) ? raw.reason_codes : [],
+          trade_warning_flags: Array.isArray(raw.trade_warning_flags)
+            ? raw.trade_warning_flags
+            : [],
+          operational_caveat_flags: Array.isArray(raw.operational_caveat_flags)
+            ? raw.operational_caveat_flags
+            : [],
+        });
+      }
+      const conclusionText =
+        typeof parsed.global_conclusion === "string"
+          ? parsed.global_conclusion
+          : "";
+      const stub: MomentumTrialOutcomeReview = {
+        schema_version: "phase_b8.v1",
+        generated_at: parsed.snapshot_generated_at,
+        snapshot,
+        global_conclusion: conclusionText
+          ? { text: conclusionText, authored_at: parsed.snapshot_generated_at }
+          : null,
+        candidate_outcomes: candidateOutcomes,
+        summary: {
+          candidate_count: candidateOutcomes.length,
+          worked_count: 0,
+          missed_count: 0,
+          too_aggressive_count: 0,
+          good_warning_count: 0,
+          false_warning_count: 0,
+          watchlist_only_count: 0,
+          needs_tos_parity_check_count: 0,
+          ignored_count: 0,
+          unclear_count: 0,
+          reason_code_counts: {},
+        },
+      };
+      return stub;
+    }
+    // Some callers persist a full envelope already (e.g. tests). Run
+    // it through the schema validator; if it parses, return as-is.
+    const validation = validateMomentumTrialOutcomeReview(parsed);
+    if (validation.ok) return validation.review;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export type TrueMomentumPreviewEvidencePanelProps = {
   candidates: ReadonlyArray<QueueCandidate> | null | undefined;
   previewResult: TrueMomentumStrategyPreviewResult | null | undefined;
@@ -231,6 +333,37 @@ export function TrueMomentumPreviewEvidencePanel({
 }: TrueMomentumPreviewEvidencePanelProps) {
   const previewCount = previewResult?.previews?.length ?? 0;
   const signature = useMemo(() => queueSignature(candidates), [candidates]);
+
+  // Phase C2.1 — rehydrate B7 snapshot + B8 outcome review from
+  // localStorage when the caller did not pass them in explicitly.
+  // Read-only and runs once per signature; never writes back.
+  const [hydratedB8Snapshot, setHydratedB8Snapshot] =
+    useState<MomentumTrialSnapshot | null>(b8Snapshot);
+  const [hydratedB8OutcomeReview, setHydratedB8OutcomeReview] =
+    useState<MomentumTrialOutcomeReview | null>(b8OutcomeReview);
+
+  useEffect(() => {
+    if (b8Snapshot !== null) {
+      setHydratedB8Snapshot(b8Snapshot);
+    } else if (persistLatest) {
+      setHydratedB8Snapshot(readPersistedB8Snapshot());
+    } else {
+      setHydratedB8Snapshot(null);
+    }
+  }, [b8Snapshot, persistLatest, signature]);
+
+  useEffect(() => {
+    if (b8OutcomeReview !== null) {
+      setHydratedB8OutcomeReview(b8OutcomeReview);
+    } else if (persistLatest) {
+      setHydratedB8OutcomeReview(readPersistedB8OutcomeReview(hydratedB8Snapshot));
+    } else {
+      setHydratedB8OutcomeReview(null);
+    }
+  }, [b8OutcomeReview, persistLatest, hydratedB8Snapshot]);
+
+  const effectiveB8Snapshot = hydratedB8Snapshot;
+  const effectiveB8OutcomeReview = hydratedB8OutcomeReview;
 
   const [bundle, setBundle] = useState<TrueMomentumPreviewEvidenceBundle | null>(
     initialBundle,
@@ -343,8 +476,8 @@ export function TrueMomentumPreviewEvidencePanel({
       evaluatedUniverse: universeSymbols ?? null,
       rankingMode: previewResult.status?.effective_mode ?? null,
       activeDeltaScale: 0.35,
-      b8Snapshot: b8Snapshot ?? null,
-      b8OutcomeReview: b8OutcomeReview ?? null,
+      b8Snapshot: effectiveB8Snapshot,
+      b8OutcomeReview: effectiveB8OutcomeReview,
       operatorReview: buildOperatorReview(),
     });
   }, [
@@ -352,8 +485,8 @@ export function TrueMomentumPreviewEvidencePanel({
     previewCount,
     candidates,
     universeSymbols,
-    b8Snapshot,
-    b8OutcomeReview,
+    effectiveB8Snapshot,
+    effectiveB8OutcomeReview,
     buildOperatorReview,
   ]);
 
@@ -445,8 +578,8 @@ export function TrueMomentumPreviewEvidencePanel({
       evaluatedUniverse: universeSymbols ?? null,
       rankingMode: previewResult?.status?.effective_mode ?? null,
       activeDeltaScale: 0.35,
-      b8Snapshot: b8Snapshot ?? null,
-      b8OutcomeReview: b8OutcomeReview ?? null,
+      b8Snapshot: effectiveB8Snapshot,
+      b8OutcomeReview: effectiveB8OutcomeReview,
       operatorReview: buildOperatorReview(),
       generatedAt: null,
     });
@@ -637,11 +770,31 @@ export function TrueMomentumPreviewEvidencePanel({
             <StatusBadge tone={bundle ? "good" : "neutral"}>
               {bundle ? "Bundle captured" : "No bundle captured yet"}
             </StatusBadge>
-            <StatusBadge tone={livePreview.b8_snapshot_present ? "good" : "neutral"}>
-              B8 snapshot: {livePreview.b8_snapshot_present ? "linked" : "not linked"}
+            <StatusBadge
+              tone={
+                livePreview.b8_snapshot_link_status === "linked"
+                  ? "good"
+                  : livePreview.b8_snapshot_link_status === "mismatch"
+                    ? "warn"
+                    : "neutral"
+              }
+              data-testid="true-momentum-preview-evidence-snapshot-status-badge"
+            >
+              B8 snapshot: {livePreview.b8_snapshot_link_status}
             </StatusBadge>
-            <StatusBadge tone={livePreview.b8_outcome_review_present ? "good" : "neutral"}>
-              B8 outcome review: {livePreview.b8_outcome_review_present ? "linked" : "not linked"}
+            <StatusBadge
+              tone={
+                livePreview.b8_outcome_review_link_status === "linked"
+                  ? "good"
+                  : livePreview.b8_outcome_review_link_status === "mismatch"
+                    ? "warn"
+                    : livePreview.b8_outcome_review_link_status === "partial"
+                      ? "warn"
+                      : "neutral"
+              }
+              data-testid="true-momentum-preview-evidence-outcome-status-badge"
+            >
+              B8 outcome review: {livePreview.b8_outcome_review_link_status}
             </StatusBadge>
           </div>
           <div className="op-row" style={{ flexWrap: "wrap", gap: 6 }}>
@@ -689,14 +842,104 @@ export function TrueMomentumPreviewEvidencePanel({
           </div>
           <div style={SUMMARY_CARD_STYLE}>
             <span style={SUMMARY_LABEL_STYLE}>B8 snapshot</span>
-            <span style={SUMMARY_VALUE_STYLE}>{summary.b8_snapshot_present ? "yes" : "no"}</span>
+            <span
+              style={SUMMARY_VALUE_STYLE}
+              data-testid="true-momentum-preview-evidence-summary-snapshot"
+            >
+              {summary.b8_snapshot_link_status}
+            </span>
           </div>
           <div style={SUMMARY_CARD_STYLE}>
             <span style={SUMMARY_LABEL_STYLE}>B8 outcome review</span>
-            <span style={SUMMARY_VALUE_STYLE}>
-              {summary.b8_outcome_review_present ? "yes" : "no"}
+            <span
+              style={SUMMARY_VALUE_STYLE}
+              data-testid="true-momentum-preview-evidence-summary-outcome"
+            >
+              {summary.b8_outcome_review_link_status}
             </span>
           </div>
+          {livePreview.b8_outcome_reviewed_count != null ? (
+            <div style={SUMMARY_CARD_STYLE}>
+              <span style={SUMMARY_LABEL_STYLE}>Reviewed candidates</span>
+              <span
+                style={SUMMARY_VALUE_STYLE}
+                data-testid="true-momentum-preview-evidence-summary-reviewed"
+              >
+                {livePreview.b8_outcome_reviewed_count}
+              </span>
+            </div>
+          ) : null}
+          {livePreview.b8_outcome_summary ? (
+            <div style={SUMMARY_CARD_STYLE}>
+              <span style={SUMMARY_LABEL_STYLE}>Unclear outcomes</span>
+              <span
+                style={SUMMARY_VALUE_STYLE}
+                data-testid="true-momentum-preview-evidence-summary-unclear"
+              >
+                {livePreview.b8_outcome_summary.unclear_count}
+              </span>
+            </div>
+          ) : null}
+        </div>
+
+        <div
+          data-testid="true-momentum-preview-evidence-b8-link"
+          className="op-stack"
+          style={{ gap: 4 }}
+        >
+          <p
+            style={NOTE_STYLE}
+            data-testid="true-momentum-preview-evidence-b8-link-snapshot"
+          >
+            {livePreview.b8_snapshot_link_status === "linked"
+              ? `Linked to current Momentum Trial Journal snapshot${
+                  livePreview.b8_snapshot_generated_at
+                    ? ` (captured ${livePreview.b8_snapshot_generated_at})`
+                    : ""
+                }.`
+              : livePreview.b8_snapshot_link_status === "mismatch"
+                ? "A B8 snapshot exists, but it belongs to a different queue."
+                : "No B8 snapshot linked. Capture a Momentum Trial Journal snapshot for this queue."}
+          </p>
+          <p
+            style={NOTE_STYLE}
+            data-testid="true-momentum-preview-evidence-b8-link-outcome"
+          >
+            {livePreview.b8_outcome_review_link_status === "linked"
+              ? `B8 outcome review linked${
+                  livePreview.b8_outcome_generated_at
+                    ? ` (authored ${livePreview.b8_outcome_generated_at})`
+                    : ""
+                }.`
+              : livePreview.b8_outcome_review_link_status === "partial"
+                ? "Outcome review linked, but most outcomes are still unclear."
+                : livePreview.b8_outcome_review_link_status === "mismatch"
+                  ? "A B8 outcome review exists, but it belongs to a different queue."
+                  : "No B8 outcome review captured yet for this queue."}
+          </p>
+          {livePreview.b8_outcome_summary &&
+          livePreview.b8_outcome_review_link_status !== "missing" ? (
+            <p
+              style={NOTE_STYLE}
+              data-testid="true-momentum-preview-evidence-b8-link-outcome-counts"
+            >
+              Outcome counts — worked: {livePreview.b8_outcome_summary.worked_count} ·
+              missed: {livePreview.b8_outcome_summary.missed_count} · too aggressive:{" "}
+              {livePreview.b8_outcome_summary.too_aggressive_count} · good warnings:{" "}
+              {livePreview.b8_outcome_summary.good_warning_count} · false warnings:{" "}
+              {livePreview.b8_outcome_summary.false_warning_count} · needs ToS parity:{" "}
+              {livePreview.b8_outcome_summary.needs_tos_parity_check_count} · unclear:{" "}
+              {livePreview.b8_outcome_summary.unclear_count}
+            </p>
+          ) : null}
+          {livePreview.b8_link_warning ? (
+            <p
+              style={{ ...NOTE_STYLE, color: "var(--op-warn-text, #d6a25b)" }}
+              data-testid="true-momentum-preview-evidence-b8-link-warning"
+            >
+              {livePreview.b8_link_warning}
+            </p>
+          ) : null}
         </div>
 
         <label

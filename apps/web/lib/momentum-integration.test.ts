@@ -1075,6 +1075,100 @@ describe("Momentum Intelligence Phase C2 preview-evidence guards", () => {
   });
 });
 
+describe("Momentum Intelligence Phase C2.1 — B8 link + duplicate-guardrail guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("C2 evidence panel rehydrates B7/B8 from localStorage via the lib's storage keys", () => {
+    const view = read(
+      "components/recommendations/true-momentum-preview-evidence-panel.tsx",
+    );
+    // The panel pulls the B7 snapshot + B8 outcome storage keys from
+    // the lib modules so all three surfaces agree on the keys.
+    expect(view).toContain("MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY");
+    expect(view).toContain("MOMENTUM_TRIAL_OUTCOME_STORAGE_KEY");
+    expect(view).toContain("validateMomentumTrialSnapshot");
+    expect(view).toContain("validateMomentumTrialOutcomeReview");
+    expect(view).toContain("readPersistedB8Snapshot");
+    expect(view).toContain("readPersistedB8OutcomeReview");
+    // Lib carries the canonical signature helper + link-status union.
+    const lib = read("lib/true-momentum-preview-evidence.ts");
+    expect(lib).toContain("computeMomentumQueueSignature");
+    expect(lib).toContain("b8_snapshot_link_status");
+    expect(lib).toContain("b8_outcome_review_link_status");
+  });
+
+  it("C1 preview panel does not duplicate the deterministic note when the evidence panel is mounted", () => {
+    const source = read(
+      "components/recommendations/true-momentum-strategy-preview-panel.tsx",
+    );
+    // The trailing C1 deterministic note + still-pending caveat now
+    // only render when no previews exist (the evidence panel covers
+    // both lines whenever it is mounted).
+    expect(source).toContain(
+      "previews.length === 0 ? (",
+    );
+    expect(source).toContain("true-momentum-strategy-preview-deterministic-note");
+  });
+
+  it("C2 evidence panel stays out of order / paper / replay / options-paper routes (C2.1 re-guard)", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/components/recommendations/true-momentum-preview-evidence-panel",
+      "TrueMomentumPreviewEvidencePanel",
+      "buildTrueMomentumPreviewEvidenceBundle",
+      "computeMomentumQueueSignature",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("C2.1 surfaces avoid forbidden trade-action / queue-generation / approval / order-routing language", () => {
+    const surfaces = [
+      "lib/true-momentum-preview-evidence.ts",
+      "components/recommendations/true-momentum-preview-evidence-panel.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "promote to recommendation",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered).not.toContain(phrase);
+      }
+      expect(lowered).not.toContain("generates queue candidates");
+    }
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

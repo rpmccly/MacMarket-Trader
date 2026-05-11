@@ -38,6 +38,18 @@ export const TRUE_MOMENTUM_PREVIEW_EVIDENCE_STORAGE_KEY =
 
 export type TrueMomentumPreviewEvidenceUniverseKind = "evaluated" | "captured";
 
+// Phase C2.1 — B8 link-status union.
+export type TrueMomentumPreviewEvidenceSnapshotLinkStatus =
+  | "linked"
+  | "missing"
+  | "mismatch";
+
+export type TrueMomentumPreviewEvidenceOutcomeLinkStatus =
+  | "linked"
+  | "missing"
+  | "mismatch"
+  | "partial";
+
 export type TrueMomentumPreviewEvidenceReviewTag =
   | "research_candidate"
   | "watchlist_only"
@@ -168,6 +180,24 @@ export type TrueMomentumPreviewEvidenceFamilyCounts = {
   reversal_watch_count: number;
 };
 
+/**
+ * Compact per-tag outcome summary extracted from a Phase B8 outcome
+ * review. Mirrors the keys of the full ``MomentumTrialOutcomeSummary``
+ * but only carries the tag counts a Phase C2.1 export needs.
+ */
+export type TrueMomentumPreviewEvidenceOutcomeSummary = {
+  candidate_count: number;
+  worked_count: number;
+  missed_count: number;
+  too_aggressive_count: number;
+  good_warning_count: number;
+  false_warning_count: number;
+  watchlist_only_count: number;
+  needs_tos_parity_check_count: number;
+  ignored_count: number;
+  unclear_count: number;
+};
+
 export type TrueMomentumPreviewEvidenceBundle = {
   schema_version: typeof TRUE_MOMENTUM_PREVIEW_EVIDENCE_SCHEMA_VERSION;
   generated_at: string;
@@ -188,8 +218,25 @@ export type TrueMomentumPreviewEvidenceBundle = {
   trade_warning_count: number;
   operational_caveat_count: number;
   score_consistency_corrected_count: number;
+  // Phase C2 presence flags — kept for back-compat with the previous
+  // C2 bundle shape. Phase C2.1 adds the richer ``link_status`` fields
+  // below; a row can be ``present: true`` but ``link_status: "mismatch"``
+  // if the captured snapshot belongs to a different queue signature.
   b8_snapshot_present: boolean;
   b8_outcome_review_present: boolean;
+  // Phase C2.1 link-status surface.
+  b8_snapshot_linked: boolean;
+  b8_outcome_review_linked: boolean;
+  b8_snapshot_link_status: TrueMomentumPreviewEvidenceSnapshotLinkStatus;
+  b8_outcome_review_link_status: TrueMomentumPreviewEvidenceOutcomeLinkStatus;
+  b8_snapshot_generated_at: string | null;
+  b8_outcome_generated_at: string | null;
+  b8_snapshot_candidate_count: number | null;
+  b8_outcome_reviewed_count: number | null;
+  b8_outcome_summary: TrueMomentumPreviewEvidenceOutcomeSummary | null;
+  linked_b8_snapshot_schema_version: string | null;
+  linked_b8_outcome_schema_version: string | null;
+  b8_link_warning: string | null;
   family_summaries: TrueMomentumPreviewEvidenceFamilySummary[];
   preview_candidates: TrueMomentumPreviewEvidenceCandidate[];
   operator_review: TrueMomentumPreviewEvidenceOperatorReview;
@@ -209,6 +256,12 @@ export type TrueMomentumPreviewEvidenceSummary = {
   score_consistency_corrected_count: number;
   b8_snapshot_present: boolean;
   b8_outcome_review_present: boolean;
+  // Phase C2.1 — link-status surface mirrors the bundle.
+  b8_snapshot_linked: boolean;
+  b8_outcome_review_linked: boolean;
+  b8_snapshot_link_status: TrueMomentumPreviewEvidenceSnapshotLinkStatus;
+  b8_outcome_review_link_status: TrueMomentumPreviewEvidenceOutcomeLinkStatus;
+  b8_link_warning: string | null;
 };
 
 export type TrueMomentumPreviewEvidenceExportPayload = {
@@ -341,6 +394,207 @@ function dedupeSymbols(values: ReadonlyArray<string>): string[] {
     out.push(upper);
   }
   return out;
+}
+
+// ── Phase C2.1 — shared queue signature + B8 link resolver ───────────
+
+type QueueRowLike = {
+  symbol?: string;
+  strategy?: string;
+  rank?: number | null;
+};
+
+/**
+ * Compute a stable queue signature from any iterable of rows that
+ * carry ``symbol`` / ``strategy`` / ``rank`` fields. Works for the
+ * live ``QueueCandidate[]`` shape and for the
+ * ``MomentumTrialSnapshot.candidates`` shape (which mirrors those
+ * fields). Sorted by rank so reorder-free re-renders produce the
+ * same signature.
+ */
+export function computeMomentumQueueSignature(
+  rows: ReadonlyArray<QueueRowLike> | null | undefined,
+): string {
+  if (!Array.isArray(rows) || rows.length === 0) return "empty";
+  const parts: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const symbol = typeof row.symbol === "string" ? row.symbol.trim() : "";
+    const strategy = typeof row.strategy === "string" ? row.strategy.trim() : "";
+    const rank = sanitizeFinite(row.rank, 0);
+    if (!symbol && !strategy && rank === 0) continue;
+    parts.push(`${rank}::${symbol}::${strategy}`);
+  }
+  if (parts.length === 0) return "empty";
+  return parts.sort().join("|");
+}
+
+type B8LinkResolution = {
+  snapshot_link_status: TrueMomentumPreviewEvidenceSnapshotLinkStatus;
+  outcome_link_status: TrueMomentumPreviewEvidenceOutcomeLinkStatus;
+  snapshot_generated_at: string | null;
+  outcome_generated_at: string | null;
+  snapshot_candidate_count: number | null;
+  outcome_reviewed_count: number | null;
+  outcome_summary: TrueMomentumPreviewEvidenceOutcomeSummary | null;
+  linked_snapshot_schema_version: string | null;
+  linked_outcome_schema_version: string | null;
+  link_warning: string | null;
+};
+
+function snapshotSignature(
+  snapshot: { candidates?: unknown } | null | undefined,
+): string | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const candidates = (snapshot as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) return null;
+  return computeMomentumQueueSignature(candidates as ReadonlyArray<QueueRowLike>);
+}
+
+function outcomeSummaryFromReview(
+  review: { candidate_outcomes?: unknown } | null | undefined,
+): TrueMomentumPreviewEvidenceOutcomeSummary | null {
+  if (!review || typeof review !== "object") return null;
+  const outcomes = (review as { candidate_outcomes?: unknown }).candidate_outcomes;
+  if (!Array.isArray(outcomes)) return null;
+  const summary: TrueMomentumPreviewEvidenceOutcomeSummary = {
+    candidate_count: 0,
+    worked_count: 0,
+    missed_count: 0,
+    too_aggressive_count: 0,
+    good_warning_count: 0,
+    false_warning_count: 0,
+    watchlist_only_count: 0,
+    needs_tos_parity_check_count: 0,
+    ignored_count: 0,
+    unclear_count: 0,
+  };
+  for (const raw of outcomes) {
+    if (!raw || typeof raw !== "object") continue;
+    summary.candidate_count += 1;
+    const tag = (raw as { tag?: string }).tag;
+    switch (tag) {
+      case "worked":
+        summary.worked_count += 1;
+        break;
+      case "missed":
+        summary.missed_count += 1;
+        break;
+      case "too_aggressive":
+        summary.too_aggressive_count += 1;
+        break;
+      case "good_warning":
+        summary.good_warning_count += 1;
+        break;
+      case "false_warning":
+        summary.false_warning_count += 1;
+        break;
+      case "watchlist_only":
+        summary.watchlist_only_count += 1;
+        break;
+      case "needs_tos_parity_check":
+        summary.needs_tos_parity_check_count += 1;
+        break;
+      case "ignored":
+        summary.ignored_count += 1;
+        break;
+      default:
+        summary.unclear_count += 1;
+        break;
+    }
+  }
+  return summary;
+}
+
+function resolveB8Link(
+  queueSignature: string,
+  b8Snapshot: MomentumTrialSnapshot | null | undefined,
+  b8OutcomeReview: MomentumTrialOutcomeReview | null | undefined,
+): B8LinkResolution {
+  const snapshotSig = snapshotSignature(b8Snapshot ?? null);
+  const reviewSnapshotSig = snapshotSignature(b8OutcomeReview?.snapshot ?? null);
+  const snapshotPresent = !!b8Snapshot && snapshotSig !== null;
+  const reviewPresent = !!b8OutcomeReview && reviewSnapshotSig !== null;
+
+  let snapshot_link_status: TrueMomentumPreviewEvidenceSnapshotLinkStatus = "missing";
+  if (snapshotPresent) {
+    snapshot_link_status = snapshotSig === queueSignature ? "linked" : "mismatch";
+  }
+
+  let outcome_link_status: TrueMomentumPreviewEvidenceOutcomeLinkStatus = "missing";
+  if (reviewPresent) {
+    outcome_link_status =
+      reviewSnapshotSig === queueSignature ? "linked" : "mismatch";
+  }
+
+  const outcome_summary = outcomeSummaryFromReview(b8OutcomeReview ?? null);
+  if (outcome_link_status === "linked" && outcome_summary) {
+    // "Partial" when the operator has not yet tagged anything beyond
+    // the default ``unclear``.
+    const tagged =
+      outcome_summary.candidate_count - outcome_summary.unclear_count;
+    if (outcome_summary.candidate_count === 0 || tagged === 0) {
+      outcome_link_status = "partial";
+    }
+  }
+
+  let link_warning: string | null = null;
+  if (snapshot_link_status === "mismatch") {
+    link_warning =
+      "A B8 snapshot exists, but it belongs to a different queue. " +
+      "Capture a Momentum Trial Journal snapshot for the current queue to link them.";
+  } else if (outcome_link_status === "mismatch") {
+    link_warning =
+      "A B8 outcome review exists, but it was authored against a different queue. " +
+      "Tag outcomes against the current queue's snapshot to link them.";
+  } else if (outcome_link_status === "partial") {
+    link_warning =
+      "Outcome review linked, but most outcomes are still unclear. " +
+      "Tag at least one candidate in B8 to mark this as actively reviewed evidence.";
+  } else if (snapshot_link_status === "linked" && outcome_link_status === "missing") {
+    link_warning =
+      "B8 snapshot linked, but no outcome review has been captured yet for this queue.";
+  }
+
+  const snapshot_generated_at =
+    snapshotPresent && typeof b8Snapshot?.generated_at === "string"
+      ? b8Snapshot.generated_at
+      : null;
+  const outcome_generated_at =
+    reviewPresent && typeof b8OutcomeReview?.generated_at === "string"
+      ? b8OutcomeReview.generated_at
+      : null;
+
+  const snapshot_candidate_count =
+    snapshotPresent && Array.isArray(b8Snapshot?.candidates)
+      ? b8Snapshot.candidates.length
+      : null;
+  const outcome_reviewed_count =
+    reviewPresent && Array.isArray(b8OutcomeReview?.candidate_outcomes)
+      ? b8OutcomeReview.candidate_outcomes.length
+      : null;
+
+  const linked_snapshot_schema_version =
+    snapshotPresent && typeof b8Snapshot?.schema_version === "string"
+      ? b8Snapshot.schema_version
+      : null;
+  const linked_outcome_schema_version =
+    reviewPresent && typeof b8OutcomeReview?.schema_version === "string"
+      ? b8OutcomeReview.schema_version
+      : null;
+
+  return {
+    snapshot_link_status,
+    outcome_link_status,
+    snapshot_generated_at,
+    outcome_generated_at,
+    snapshot_candidate_count,
+    outcome_reviewed_count,
+    outcome_summary,
+    linked_snapshot_schema_version,
+    linked_outcome_schema_version,
+    link_warning,
+  };
 }
 
 // ── Candidate adapter ────────────────────────────────────────────────
@@ -632,6 +886,13 @@ export function buildTrueMomentumPreviewEvidenceBundle(
     0,
   );
 
+  const queueSignatureValue = computeMomentumQueueSignature(queueCandidates);
+  const b8 = resolveB8Link(
+    queueSignatureValue,
+    options.b8Snapshot ?? null,
+    options.b8OutcomeReview ?? null,
+  );
+
   return {
     schema_version: TRUE_MOMENTUM_PREVIEW_EVIDENCE_SCHEMA_VERSION,
     generated_at: generatedAt,
@@ -654,6 +915,19 @@ export function buildTrueMomentumPreviewEvidenceBundle(
     score_consistency_corrected_count,
     b8_snapshot_present: !!options.b8Snapshot,
     b8_outcome_review_present: !!options.b8OutcomeReview,
+    b8_snapshot_linked: b8.snapshot_link_status === "linked",
+    b8_outcome_review_linked:
+      b8.outcome_link_status === "linked" || b8.outcome_link_status === "partial",
+    b8_snapshot_link_status: b8.snapshot_link_status,
+    b8_outcome_review_link_status: b8.outcome_link_status,
+    b8_snapshot_generated_at: b8.snapshot_generated_at,
+    b8_outcome_generated_at: b8.outcome_generated_at,
+    b8_snapshot_candidate_count: b8.snapshot_candidate_count,
+    b8_outcome_reviewed_count: b8.outcome_reviewed_count,
+    b8_outcome_summary: b8.outcome_summary,
+    linked_b8_snapshot_schema_version: b8.linked_snapshot_schema_version,
+    linked_b8_outcome_schema_version: b8.linked_outcome_schema_version,
+    b8_link_warning: b8.link_warning,
     family_summaries: familySummaries,
     preview_candidates: evidenceCandidates,
     operator_review,
@@ -678,6 +952,11 @@ export function summarizeTrueMomentumPreviewEvidence(
       score_consistency_corrected_count: 0,
       b8_snapshot_present: false,
       b8_outcome_review_present: false,
+      b8_snapshot_linked: false,
+      b8_outcome_review_linked: false,
+      b8_snapshot_link_status: "missing",
+      b8_outcome_review_link_status: "missing",
+      b8_link_warning: null,
     };
   }
   return {
@@ -693,6 +972,11 @@ export function summarizeTrueMomentumPreviewEvidence(
     score_consistency_corrected_count: bundle.score_consistency_corrected_count,
     b8_snapshot_present: bundle.b8_snapshot_present,
     b8_outcome_review_present: bundle.b8_outcome_review_present,
+    b8_snapshot_linked: bundle.b8_snapshot_linked,
+    b8_outcome_review_linked: bundle.b8_outcome_review_linked,
+    b8_snapshot_link_status: bundle.b8_snapshot_link_status,
+    b8_outcome_review_link_status: bundle.b8_outcome_review_link_status,
+    b8_link_warning: bundle.b8_link_warning,
   };
 }
 
@@ -885,8 +1169,62 @@ export function buildTrueMomentumPreviewEvidenceMarkdown(
     }`,
   );
   lines.push(
-    `- B8 snapshot linked: ${bundle.b8_snapshot_present ? "yes" : "no"} · B8 outcome review linked: ${bundle.b8_outcome_review_present ? "yes" : "no"}`,
+    `- B8 snapshot: \`${bundle.b8_snapshot_link_status}\` · B8 outcome review: \`${bundle.b8_outcome_review_link_status}\``,
   );
+  lines.push("");
+  lines.push("## Linked B8 Trial Evidence");
+  lines.push("");
+  if (bundle.b8_snapshot_link_status === "missing") {
+    lines.push(
+      "- B8 snapshot: missing — capture a Momentum Trial Journal snapshot for this queue.",
+    );
+  } else {
+    lines.push(
+      `- B8 snapshot: ${bundle.b8_snapshot_link_status}${
+        bundle.b8_snapshot_generated_at
+          ? ` (generated at \`${bundle.b8_snapshot_generated_at}\`)`
+          : ""
+      }${
+        bundle.b8_snapshot_candidate_count != null
+          ? ` · ${bundle.b8_snapshot_candidate_count} candidates`
+          : ""
+      }${
+        bundle.linked_b8_snapshot_schema_version
+          ? ` · schema \`${bundle.linked_b8_snapshot_schema_version}\``
+          : ""
+      }`,
+    );
+  }
+  if (bundle.b8_outcome_review_link_status === "missing") {
+    lines.push(
+      "- B8 outcome review: missing — tag outcomes for this snapshot in the Momentum Trial Outcome Review panel.",
+    );
+  } else {
+    lines.push(
+      `- B8 outcome review: ${bundle.b8_outcome_review_link_status}${
+        bundle.b8_outcome_generated_at
+          ? ` (generated at \`${bundle.b8_outcome_generated_at}\`)`
+          : ""
+      }${
+        bundle.b8_outcome_reviewed_count != null
+          ? ` · ${bundle.b8_outcome_reviewed_count} reviewed candidates`
+          : ""
+      }${
+        bundle.linked_b8_outcome_schema_version
+          ? ` · schema \`${bundle.linked_b8_outcome_schema_version}\``
+          : ""
+      }`,
+    );
+  }
+  if (bundle.b8_outcome_summary) {
+    const s = bundle.b8_outcome_summary;
+    lines.push(
+      `- Outcome counts — worked: ${s.worked_count} · missed: ${s.missed_count} · too aggressive: ${s.too_aggressive_count} · good warnings: ${s.good_warning_count} · false warnings: ${s.false_warning_count} · watchlist only: ${s.watchlist_only_count} · needs ToS parity: ${s.needs_tos_parity_check_count} · ignored: ${s.ignored_count} · unclear: ${s.unclear_count}`,
+    );
+  }
+  if (bundle.b8_link_warning) {
+    lines.push(`- Warning: ${bundle.b8_link_warning}`);
+  }
   lines.push("");
   lines.push("## Summary");
   lines.push("");

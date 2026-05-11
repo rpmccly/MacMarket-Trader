@@ -2061,6 +2061,84 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C2.1 — link B7/B8 trial evidence into the C2 bundle
+
+Phase C2.1 wires the existing Phase B7 trial-journal snapshot and the
+Phase B8 outcome review into the Phase C2 preview-evidence bundle.
+The C2 panel can now show whether the captured B8 evidence belongs to
+the current queue, the exported Markdown / JSON carry the linked B8
+metadata, and the previously-visible duplicate guardrail copy under
+the C1 panel is cleaned up.
+
+Still frontend-only and research-only. No backend write, no DB row,
+no migration, no LLM call. No Phase C activation. No ranking, queue
+sorting, approval, paper-order, replay, or options-preview behavior
+change.
+
+### Linkage model
+
+- `computeMomentumQueueSignature(rows)` (exported from
+  `apps/web/lib/true-momentum-preview-evidence.ts`) builds a stable
+  `rank::symbol::strategy` signature, sorted, from any iterable of
+  rows with those fields. Works for both live `QueueCandidate[]` and
+  for `MomentumTrialSnapshot.candidates`.
+- The C2 evidence panel rehydrates the latest B7 snapshot and B8
+  outcome review from `localStorage` (read-only) using the canonical
+  storage keys `macmarket.momentumTrial.latest` and
+  `macmarket.momentumTrial.outcome.latest`.
+- The C2 builder then computes:
+  - `b8_snapshot_link_status` — `linked` when the snapshot's
+    signature matches the live queue, `mismatch` when it differs, and
+    `missing` when no snapshot is available.
+  - `b8_outcome_review_link_status` — same matching plus a `partial`
+    status when the outcome review signature matches but every
+    candidate is still tagged `unclear`.
+  - `b8_snapshot_generated_at`, `b8_outcome_generated_at`,
+    `b8_snapshot_candidate_count`, `b8_outcome_reviewed_count`,
+    `b8_outcome_summary` (compact per-tag counts),
+    `linked_b8_snapshot_schema_version`,
+    `linked_b8_outcome_schema_version`, and a human-readable
+    `b8_link_warning`.
+
+### UI changes
+
+- B8 snapshot + outcome-review badges now show the resolved status
+  string (`linked` / `missing` / `mismatch` / `partial`) and tone the
+  badge accordingly.
+- A short, operator-readable copy line summarizes the snapshot +
+  outcome state directly under the summary cards
+  ("Linked to current Momentum Trial Journal snapshot…",
+  "A B8 snapshot exists, but it belongs to a different queue.", etc.).
+- When linked, the snapshot timestamp + compact outcome counts
+  (worked / missed / too aggressive / good warning / false warning /
+  needs ToS parity / unclear) are surfaced inline.
+- The C1 preview panel suppresses its trailing deterministic note +
+  "Still pending" caveat whenever the C2 evidence panel is mounted
+  (i.e. when previews exist). The C2 panel is the canonical owner of
+  both lines while it is visible; this removes the previously-visible
+  duplicate guardrail copy.
+- Capture / export / clear buttons stay enabled regardless of B8
+  state.
+
+### Markdown / JSON export
+
+The Markdown export adds a "## Linked B8 Trial Evidence" section
+between the header bullets and the existing "## Summary" section,
+listing snapshot + outcome status, timestamps, candidate / reviewed
+counts, per-tag outcome counts, and any `b8_link_warning`. When no B8
+evidence is linked the section explicitly states "missing".
+
+The JSON export carries every new bundle field
+(`b8_snapshot_link_status`, `b8_outcome_review_link_status`,
+timestamps, counts, compact outcome summary, schema versions,
+`b8_link_warning`).
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Phase C2 — True Momentum research-preview evidence bundle
 
 Phase C2 wraps the Phase C1 classification into a deterministic

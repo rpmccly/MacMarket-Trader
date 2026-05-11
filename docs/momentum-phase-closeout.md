@@ -86,6 +86,16 @@ Under these values:
   current C1 classification + per-family / per-candidate notes and
   review tags. Local/export-only. Mounted inside the C1 preview panel
   whenever C1 matched at least one row.
+- **Phase C2.1 B7/B8 evidence linkage (feature implemented).**
+  The C2 panel now rehydrates the latest B7 trial snapshot + B8
+  outcome review from `localStorage`, computes a stable
+  `rank::symbol::strategy` signature, and surfaces
+  `linked` / `missing` / `mismatch` / `partial` link status with
+  recommended copy + per-tag outcome counts. The Markdown / JSON
+  exports include a "Linked B8 Trial Evidence" section. Duplicate
+  guardrail copy under the C1 panel is cleaned up — the C2 panel is
+  now the canonical owner of the deterministic research-only note
+  whenever it is mounted.
 
 ## Outstanding items
 

@@ -22,6 +22,8 @@ export const MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE =
 
 export const MOMENTUM_TRIAL_JOURNAL_VERSION = "phase_b7_1.v1";
 
+export const MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY = "macmarket.momentumTrial.latest";
+
 export type MomentumTrialCandidateClassification =
   | "active_positive"
   | "active_negative"

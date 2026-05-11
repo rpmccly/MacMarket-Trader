@@ -8,6 +8,7 @@ import {
   buildMomentumTrialMarkdown,
   buildMomentumTrialSnapshot,
   MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE,
+  MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY as MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY_LIB,
   momentumTrialUniverseLabel,
   sanitizeMomentumTrialNote,
   validateMomentumTrialSnapshot,
@@ -18,7 +19,10 @@ import { MomentumTrialOutcomeReviewPanel } from "@/components/recommendations/mo
 import { momentumRankingModeLabel } from "@/lib/momentum-ranking";
 import type { QueueCandidate } from "@/lib/recommendations";
 
-export const MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY = "macmarket.momentumTrial.latest";
+// Re-exported from the lib so existing component-level imports keep working.
+// The single source of truth lives in ``@/lib/momentum-trial-journal``.
+export const MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY =
+  MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY_LIB;
 
 const NOTE_STYLE: React.CSSProperties = {
   margin: 0,

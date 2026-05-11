@@ -17,10 +17,18 @@ vi.mock("@/components/operator-ui", async () => {
       ReactModule.createElement("div", { "data-testid": "empty" }, `${title} ${hint}`),
     ErrorState: ({ title, hint }: { title: string; hint: string }) =>
       ReactModule.createElement("div", { "data-testid": "error" }, `${title} ${hint}`),
-    StatusBadge: ({ tone, children }: { tone?: string; children: ReactNode }) =>
+    StatusBadge: ({
+      tone,
+      children,
+      ...rest
+    }: {
+      tone?: string;
+      children: ReactNode;
+      [key: string]: unknown;
+    }) =>
       ReactModule.createElement(
         "span",
-        { className: `op-badge op-badge-${tone ?? "neutral"}` },
+        { className: `op-badge op-badge-${tone ?? "neutral"}`, ...rest },
         children,
       ),
   };
@@ -33,6 +41,8 @@ import {
   type TrueMomentumPreviewEvidenceBundle,
 } from "@/lib/true-momentum-preview-evidence";
 import { buildTrueMomentumStrategyPreview } from "@/lib/true-momentum-strategy-preview";
+import { buildMomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
+import { buildMomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
 import type { TrueMomentumStrategyFamilyStatus } from "@/lib/true-momentum-strategy-families";
 import type {
   MomentumRankingContribution,
@@ -347,5 +357,129 @@ describe("TrueMomentumPreviewEvidencePanel — populated state", () => {
     expect(html).not.toContain("promote to recommendation");
     expect(html).not.toContain("approve trade");
     expect(html).not.toContain("place order");
+  });
+});
+
+describe("Phase C2.1 — B8 link status display", () => {
+  it("renders 'missing' badges + copy when no B8 evidence is provided", () => {
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+      />,
+    );
+    expect(html).toContain("B8 snapshot: missing");
+    expect(html).toContain("B8 outcome review: missing");
+    expect(html).toContain(
+      "No B8 snapshot linked. Capture a Momentum Trial Journal snapshot for this queue.",
+    );
+    expect(html).toContain("true-momentum-preview-evidence-snapshot-status-badge");
+    expect(html).toContain("true-momentum-preview-evidence-outcome-status-badge");
+  });
+
+  it("renders 'linked' copy + snapshot timestamp when B8 snapshot matches the queue", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+      />,
+    );
+    expect(html).toContain("B8 snapshot: linked");
+    expect(html).toContain("Linked to current Momentum Trial Journal snapshot");
+    expect(html).toContain(snapshot.generated_at);
+  });
+
+  it("renders 'mismatch' warning when snapshot signature differs from the live queue", () => {
+    const otherQueue = [
+      candidate({ rank: 1, symbol: "XLE" }),
+      candidate({ rank: 2, symbol: "XLF" }),
+    ];
+    const snapshot = buildMomentumTrialSnapshot(otherQueue);
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+      />,
+    );
+    expect(html).toContain("B8 snapshot: mismatch");
+    expect(html).toContain(
+      "A B8 snapshot exists, but it belongs to a different queue.",
+    );
+    expect(html).toContain("true-momentum-preview-evidence-b8-link-warning");
+  });
+
+  it("renders 'partial' outcome status copy when all outcomes are still unclear", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const review = buildMomentumTrialOutcomeReview(snapshot);
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+        b8OutcomeReview={review}
+      />,
+    );
+    expect(html).toContain("B8 outcome review: partial");
+    expect(html).toContain(
+      "Outcome review linked, but most outcomes are still unclear.",
+    );
+  });
+
+  it("renders outcome summary counts when a B8 outcome review is linked", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const defaults = buildMomentumTrialOutcomeReview(snapshot).candidate_outcomes;
+    const tagged = defaults.map((row, idx) =>
+      idx === 0 ? { ...row, tag: "worked" as const } : row,
+    );
+    const review = buildMomentumTrialOutcomeReview(snapshot, {
+      existingOutcomes: tagged,
+    });
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+        b8OutcomeReview={review}
+      />,
+    );
+    expect(html).toContain("B8 outcome review: linked");
+    expect(html).toContain("Outcome counts");
+    expect(html).toContain("worked: 1");
+    expect(html).toContain("true-momentum-preview-evidence-summary-reviewed");
+  });
+
+  it("capture + export buttons remain enabled when no B8 evidence is linked", () => {
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+      />,
+    );
+    expect(html).toContain("true-momentum-preview-evidence-capture");
+    expect(html).toContain("true-momentum-preview-evidence-download-markdown");
+    expect(html).toContain("true-momentum-preview-evidence-download-json");
+    expect(html).not.toMatch(/<button[^>]*disabled[^>]*data-testid="true-momentum-preview-evidence-capture"/);
+  });
+
+  it("renders the deterministic note exactly once", () => {
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+      />,
+    );
+    const occurrences =
+      html.split(TRUE_MOMENTUM_PREVIEW_EVIDENCE_DETERMINISTIC_NOTE).length - 1;
+    expect(occurrences).toBe(1);
   });
 });

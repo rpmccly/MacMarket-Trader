@@ -243,15 +243,30 @@ describe("TrueMomentumStrategyPreviewPanelView — research-preview state", () =
     expect(html).toContain("Operational caveats");
   });
 
-  it("renders the deterministic note + still-pending caveat copy", () => {
+  it("Phase C2.1 — suppresses the C1 deterministic note when the evidence panel is mounted (previews exist)", () => {
     const result = buildTrueMomentumStrategyPreview([candidate()], status());
+    const html = renderToStaticMarkup(
+      <TrueMomentumStrategyPreviewPanelView result={result} status={status()} />,
+    );
+    // The evidence panel is the canonical owner of the deterministic
+    // research-only note + still-pending caveat copy whenever it is
+    // mounted, so the C1 panel must not duplicate them.
+    expect(html).not.toContain(TRUE_MOMENTUM_STRATEGY_PREVIEW_DETERMINISTIC_NOTE);
+    // The evidence panel still renders its own (different) deterministic
+    // note + the shared still-pending caveat line.
+    expect(html).toContain(
+      "True Momentum preview evidence is research-only.",
+    );
+    expect(html).toContain("Still pending: accumulated B8 outcome evidence");
+  });
+
+  it("Phase C2.1 — keeps the C1 deterministic note when no previews matched", () => {
+    const result = buildTrueMomentumStrategyPreview([], status());
     const html = renderToStaticMarkup(
       <TrueMomentumStrategyPreviewPanelView result={result} status={status()} />,
     );
     expect(html).toContain(TRUE_MOMENTUM_STRATEGY_PREVIEW_DETERMINISTIC_NOTE);
     expect(html).toContain("Still pending: accumulated B8 outcome evidence");
-    expect(html).toContain("Thinkorswim fixture parity");
-    expect(html).toContain("operator authorization before any active Phase C");
   });
 
   it("never renders forbidden trade-action language", () => {

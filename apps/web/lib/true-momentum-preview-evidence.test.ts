@@ -4,6 +4,7 @@ import {
   buildTrueMomentumPreviewEvidenceBundle,
   buildTrueMomentumPreviewEvidenceJson,
   buildTrueMomentumPreviewEvidenceMarkdown,
+  computeMomentumQueueSignature,
   partitionTrueMomentumPreviewEvidenceByFamily,
   sanitizeTrueMomentumPreviewEvidenceNote,
   summarizeTrueMomentumPreviewEvidence,
@@ -17,6 +18,8 @@ import {
   validateTrueMomentumPreviewEvidenceBundle,
 } from "@/lib/true-momentum-preview-evidence";
 import { buildTrueMomentumStrategyPreview } from "@/lib/true-momentum-strategy-preview";
+import { buildMomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
+import { buildMomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
 import type { TrueMomentumStrategyFamilyStatus } from "@/lib/true-momentum-strategy-families";
 import type {
   MomentumRankingContribution,
@@ -414,6 +417,200 @@ describe("Markdown + JSON exports", () => {
       expect(md).not.toContain(phrase);
       expect(json).not.toContain(phrase);
     }
+  });
+});
+
+describe("Phase C2.1 — computeMomentumQueueSignature", () => {
+  it("returns a stable sorted signature for the queue rows", () => {
+    const a = computeMomentumQueueSignature(MIXED_QUEUE);
+    const reordered = [...MIXED_QUEUE].reverse();
+    const b = computeMomentumQueueSignature(reordered);
+    expect(a).toBe(b);
+    expect(a).toContain("XLK");
+    expect(a).toContain("IWM");
+  });
+
+  it("returns 'empty' for null/empty inputs", () => {
+    expect(computeMomentumQueueSignature(null)).toBe("empty");
+    expect(computeMomentumQueueSignature([])).toBe("empty");
+  });
+
+  it("degrades safely when fields are missing", () => {
+    const sig = computeMomentumQueueSignature([
+      { symbol: "XLK" } as never,
+      { strategy: "Event Continuation", rank: 2 } as never,
+    ]);
+    expect(sig.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Phase C2.1 — B8 snapshot link status", () => {
+  it("status missing when no snapshot is provided", () => {
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+    });
+    expect(bundle.b8_snapshot_link_status).toBe("missing");
+    expect(bundle.b8_snapshot_linked).toBe(false);
+    expect(bundle.b8_snapshot_generated_at).toBeNull();
+    expect(bundle.b8_snapshot_candidate_count).toBeNull();
+  });
+
+  it("status linked when snapshot signature matches the live queue", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+    });
+    expect(bundle.b8_snapshot_link_status).toBe("linked");
+    expect(bundle.b8_snapshot_linked).toBe(true);
+    expect(bundle.b8_snapshot_generated_at).toBe(snapshot.generated_at);
+    expect(bundle.b8_snapshot_candidate_count).toBe(MIXED_QUEUE.length);
+    expect(bundle.linked_b8_snapshot_schema_version).toBe("phase_b7_1.v1");
+  });
+
+  it("status mismatch when snapshot signature differs from the live queue", () => {
+    const otherQueue: QueueCandidate[] = [
+      candidate({ rank: 1, symbol: "XLE" }),
+      candidate({ rank: 2, symbol: "XLF" }),
+    ];
+    const snapshot = buildMomentumTrialSnapshot(otherQueue);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+    });
+    expect(bundle.b8_snapshot_link_status).toBe("mismatch");
+    expect(bundle.b8_snapshot_linked).toBe(false);
+    expect(bundle.b8_link_warning).not.toBeNull();
+    expect((bundle.b8_link_warning ?? "").toLowerCase()).toContain("different queue");
+  });
+});
+
+describe("Phase C2.1 — B8 outcome review link status", () => {
+  it("status partial when all outcomes remain unclear", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const review = buildMomentumTrialOutcomeReview(snapshot);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    expect(bundle.b8_outcome_review_link_status).toBe("partial");
+    expect(bundle.b8_outcome_review_linked).toBe(true);
+    expect(bundle.b8_outcome_reviewed_count).toBeGreaterThan(0);
+    expect(bundle.b8_link_warning?.toLowerCase()).toContain("most outcomes are still unclear");
+  });
+
+  it("status linked when at least one outcome is tagged beyond unclear", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const defaults = buildMomentumTrialOutcomeReview(snapshot).candidate_outcomes;
+    const tagged = defaults.map((row, idx) =>
+      idx === 0 ? { ...row, tag: "worked" as const } : row,
+    );
+    const review = buildMomentumTrialOutcomeReview(snapshot, {
+      existingOutcomes: tagged,
+    });
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    expect(bundle.b8_outcome_review_link_status).toBe("linked");
+    expect(bundle.b8_outcome_summary?.worked_count).toBe(1);
+    expect(bundle.b8_outcome_summary?.candidate_count).toBe(defaults.length);
+  });
+
+  it("status mismatch when outcome review's snapshot differs from current queue", () => {
+    const otherQueue: QueueCandidate[] = [
+      candidate({ rank: 1, symbol: "XLE" }),
+      candidate({ rank: 2, symbol: "XLF" }),
+    ];
+    const otherSnapshot = buildMomentumTrialSnapshot(otherQueue);
+    const review = buildMomentumTrialOutcomeReview(otherSnapshot);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8OutcomeReview: review,
+    });
+    expect(bundle.b8_outcome_review_link_status).toBe("mismatch");
+    expect(bundle.b8_outcome_review_linked).toBe(false);
+    expect(bundle.b8_link_warning?.toLowerCase()).toContain("different queue");
+  });
+
+  it("snapshot linked but outcome missing emits a friendly warning", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+    });
+    expect(bundle.b8_snapshot_link_status).toBe("linked");
+    expect(bundle.b8_outcome_review_link_status).toBe("missing");
+    expect(bundle.b8_link_warning?.toLowerCase()).toContain("no outcome review");
+  });
+});
+
+describe("Phase C2.1 — exports include linked B8 metadata", () => {
+  it("Markdown export emits a Linked B8 Trial Evidence section with timestamps and counts", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const review = buildMomentumTrialOutcomeReview(snapshot, {
+      existingOutcomes: snapshot.candidates.slice(0, 1).map((c) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: "worked" as const,
+        note: "",
+      })),
+    });
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    const md = buildTrueMomentumPreviewEvidenceMarkdown(bundle);
+    expect(md).toContain("## Linked B8 Trial Evidence");
+    expect(md).toContain("- B8 snapshot: linked");
+    expect(md).toContain("- B8 outcome review: linked");
+    expect(md).toContain(snapshot.generated_at);
+    expect(md).toContain("Outcome counts");
+  });
+
+  it("Markdown export says 'missing' when no B8 snapshot/review is linked", () => {
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+    });
+    const md = buildTrueMomentumPreviewEvidenceMarkdown(bundle);
+    expect(md).toContain("## Linked B8 Trial Evidence");
+    expect(md).toContain("- B8 snapshot: missing");
+    expect(md).toContain("- B8 outcome review: missing");
+  });
+
+  it("JSON export carries the new B8 link fields", () => {
+    const snapshot = buildMomentumTrialSnapshot(MIXED_QUEUE);
+    const review = buildMomentumTrialOutcomeReview(snapshot);
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    const json = buildTrueMomentumPreviewEvidenceJson(bundle);
+    const parsed = JSON.parse(json);
+    expect(parsed.bundle.b8_snapshot_link_status).toBe("linked");
+    expect(parsed.bundle.b8_outcome_review_link_status).toBe("partial");
+    expect(parsed.bundle.b8_snapshot_generated_at).toBe(snapshot.generated_at);
+    expect(parsed.bundle.linked_b8_snapshot_schema_version).toBe(
+      "phase_b7_1.v1",
+    );
+    expect(parsed.bundle.b8_outcome_summary).not.toBeNull();
+    expect(parsed.bundle.b8_link_warning).not.toBeNull();
+  });
+
+  it("summarize exposes link status + warning", () => {
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {
+      queueCandidates: MIXED_QUEUE,
+    });
+    const summary = summarizeTrueMomentumPreviewEvidence(bundle);
+    expect(summary.b8_snapshot_link_status).toBe("missing");
+    expect(summary.b8_outcome_review_link_status).toBe("missing");
+    expect(summary.b8_snapshot_linked).toBe(false);
+    expect(summary.b8_outcome_review_linked).toBe(false);
   });
 });
 

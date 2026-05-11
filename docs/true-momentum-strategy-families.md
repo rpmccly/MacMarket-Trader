@@ -316,6 +316,96 @@ backend write, no DB row, no migration, no LLM call.
 - Real Thinkorswim fixture parity.
 - Operator authorization before any active Phase C.
 
+## Phase C2.1 — link B7/B8 trial evidence into the C2 bundle
+
+Phase C2.1 wires the existing Phase B7 trial-journal snapshot and the
+Phase B8 outcome review into the Phase C2 preview-evidence bundle.
+The C2 panel can now show whether the captured B8 evidence belongs to
+the current queue, and the exported Markdown / JSON carry the linked
+B8 metadata.
+
+It is still **frontend-only and research-only**. No backend write, no
+DB row, no migration, no LLM call. No active Phase C activation. No
+ranking / queue-sorting / approval / paper-order / replay / options
+behavior change.
+
+### What it does
+
+- Adds a shared `computeMomentumQueueSignature` helper that builds a
+  stable `rank::symbol::strategy` signature from any iterable of rows
+  (live `QueueCandidate[]` or `MomentumTrialSnapshot.candidates`).
+  Sorted so reorder-free re-renders produce the same signature.
+- The C2 evidence panel rehydrates the latest B7 snapshot and B8
+  outcome review from `localStorage` (read-only — never writes back)
+  using the canonical storage keys
+  (`macmarket.momentumTrial.latest` / `macmarket.momentumTrial.outcome.latest`).
+- The C2 bundle gains
+  `b8_snapshot_link_status` (`linked` / `missing` / `mismatch`) and
+  `b8_outcome_review_link_status`
+  (`linked` / `missing` / `mismatch` / `partial`) plus
+  `b8_snapshot_generated_at`, `b8_outcome_generated_at`,
+  `b8_snapshot_candidate_count`, `b8_outcome_reviewed_count`,
+  `b8_outcome_summary` (compact per-tag counts),
+  `linked_b8_snapshot_schema_version`,
+  `linked_b8_outcome_schema_version`, and a
+  human-readable `b8_link_warning`. Existing `b8_snapshot_present` /
+  `b8_outcome_review_present` boolean flags are preserved for
+  back-compat.
+- The "partial" outcome status fires when the outcome review snapshot
+  signature matches but every candidate outcome is still tagged
+  `unclear`.
+
+### UI changes
+
+- The B8 snapshot + B8 outcome review badges now show the resolved
+  status (`linked` / `missing` / `mismatch` / `partial`) rather than
+  a binary "yes / no".
+- Two short copy lines summarize the snapshot + outcome status with
+  the recommended operator copy
+  ("Linked to current Momentum Trial Journal snapshot…",
+  "A B8 snapshot exists, but it belongs to a different queue.", etc.).
+- When linked, the snapshot timestamp + per-tag outcome counts are
+  surfaced inline.
+- The C1 preview panel now suppresses its trailing deterministic note
+  + "Still pending" caveat line whenever the C2 evidence panel is
+  mounted (i.e. when previews exist). The C2 panel already renders
+  both lines as the canonical owner; this removes the previously
+  visible duplicate guardrail copy.
+- Capture / export / clear buttons remain enabled regardless of B8
+  state — Phase C2.1 never blocks the operator on missing B8 evidence.
+
+### Markdown / JSON export
+
+- A new Markdown section "## Linked B8 Trial Evidence" appears between
+  the header bullets and the existing "## Summary" section. It
+  enumerates B8 snapshot + outcome status + timestamps + candidate
+  counts + per-tag outcome counts, with an explicit "missing" line
+  when no B8 evidence is available, and the resolved
+  `b8_link_warning` text when applicable.
+- The JSON export carries every new bundle field
+  (`b8_snapshot_link_status`, `b8_outcome_review_link_status`,
+  timestamps, candidate / reviewed counts, compact outcome summary,
+  schema versions, warning).
+
+### What it does NOT do
+
+- No backend mutation.
+- No DB row, no migration, no LLM call, no provider / market-data
+  call.
+- No new queue candidates.
+- No ranking math change.
+- No queue sorting change.
+- No approval / promote / save / paper-order / settle / replay /
+  options-preview behavior change.
+- No Phase C activation. `MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=active`
+  remains reserved.
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —
