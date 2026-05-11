@@ -2323,9 +2323,15 @@ Under these values:
   and update `manifest.json`. Once a fixture passes, flip
   `parity_required_for_active` to `True` so active mode requires
   measured parity rather than operator discretion alone.
-- **Active trial outcome tagging / review.** The Phase B7 trial
-  journal captures evidence locally; a future iteration may add
-  operator-side tagging of outcomes against captured snapshots.
+- **Accumulated B8 outcome evidence corpus.** The Phase B8 Active
+  Momentum Trial Outcome Review feature is implemented — operators can
+  tag captured Phase B7 snapshots per-candidate (worked, missed, too
+  aggressive, good warning, false warning, watchlist only, needs ToS
+  parity check, ignored, unclear) and export the review as
+  Markdown / JSON. What still remains pending is the *accumulated
+  corpus* of exported B8 reviews across a representative sector /
+  regime mix — that corpus is one of the prerequisites for any future
+  Phase C1 activation.
 - **Phase C strategy-family implementation.** Phase C0 (scaffolding)
   is documented in
   [`docs/true-momentum-strategy-families.md`](true-momentum-strategy-families.md);

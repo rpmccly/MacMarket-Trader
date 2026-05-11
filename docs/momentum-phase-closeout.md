@@ -59,22 +59,32 @@ Under these values:
 - Paper-order creation remains manual.
 - Parity pending is visible on every surface.
 
+## Implemented (Phase B closeout + B8)
+
+- Phase A/B closeout — see the layer charter.
+- **Phase B8 Active Momentum Trial Outcome Review (feature
+  implemented).** Operators tag each captured Phase B7 snapshot
+  per-candidate (`worked` / `missed` / `too_aggressive` /
+  `good_warning` / `false_warning` / `watchlist_only` /
+  `needs_tos_parity_check` / `ignored` / `unclear`), record a
+  session-level global conclusion, and export the review as
+  Markdown / JSON. Local/export-only (no backend persistence, no DB
+  row, no DB migration). The review surface lives in the
+  Recommendations workspace directly under the Trial Journal snapshot.
+
 ## Outstanding items
 
-1. Real Thinkorswim parity fixtures.
-2. ~~Active-trial outcome tagging / review of the trial journal.~~
-   **Phase B8 ships the active trial outcome review** — the next
-   evidence loop after B7. Operators can now tag each captured
-   candidate (`worked` / `missed` / `too_aggressive` / `good_warning` /
-   `false_warning` / `watchlist_only` / `needs_tos_parity_check` /
-   `ignored` / `unclear`), record a session-level global conclusion,
-   and export the review as Markdown / JSON. Still local/export-only
-   (no backend persistence, no DB row).
-3. Phase C strategy-family implementation (specs in Phase C0;
-   activation deferred). **C1 should wait for the Phase B8 outcome
-   evidence corpus and the real Thinkorswim parity review before
-   any activation is authorized.**
-4. Possible Thinkorswim review for XLY / XLE / XLV differences
+1. **Real Thinkorswim parity fixtures.** Land measured fixtures in
+   `tests/fixtures/thinkorswim_momentum/` and update `manifest.json`.
+2. **Accumulated B8 outcome evidence corpus.** The B8 feature itself
+   is implemented — what remains pending is enough exported B8
+   outcome reviews across a representative sector / regime mix to
+   support a Phase C1 go/no-go review.
+3. **Phase C strategy-family implementation.** Phase C0 specs are
+   scaffold-only and disabled by default. **C1 should wait for the
+   accumulated B8 outcome evidence corpus and the real Thinkorswim
+   parity review before any activation is authorized.**
+4. **Possible Thinkorswim review for XLY / XLE / XLV differences**
    before Phase C activation.
 
 ## Phase C posture

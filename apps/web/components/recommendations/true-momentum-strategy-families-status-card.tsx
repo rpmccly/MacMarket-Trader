@@ -242,7 +242,14 @@ export function TrueMomentumStrategyFamiliesStatusCardView({
         </p>
 
         <p style={NOTE_STYLE} data-testid="true-momentum-still-pending">
-          Still pending: Thinkorswim fixture parity · active trial outcome review.
+          {"Still pending: Thinkorswim fixture parity · accumulated B8 outcome evidence."}{" "}
+          {"Phase C0 remains scaffold-only; True Momentum strategy families do not generate queue candidates and do not approve, reject, size, or route trades."}{" "}
+          {"Paper-order creation remains manual."}
+        </p>
+        <p style={NOTE_STYLE} data-testid="true-momentum-b8-evidence-pointer">
+          Capture and tag B8 outcome evidence in{" "}
+          <a href="/recommendations">Recommendations</a> after taking a Momentum
+          Trial Journal snapshot.
         </p>
       </div>
     </Card>

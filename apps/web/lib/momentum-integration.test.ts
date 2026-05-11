@@ -706,6 +706,96 @@ describe("Momentum Intelligence Phase B8 outcome review guards", () => {
   });
 });
 
+describe("Momentum Intelligence Phase B8.1 copy polish guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase C0 Settings card names accumulated B8 outcome evidence as pending, not the feature itself", () => {
+    const view = read(
+      "components/recommendations/true-momentum-strategy-families-status-card.tsx",
+    );
+    expect(view).toContain("accumulated B8 outcome evidence");
+    // The previous wording implied B8 itself was unimplemented. After
+    // B8.1 the card must not claim "active trial outcome review" is
+    // pending — that feature ships.
+    expect(view).not.toMatch(/active trial outcome review/i);
+  });
+
+  it("Phase C0 Settings card carries a pointer to Recommendations for B8 evidence", () => {
+    const view = read(
+      "components/recommendations/true-momentum-strategy-families-status-card.tsx",
+    );
+    expect(view).toContain("true-momentum-b8-evidence-pointer");
+    expect(view).toContain("Capture and tag B8 outcome evidence in");
+    expect(view).toContain('href="/recommendations"');
+  });
+
+  it("Phase C0 Settings card still records the scaffold-only / no-queue / no-approval posture", () => {
+    const view = read(
+      "components/recommendations/true-momentum-strategy-families-status-card.tsx",
+    );
+    expect(view).toContain("Phase C0 remains scaffold-only");
+    expect(view).toContain("do not generate queue candidates");
+    expect(view).toContain("do not approve, reject,");
+    expect(view).toContain("Paper-order creation remains manual.");
+  });
+
+  it("Phase C0 / B8 copy across helper + component avoids forbidden action language", () => {
+    const surfaces = [
+      "lib/true-momentum-strategy-families.ts",
+      "components/recommendations/true-momentum-strategy-families-status-card.tsx",
+      "lib/momentum-trial-outcomes.ts",
+      "components/recommendations/momentum-trial-outcome-review.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("Phase C0 status card stays out of order/paper/replay/options-paper routes (B8.1 re-guard)", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/components/recommendations/true-momentum-strategy-families-status-card",
+      "TrueMomentumStrategyFamiliesStatusCard",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

@@ -204,3 +204,59 @@ def test_layer_doc_links_to_phase_c_doc() -> None:
     body = _read(LAYER_DOC)
     assert "true-momentum-strategy-families.md" in body
     assert "momentum-phase-closeout.md" in body
+
+
+# ── Phase B8.1 copy polish: B8 feature implemented, evidence corpus pending ──
+
+
+def test_layer_doc_records_b8_feature_implemented() -> None:
+    body = _read(LAYER_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    # The Phase B8 section names the feature explicitly and the
+    # Outstanding-items list must not claim the active trial outcome
+    # review itself is unimplemented.
+    assert "phase b8 — active momentum trial outcome review" in lowered
+    assert (
+        "accumulated b8 outcome evidence" in lowered
+        or ("accumulated corpus" in lowered and "phase b8" in lowered)
+    )
+
+
+def test_layer_doc_does_not_imply_b8_feature_is_missing() -> None:
+    # After B8.1 the Outstanding section must not include a bullet that
+    # implies the review feature itself is still TODO.
+    section = _layer_closeout_section().lower()
+    assert "active trial outcome tagging" not in section
+    assert "may add operator-side tagging" not in section
+
+
+def test_closeout_doc_records_b8_feature_implemented() -> None:
+    body = _read(CLOSEOUT_DOC)
+    assert "Phase B8 Active Momentum Trial Outcome Review (feature" in body
+    # Outstanding items must name the *corpus*, not the feature.
+    lowered = body.lower()
+    assert "accumulated b8 outcome evidence corpus" in lowered
+    # Implemented bucket must mention B8.
+    assert "## Implemented" in body
+
+
+def test_closeout_doc_does_not_imply_b8_feature_is_missing() -> None:
+    lowered = _read(CLOSEOUT_DOC).lower()
+    # The previous stale strikethrough / pending wording is gone.
+    assert "active-trial outcome tagging / review of the trial journal" not in lowered
+    assert "active trial outcome review" not in lowered or (
+        "feature implemented" in lowered
+    )
+
+
+def test_phase_c_doc_records_b8_feature_implemented() -> None:
+    body = _read(PHASE_C_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    # The Phase C0 doc's "Prerequisites before C1" section must
+    # acknowledge B7+B8 already ship and name the corpus as pending.
+    assert "phase b8" in lowered
+    assert "outcome review" in lowered
+    assert "accumulated corpus" in lowered
+    # The "feature already implemented" framing is present so a reader
+    # of the C0 doc does not interpret outcome-review as TODO.
+    assert "already implemented" in lowered

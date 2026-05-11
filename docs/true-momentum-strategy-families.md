@@ -68,9 +68,16 @@ When Phase C1 is authorized, the planned implementations will need:
 
 ## Prerequisites before C1
 
-1. **Phase B7 / B8 active-trial evidence.** The Active Momentum Trial
-   Journal must accumulate enough captured snapshots to compare against
-   paper / research outcomes.
+1. **Accumulated Phase B8 outcome evidence corpus.** The Phase B7
+   Active Momentum Trial Journal and the Phase B8 Active Momentum
+   Trial Outcome Review are both already implemented — the trial
+   journal captures a deterministic snapshot of the queue, and the
+   outcome review lets the operator tag each captured candidate
+   (worked, missed, too aggressive, good warning, false warning,
+   watchlist only, needs ToS parity check, ignored, unclear) and
+   export the review as Markdown / JSON. What still remains pending
+   here is the *accumulated corpus* of exported B8 reviews across a
+   representative sector / regime mix.
 2. **Thinkorswim spot-check / parity review.** Real Thinkorswim fixtures
    landing in `tests/fixtures/thinkorswim_momentum/` and the
    `parity_required_for_active` flag flipping to `True`.

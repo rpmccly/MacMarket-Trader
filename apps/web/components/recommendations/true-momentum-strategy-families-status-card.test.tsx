@@ -118,6 +118,32 @@ describe("TrueMomentumStrategyFamiliesStatusCardView", () => {
     expect(html).toContain("Still pending");
   });
 
+  it("Phase B8.1 — pending copy names accumulated B8 outcome evidence, not the feature itself", () => {
+    const html = renderToStaticMarkup(
+      <TrueMomentumStrategyFamiliesStatusCardView status={DISABLED_STATUS} />,
+    );
+    expect(html).toContain("accumulated B8 outcome evidence");
+    // The previous wording implied the active trial outcome review was
+    // itself missing. Phase B8 ships the feature; this card must not
+    // claim it is pending.
+    expect(html).not.toMatch(/active trial outcome review/i);
+    // The card still records the Phase C0 posture lines.
+    expect(html).toContain("Phase C0 remains scaffold-only");
+    expect(html).toContain("do not generate queue candidates");
+    expect(html).toContain("do not approve, reject,");
+    expect(html).toContain("Paper-order creation remains manual.");
+  });
+
+  it("Phase B8.1 — card includes a pointer line to Recommendations for B8 evidence", () => {
+    const html = renderToStaticMarkup(
+      <TrueMomentumStrategyFamiliesStatusCardView status={DISABLED_STATUS} />,
+    );
+    expect(html).toContain("true-momentum-b8-evidence-pointer");
+    expect(html).toContain("Capture and tag B8 outcome evidence in");
+    expect(html).toContain('href="/recommendations"');
+    expect(html).toContain("Momentum Trial Journal snapshot");
+  });
+
   it("renders guard-blocked reason copy when research_preview was requested without the guard", () => {
     const html = renderToStaticMarkup(
       <TrueMomentumStrategyFamiliesStatusCardView status={BLOCKED_STATUS} />,
