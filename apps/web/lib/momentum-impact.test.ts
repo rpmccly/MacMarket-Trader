@@ -400,15 +400,20 @@ describe("Phase B6.2 applied-delta fallback chain", () => {
     });
   }
 
-  it("active row prefers candidate.momentum_score_delta over contribution fields", () => {
+  it("active row prefers contribution.applied_score_delta over candidate.momentum_score_delta (Phase B6.4)", () => {
+    // Phase B6.4 swapped the preference order: the contribution payload
+    // is the canonical Phase B6.1 scaled value, while
+    // ``candidate.momentum_score_delta`` may carry the legacy unscaled
+    // delta on a stale wire payload. The impact review must always
+    // surface the contribution value first.
     const c = candidate({
       score: 0.882,
-      momentum_score_delta: 0.065,
+      momentum_score_delta: 0.065, // simulated stale legacy candidate value
       score_before_momentum: 0.817,
       momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
     });
     const [row] = buildMomentumImpactRows([c]);
-    expect(row.appliedScoreDelta).toBeCloseTo(0.065, 5);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
     expect(row.baselineScore).toBeCloseTo(0.817, 5);
   });
 
@@ -643,5 +648,101 @@ describe("Phase B6.3 realized-delta + consistency-corrected wiring", () => {
     expect(Number.isFinite(row.realizedScoreDelta)).toBe(true);
     expect(Number.isFinite(row.currentScore)).toBe(true);
     expect(Number.isFinite(row.baselineScore)).toBe(true);
+  });
+});
+
+describe("Phase B6.4 legacy-payload regression + score_consistency_status", () => {
+  function activeContribution(
+    overrides: Partial<MomentumRankingContribution> = {},
+  ): MomentumRankingContribution {
+    return contribution({
+      mode: "active",
+      applied: true,
+      total_contribution: 20,
+      shadow_contribution: 20,
+      raw_total_contribution: 20,
+      applied_score_delta: 0.07,
+      active_delta_scale: 0.35,
+      ...overrides,
+    });
+  }
+
+  it("renders intended +0.07 even when candidate.momentum_score_delta carries the legacy +0.188", () => {
+    // The exact deployed-bug shape: SPY baseline 0.812, current 1.000,
+    // momentum_score_delta=0.188 (legacy), but the contribution payload
+    // carries the correct scaled +0.07. The impact review must trust
+    // the contribution payload.
+    const c = candidate({
+      symbol: "SPY",
+      score: 1.0,
+      score_before_momentum: 0.812,
+      score_after_momentum: 1.0,
+      momentum_score_delta: 0.188,
+      momentum_realized_score_delta: 0.188,
+      momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+    expect(row.baselineScore).toBeCloseTo(0.812, 5);
+  });
+
+  it("consistencyCorrected fires from score_consistency_status='corrected' even without the reason code", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+      score_consistency_status: "corrected",
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.consistencyCorrected).toBe(true);
+  });
+
+  it("consistencyCorrected fires from the reason code even without the status field", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution({
+        reason_codes: [
+          "thinkorswim_parity_pending",
+          "momentum_score_consistency_corrected",
+        ],
+      }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.consistencyCorrected).toBe(true);
+  });
+
+  it("consistencyCorrected stays false when score_consistency_status='ok'", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+      score_consistency_status: "ok",
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.consistencyCorrected).toBe(false);
+  });
+
+  it("never derives applied delta from current_score - baseline when contribution.applied_score_delta is present", () => {
+    // Make the wire payload deliberately inconsistent: current=1.000,
+    // baseline=0.812 (so the implied current-baseline delta is 0.188).
+    // The frontend must NOT fall back to that arithmetic when the
+    // contribution payload is present with the correct scaled value.
+    const c = candidate({
+      symbol: "SPY",
+      score: 1.0,
+      score_after_momentum: 1.0,
+      score_before_momentum: 0.812,
+      momentum_score_delta: 0.188,
+      momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+    expect(row.appliedScoreDelta).not.toBeCloseTo(0.188, 5);
   });
 });

@@ -226,9 +226,14 @@ export function buildMomentumImpactRows(
       rankAfterByKey.get(`${candidate.symbol}::${candidate.strategy}::${idx}`) ?? rankBefore;
     const estimatedRankDelta = rankAfter === 0 ? 0 : rankBefore - rankAfter; // positive = moved up
 
-    // Phase B6.2 — single fallback chain for the applied score delta.
-    // Active rows must surface the actual scaled delta even when one of
-    // the payload fields is missing on the wire.
+    // Phase B6.4 — single fallback chain for the applied score delta.
+    // ``contribution.applied_score_delta`` is the canonical Phase B6.1
+    // scaled value; it MUST be preferred over ``candidate.momentum_score_delta``
+    // because a stale/legacy payload may still ship the unscaled
+    // ``raw/100`` value on the candidate field even when the contribution
+    // payload carries the correct scaled delta. Only fall back to the
+    // candidate field, then to the raw/100×scale recomputation, when
+    // the contribution delta is missing.
     const scaleForRow = resolveActiveDeltaScale(contribution?.active_delta_scale);
     const rawForRow = sanitizeNumber(
       contribution?.raw_total_contribution ?? contribution?.shadow_contribution,
@@ -236,16 +241,20 @@ export function buildMomentumImpactRows(
     );
     let appliedScoreDelta: number;
     if (mode === "active") {
-      const candidateDelta = candidate.momentum_score_delta;
       const contributionDelta = contribution?.applied_score_delta;
-      if (candidateDelta != null && Number.isFinite(candidateDelta) && candidateDelta !== 0) {
-        appliedScoreDelta = sanitizeNumber(candidateDelta, 0);
-      } else if (
+      const candidateDelta = candidate.momentum_score_delta;
+      if (
         contributionDelta != null &&
         Number.isFinite(contributionDelta) &&
         contributionDelta !== 0
       ) {
         appliedScoreDelta = sanitizeNumber(contributionDelta, 0);
+      } else if (
+        candidateDelta != null &&
+        Number.isFinite(candidateDelta) &&
+        candidateDelta !== 0
+      ) {
+        appliedScoreDelta = sanitizeNumber(candidateDelta, 0);
       } else {
         appliedScoreDelta = (rawForRow / RANKING_SCORE_SCALE) * scaleForRow;
       }
@@ -277,12 +286,18 @@ export function buildMomentumImpactRows(
           ? realizedFromCandidate
           : currentScore - baselineScore
         : 0;
-    // Phase B6.3 — operator-visible note that the consistency guard had
-    // to overwrite a stale observed score. The backend appends the
-    // reason code; the frontend just surfaces the boolean.
+    // Phase B6.3 / B6.4 — operator-visible note that the consistency
+    // guard overwrote a stale observed score. Surfaced by either the
+    // contribution reason code (Phase B6.3) or the queue-row
+    // ``score_consistency_status`` tag (Phase B6.4); either one is
+    // sufficient to render the diagnostic.
+    const reasonCodeCorrected =
+      contribution?.reason_codes?.includes("momentum_score_consistency_corrected") ?? false;
+    const statusFieldCorrected =
+      typeof candidate.score_consistency_status === "string" &&
+      candidate.score_consistency_status === "corrected";
     const consistencyCorrected =
-      mode === "active" &&
-      (contribution?.reason_codes?.includes("momentum_score_consistency_corrected") ?? false);
+      mode === "active" && (reasonCodeCorrected || statusFieldCorrected);
 
     out.push({
       symbol: candidate.symbol,

@@ -66,6 +66,12 @@ export type QueueCandidate = {
   // truncate; smaller when it does. Lets the impact review surface
   // "intended +0.07, realized +0.03" for high-baseline rows.
   momentum_realized_score_delta?: number | null;
+  // Phase B6.4 — last-boundary consistency tag emitted by the queue API
+  // route. ``"ok"`` = response passed the guard unchanged.
+  // ``"corrected"`` = the route had to overwrite a stale/legacy score
+  // before serialization. The frontend renders a small diagnostic when
+  // this is "corrected". Absent on payloads that pre-date Phase B6.4.
+  score_consistency_status?: "ok" | "corrected" | "inconsistent" | string | null;
   expected_rr: number;
   confidence: number;
   reason_text: string;

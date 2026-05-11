@@ -83,6 +83,7 @@ from macmarket_trader.options.paper_open import open_paper_option_structure
 from macmarket_trader.options.payoff import OptionLegInput, analyze_option_structure
 from macmarket_trader.options.replay_preview import build_options_replay_preview
 from macmarket_trader.ranking_engine import DeterministicRankingEngine
+from macmarket_trader.recommendation import apply_queue_response_consistency
 from macmarket_trader.replay.engine import ReplayEngine
 from macmarket_trader.risk_calendar.registry import build_risk_calendar_service
 from macmarket_trader.risk_calendar.service import RiskCalendarBlocked, RiskCalendarRestricted
@@ -1209,6 +1210,53 @@ def ranked_recommendation_queue(req: dict[str, object], _user=Depends(require_ap
                 item["rejection_reason"] = risk.decision.block_reason or risk.decision.warning_summary
         item["recommendation_id"] = _queue_candidate_id(item)
         item.update(_already_open_context(symbol, already_open_by_symbol))
+    # Phase B6.4 — last-boundary queue-response consistency guard.
+    # Re-stamp every active+applied row's score / score_after_momentum /
+    # momentum_score_delta / momentum_realized_score_delta from the
+    # contribution's applied_score_delta so the JSON response cannot
+    # disagree with the contribution payload, even if a future code
+    # path mutates ``item["score"]`` between the engine and the return.
+    apply_queue_response_consistency(ranking["queue"])
+    # The derived buckets are independent dict copies built by the engine
+    # via ``asdict(item)``. Keep them aligned so a frontend that reads
+    # ``top_candidates`` instead of ``queue`` sees the same corrected
+    # scores.
+    queue_by_key = {
+        (item.get("symbol"), item.get("strategy"), item.get("rank")): item
+        for item in ranking["queue"]
+    }
+
+    def _align_bucket(bucket: list[dict[str, object]]) -> list[dict[str, object]]:
+        aligned: list[dict[str, object]] = []
+        for entry in bucket:
+            if not isinstance(entry, dict):
+                aligned.append(entry)
+                continue
+            key = (entry.get("symbol"), entry.get("strategy"), entry.get("rank"))
+            canonical = queue_by_key.get(key)
+            if canonical is None:
+                aligned.append(entry)
+                continue
+            # Copy only the consistency-related fields so we don't clobber
+            # bucket-specific keys.
+            for field in (
+                "score",
+                "score_before_momentum",
+                "score_after_momentum",
+                "momentum_score_delta",
+                "momentum_realized_score_delta",
+                "momentum_rank_mode",
+                "momentum_contribution",
+                "score_consistency_status",
+            ):
+                if field in canonical:
+                    entry[field] = canonical[field]
+            aligned.append(entry)
+        return aligned
+
+    ranking["top_candidates"] = _align_bucket(ranking.get("top_candidates", []))
+    ranking["watchlist_only"] = _align_bucket(ranking.get("watchlist_only", []))
+    ranking["no_trade"] = _align_bucket(ranking.get("no_trade", []))
     return {
         "market_mode": market_mode.value,
         "timeframe": timeframe,

@@ -870,6 +870,7 @@ def build_momentum_ranking_status(
         active_delta_scale_warning=active_delta_scale_warning,
         active_delta_formula_version=ACTIVE_DELTA_FORMULA_VERSION,
         ranking_score_consistency_guard=RANKING_SCORE_CONSISTENCY_GUARD,
+        queue_response_consistency_guard=QUEUE_RESPONSE_CONSISTENCY_GUARD,
     )
 
 
@@ -1027,13 +1028,146 @@ def enforce_score_consistency(
     )
 
 
+# ── Phase B6.4 response-boundary queue consistency guard ───────────────────
+
+
+# Always-on Phase B6.4 queue-response consistency guard. Surfaced in the
+# status payload so a stale deploy is obvious: when this is True, the
+# queue route is wrapping its output through ``apply_queue_response_consistency``.
+QUEUE_RESPONSE_CONSISTENCY_GUARD: bool = True
+
+
+def _coerce_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        flt = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(flt) or math.isinf(flt):
+        return None
+    return flt
+
+
+def _coerce_contribution(value: Any) -> MomentumRankingContribution | None:
+    """Best-effort revival of a contribution dict into the typed model.
+
+    The queue route hands us already-serialized dicts (engine output is
+    ``asdict(...)``). We re-validate so the guard can read typed fields
+    without dict-key footguns. Returns None when the payload is missing
+    or malformed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, MomentumRankingContribution):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return MomentumRankingContribution.model_validate(dict(value))
+        except Exception:  # noqa: BLE001 - never raise from a sanitizer
+            return None
+    return None
+
+
+def apply_queue_response_consistency(
+    queue_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Phase B6.4 — last-boundary correction for queue-row score consistency.
+
+    Walks each item dict and, for active + applied contributions, forces:
+
+        expected_score              = clamp01(score_before + applied_score_delta)
+        candidate.score             = expected_score
+        candidate.score_after_momentum     = expected_score
+        candidate.momentum_score_delta     = applied_score_delta (intended)
+        candidate.momentum_realized_score_delta = expected_score - score_before
+
+    When the original observed score differed from ``expected_score`` by
+    more than the Phase B6.3 floating-point tolerance, the row picks up
+    ``score_consistency_status="corrected"`` and the
+    ``momentum_score_consistency_corrected`` reason code on the
+    contribution. Otherwise the status is ``"ok"``.
+
+    Rows whose contribution is None, off, shadow, blocked-active, or
+    disabled are passed through with ``score_consistency_status="ok"``
+    and no score modification. The helper is pure-defensive: never
+    changes raw ranking math, never raises, never changes approval /
+    sizing / routing fields, and is safe to call on already-correct
+    payloads (the only effect is the diagnostic field).
+
+    Returns ``(items, corrected_count)``. The list is mutated in place
+    **and** returned for ergonomic chaining with route code.
+    """
+    if not queue_items:
+        return queue_items, 0
+
+    corrected_count = 0
+    for item in queue_items:
+        if not isinstance(item, dict):
+            continue
+        contribution_value = item.get("momentum_contribution")
+        contribution = _coerce_contribution(contribution_value)
+        if (
+            contribution is None
+            or contribution.enabled is False
+            or contribution.mode != "active"
+            or not contribution.applied
+        ):
+            # Defensive default: a present momentum_contribution that is
+            # not active/applied is still tagged 'ok' so the frontend
+            # can rely on the field being present.
+            if contribution_value is not None:
+                item.setdefault("score_consistency_status", "ok")
+            continue
+
+        score_before = _coerce_float_or_none(item.get("score_before_momentum"))
+        observed_score = _coerce_float_or_none(item.get("score"))
+        if observed_score is None:
+            # Treat missing as 0 so the consistency check still runs.
+            observed_score = 0.0
+
+        guard = enforce_score_consistency(
+            observed_score=observed_score,
+            score_before_momentum=score_before,
+            contribution=contribution,
+        )
+
+        # Always-on: re-stamp the canonical fields from the guard so the
+        # response payload cannot disagree with the contribution payload.
+        item["score"] = round(guard.final_score, 3)
+        item["score_after_momentum"] = round(guard.final_score, 4)
+        item["momentum_score_delta"] = round(guard.intended_applied_delta, 6)
+        item["momentum_realized_score_delta"] = round(guard.realized_score_delta, 6)
+        item["momentum_rank_mode"] = "active"
+
+        if guard.corrected:
+            corrected_count += 1
+            item["score_consistency_status"] = "corrected"
+            reason_codes = list(contribution.reason_codes or [])
+            if "momentum_score_consistency_corrected" not in reason_codes:
+                reason_codes.append("momentum_score_consistency_corrected")
+            updated_contribution = contribution.model_copy(
+                update={"reason_codes": reason_codes}
+            )
+            item["momentum_contribution"] = updated_contribution.model_dump(mode="json")
+        else:
+            item["score_consistency_status"] = "ok"
+            # Round-trip the contribution dict so any non-finite floats are
+            # sanitized by the Pydantic model_dump.
+            item["momentum_contribution"] = contribution.model_dump(mode="json")
+
+    return queue_items, corrected_count
+
+
 __all__ = [
     "ACTIVE_DELTA_FORMULA_VERSION",
     "DEFAULT_ACTIVE_DELTA_SCALE",
     "MomentumRankingConfig",
     "MomentumScoreConsistencyResult",
+    "QUEUE_RESPONSE_CONSISTENCY_GUARD",
     "RANKING_SCORE_CONSISTENCY_GUARD",
     "apply_momentum_score_delta",
+    "apply_queue_response_consistency",
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
     "enforce_score_consistency",

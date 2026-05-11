@@ -1548,6 +1548,157 @@ now adhere to these rules on every render:
    itself has no environment surface — it is always-on in active
    mode and a pass-through everywhere else.
 
+## Phase B6.4 — Last-boundary queue-response consistency
+
+Phase B6.4 closes the deployed-but-still-broken edge: even after the
+Phase B6.3 engine-level guard, the deployed `/user/recommendations/queue`
+JSON still showed the legacy un-scaled delta on the wire. The selected
+recommendation card and the contribution payload showed the correct
+scaled `+0.07`, but the queue rows reported the legacy `+0.20`
+behavior:
+
+```
+SPY  Event Continuation 0.812 → current 1.000  (applied delta 0.188)
+SPY  Breakout           0.792 → current 0.992  (implies +0.200)
+DIA  Breakout           0.791 → current 0.991  (implies +0.200)
+XLC  Breakout           0.785 → current 0.985  (implies +0.200)
+```
+
+Phase B6.4 fixes this defensively at the **response serialization
+boundary**: regardless of which engine code path produced the queue
+items, the queue route now re-stamps every active-applied row from the
+single source of truth (`contribution.applied_score_delta`) before
+returning JSON. Any drift between the engine output and the contribution
+payload is caught here, tagged on the row, and surfaced to the operator
+UI.
+
+### Backend last-boundary guard
+
+`apply_queue_response_consistency(queue_items)` is a new helper in
+`src/macmarket_trader/recommendation/momentum_ranking.py`. The queue
+route in `src/macmarket_trader/api/routes/admin.py` calls it after the
+engine has produced its dicts but before the route returns. For each
+row whose `momentum_contribution` is active + applied, the helper:
+
+1. Recomputes `expected_score = clamp01(score_before + contribution.applied_score_delta)`.
+2. Overwrites `score`, `score_after_momentum`, `momentum_score_delta`
+   (intended), `momentum_realized_score_delta` (clamp-aware), and
+   `momentum_rank_mode` from the canonical Phase B6.1 math.
+3. Sets a new diagnostic field `score_consistency_status`:
+   - `"ok"` — the observed score equaled `expected_score`. No
+     correction was needed, but the canonical fields are still
+     re-stamped (so a partially-stale payload still ends up
+     internally consistent).
+   - `"corrected"` — the observed score differed by more than the
+     Phase B6.3 tolerance. The row picks up the
+     `momentum_score_consistency_corrected` reason code on the
+     contribution as well.
+4. Pass-through behavior for shadow / blocked-active / off / disabled
+   contributions: no score modification; rows with a contribution
+   payload still get `score_consistency_status="ok"` for diagnostic
+   completeness.
+
+The guard also aligns the engine's separate `top_candidates`,
+`watchlist_only`, and `no_trade` dict buckets so a frontend that reads
+any of them sees the same corrected score.
+
+### Frontend display invariants (tightened)
+
+`apps/web/lib/momentum-impact.ts` swaps the Phase B6.2/B6.3 fallback
+order so that `contribution.applied_score_delta` is now the **first
+choice** for the intended applied delta on every active row:
+
+1. `contribution.applied_score_delta` (canonical Phase B6.1 scaled value)
+2. `candidate.momentum_score_delta` (may carry legacy unscaled value on
+   stale payloads)
+3. `raw / 100 × active_delta_scale` (last-resort recomputation)
+
+The impact-review component renders the new
+`score_consistency_status="corrected"` tag the same way as the Phase
+B6.3 reason code — either signal surfaces the
+"Score consistency corrected" diagnostic next to the Applied delta
+cell. This guarantees that even if a legacy-shaped wire payload
+arrives (`current=1.000`, `momentum_score_delta=0.188` while
+`contribution.applied_score_delta=0.07`), the row still renders the
+correct intended `0.070` and visibly flags the inconsistency.
+
+### Status diagnostic
+
+`MomentumRankingStatus` gains a third Phase B6 diagnostic:
+
+- `queue_response_consistency_guard`: `true`. Reports that the queue
+  API route is running its output through
+  `apply_queue_response_consistency` before returning. Combined with
+  `active_delta_formula_version: "scaled_v1"` (B6.3) and
+  `ranking_score_consistency_guard: true` (B6.3), operators can verify
+  the full Phase B6 stack from the Settings card alone.
+
+### What did not change
+
+- **Raw contribution caps** remain ±20 with the Phase B1 inputs.
+- **Default Momentum mode** is still `off` everywhere except deployments
+  that explicitly set `MACMARKET_MOMENTUM_RANKING_MODE=active` +
+  `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`.
+- **Approval and paper-order behavior** remain manual.
+- **Indicator math, parity gates, Thinkorswim fixtures** are untouched.
+- **Strategy registry** is unchanged. No Phase C work landed.
+- **`apply_momentum_score_delta`** (B6.2) and `enforce_score_consistency`
+  (B6.3) are unchanged; the Phase B6.4 helper composes
+  `enforce_score_consistency` rather than reimplementing the math.
+
+### Tests (Phase B6.4)
+
+- `tests/test_momentum_b64_queue_response_guard.py` — 17 new pytest
+  tests covering: pure-helper `apply_queue_response_consistency`
+  behavior (legacy-bug correction, already-ok pass-through,
+  shadow/blocked/off pass-through, clamp-truncated realized delta,
+  empty queue, missing contribution, malformed contribution); **real
+  `/user/recommendations/queue` API** integration tests via
+  `fastapi.testclient.TestClient` with the ranking engine stubbed to
+  return the deployed-bug payload shape directly (so the test fails on
+  the exact deployed wire shape), at baselines 0.812 / 0.792 / 0.898 /
+  0.970; negative raw contribution scaled correctly via the guard; the
+  payload never leaks approval / order / routing fields; the
+  `top_candidates` bucket stays aligned with the `queue` bucket after
+  correction; the multi-row deployed scenario (SPY EV Continuation +
+  SPY Breakout + DIA Breakout + XLC Breakout) all corrected; the status
+  payload exposes `queue_response_consistency_guard=True` alongside the
+  Phase B6.3 diagnostics.
+- `apps/web/lib/momentum-impact.test.ts` — 5 new tests in a
+  "Phase B6.4 legacy-payload regression + score_consistency_status"
+  block: contribution-delta preference over candidate field;
+  `consistencyCorrected` fires from `score_consistency_status` alone;
+  `consistencyCorrected` fires from reason code alone;
+  `consistencyCorrected` stays false when status is `"ok"`; the
+  intended-delta cell never derives from `current_score - baseline`
+  when the contribution payload is present. The Phase B6.2 preference
+  test was updated to assert the new B6.4 preference order.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 3 new render tests: the legacy-bug payload (current 1.000 + legacy
+  0.188 on candidate) still renders the Applied delta cell as `0.070`;
+  the `score_consistency_status="corrected"` tag alone surfaces the
+  diagnostic note; the `"ok"` status leaves the note hidden.
+
+### Operator checklist (Phase B6.4)
+
+1. After deploying Phase B6.4, open Settings → Momentum ranking
+   status and confirm `Queue response consistency guard: on`
+   alongside the Phase B6.3 `Ranking score consistency guard: on`
+   and `Active delta formula: scaled_v1`.
+2. Open the Recommendations queue and confirm SPY @ 0.812 baseline
+   now lands at score `0.882`, not `1.000`. Other rows that showed
+   the legacy `+0.20` shape (`0.792 → 0.992`, `0.791 → 0.991`,
+   `0.785 → 0.985`) should all now reflect `+0.07` instead.
+3. Active rows that the route corrected display
+   "Score consistency corrected" under their Applied delta cell.
+   That diagnostic should disappear within one or two queue refresh
+   cycles as the upstream engine catches up.
+4. Approval and paper-order creation remain manual. Phase B6.4 did
+   not change either.
+5. To revert, disable active mode via env. The guard itself has no
+   environment surface — it is always-on in active mode and a
+   pass-through everywhere else.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

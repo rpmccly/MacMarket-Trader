@@ -503,6 +503,87 @@ describe("MomentumImpactReview", () => {
     expect(html).not.toMatch(/Infinity/);
   });
 
+  // ── Phase B6.4 regressions ───────────────────────────────────────────
+
+  it("renders intended +0.070 from contribution even when candidate.momentum_score_delta is the legacy 0.188", () => {
+    // Exact deployed-bug shape on the wire: SPY baseline 0.812, current
+    // 1.000, momentum_score_delta=0.188 (legacy), but the contribution
+    // payload carries the correct scaled +0.07. The review must surface
+    // 0.070, never 0.188.
+    const c = candidate({
+      symbol: "SPY",
+      score: 1.0,
+      score_before_momentum: 0.812,
+      score_after_momentum: 1.0,
+      momentum_score_delta: 0.188,
+      momentum_realized_score_delta: 0.188,
+      momentum_contribution: contribution({
+        mode: "active",
+        applied: true,
+        total_contribution: 20,
+        shadow_contribution: 20,
+        raw_total_contribution: 20,
+        applied_score_delta: 0.07,
+        active_delta_scale: 0.35,
+      }),
+    });
+    const html = renderToStaticMarkup(<MomentumImpactReview candidates={[c]} />);
+    expect(html).toContain("0.070");
+    // The Applied delta cell must contain 0.070 (the contribution
+    // value), not the legacy 0.188 that lives on candidate.momentum_score_delta.
+    expect(html).toMatch(
+      /data-testid="momentum-impact-applied-delta">[^<]*<span[^>]*>0\.070<\/span>/,
+    );
+    expect(html).not.toMatch(
+      /data-testid="momentum-impact-applied-delta">[^<]*<span[^>]*>0\.188<\/span>/,
+    );
+  });
+
+  it("surfaces score_consistency_status=corrected even when reason code is absent", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.07,
+      momentum_contribution: contribution({
+        mode: "active",
+        applied: true,
+        total_contribution: 20,
+        shadow_contribution: 20,
+        raw_total_contribution: 20,
+        applied_score_delta: 0.07,
+        active_delta_scale: 0.35,
+      }),
+      score_consistency_status: "corrected",
+    });
+    const html = renderToStaticMarkup(<MomentumImpactReview candidates={[c]} />);
+    expect(html).toContain('data-testid="momentum-impact-consistency-corrected"');
+    expect(html).toContain("Score consistency corrected");
+  });
+
+  it("does not surface consistency-corrected diagnostic when status is ok", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.07,
+      momentum_contribution: contribution({
+        mode: "active",
+        applied: true,
+        total_contribution: 20,
+        shadow_contribution: 20,
+        raw_total_contribution: 20,
+        applied_score_delta: 0.07,
+        active_delta_scale: 0.35,
+      }),
+      score_consistency_status: "ok",
+    });
+    const html = renderToStaticMarkup(<MomentumImpactReview candidates={[c]} />);
+    expect(html).not.toContain('data-testid="momentum-impact-consistency-corrected"');
+  });
+
   it("never contains trade-approval, order-routing, or action language (Phase B6.3 regression)", () => {
     const html = renderToStaticMarkup(
       <MomentumImpactReview

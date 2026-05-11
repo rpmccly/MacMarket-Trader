@@ -1387,6 +1387,14 @@ class MomentumRankingStatus(BaseModel):
     # never gate approval, sizing, or routing.
     active_delta_formula_version: str = "scaled_v1"
     ranking_score_consistency_guard: bool = True
+    # Phase B6.4 — last-boundary queue-response consistency guard. When
+    # True, the queue API route re-stamps every active-applied row's
+    # score, score_after_momentum, momentum_score_delta, and
+    # momentum_realized_score_delta from the contribution's
+    # applied_score_delta just before returning JSON. Always-on; surfaced
+    # here so operators can confirm the new build is live without git
+    # forensics.
+    queue_response_consistency_guard: bool = True
 
 
 class MomentumRankingContribution(BaseModel):
