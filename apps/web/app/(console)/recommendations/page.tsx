@@ -18,6 +18,7 @@ import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-ap
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 import { MomentumRankingCard } from "@/components/recommendations/momentum-ranking-card";
 import { MomentumImpactReview } from "@/components/recommendations/momentum-impact-review";
+import { MomentumTrialJournal } from "@/components/recommendations/momentum-trial-journal";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -1931,6 +1932,16 @@ export default function RecommendationsPage() {
       {queue.length > 0 ? (
         <MomentumImpactReview candidates={queue} compact />
       ) : null}
+
+      {/*
+        Phase B7 — Active Momentum Trial Journal / Comparison Report.
+        Operator evidence capture only. Uses already-loaded queue rows;
+        does not refetch, does not change queue sorting, approval,
+        promote, save, paper-order, settle, replay, or options preview
+        flows. Snapshot is local/export-only (localStorage + JSON/Markdown
+        download); no backend persistence and no DB migration.
+      */}
+      <MomentumTrialJournal candidates={queue} />
     </section>
   );
 }

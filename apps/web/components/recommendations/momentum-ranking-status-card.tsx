@@ -329,6 +329,12 @@ export function MomentumRankingStatusCard({
         >
           Review shadow impact in <a href="/recommendations">Recommendations</a>.
         </p>
+        <p
+          style={{ ...NOTE_STYLE, marginTop: 0 }}
+          data-testid="momentum-ranking-status-trial-journal-pointer"
+        >
+          Capture trial evidence in <a href="/recommendations">Recommendations</a>.
+        </p>
       </div>
     </Card>
   );

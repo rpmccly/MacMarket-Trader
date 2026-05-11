@@ -328,6 +328,110 @@ describe("Momentum Intelligence Phase B4 impact-review guards", () => {
   });
 });
 
+describe("Momentum Intelligence Phase B7 trial-journal guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Recommendations page imports the trial journal and passes the existing queue", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("@/components/recommendations/momentum-trial-journal");
+    expect(source).toContain("MomentumTrialJournal");
+    expect(source).toContain("<MomentumTrialJournal candidates={queue} />");
+  });
+
+  it("trial-journal helpers and component are not imported into order, paper-position, paper-trade, options-paper, or replay-preview routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-trial-journal",
+      "@/components/recommendations/momentum-trial-journal",
+      "MomentumTrialJournal",
+      "MomentumTrialJournalView",
+      "buildMomentumTrialSnapshot",
+      "buildMomentumTrialMarkdown",
+      "buildMomentumTrialJson",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("trial-journal helpers/component do not leak into recommendation-approval/order helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+      "lib/recommendations.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-trial-journal",
+      "@/components/recommendations/momentum-trial-journal",
+      "MomentumTrialJournal",
+      "MomentumTrialJournalView",
+      "buildMomentumTrialSnapshot",
+      "buildMomentumTrialMarkdown",
+      "buildMomentumTrialJson",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("trial-journal surfaces avoid forbidden trade-approval/order-routing language", () => {
+    const surfaces = [
+      "lib/momentum-trial-journal.ts",
+      "components/recommendations/momentum-trial-journal.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("trial-journal carries the deterministic operator-evidence guardrail copy", () => {
+    const lib = read("lib/momentum-trial-journal.ts");
+    expect(lib).toContain(
+      "This trial journal records Momentum ranking evidence only. It does not approve, reject, size, or route trades.",
+    );
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

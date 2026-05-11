@@ -1699,6 +1699,184 @@ correct intended `0.070` and visibly flags the inconsistency.
    environment surface — it is always-on in active mode and a
    pass-through everywhere else.
 
+## Phase B7 — Active Momentum Trial Journal / Comparison Report
+
+Phase B7 adds an operator-only **evidence capture** layer on top of the
+Recommendations queue. It is the first surface that lets an operator
+freeze the current Momentum ranking picture — modes, deltas, warnings,
+parity status, score-consistency corrections — into a deterministic
+snapshot that can be saved locally, exported as Markdown or JSON, and
+compared later against paper or research outcomes.
+
+It is **display- and export-only**: no backend persistence, no DB
+migration, no LLM, no ranking math change, no queue-sorting change, and
+no approval, promote, save, paper-order, settle, replay, or options-
+preview behavior change.
+
+### Purpose
+
+Operators need a way to write down what Momentum Intelligence was
+showing them when they made a decision, so a later comparison can
+distinguish "the ranking layer caused the outcome" from "discretionary
+sizing or external news caused the outcome". Phase B7 is that capture
+layer. It is not a trade-approval tool, not a sizing tool, not an order-
+routing tool, and not a backtester — the deterministic guardrail copy is
+rendered on every surface that emits a snapshot.
+
+### Data source
+
+| Source | What is read |
+|---|---|
+| In-memory `queue` rows already loaded by `app/(console)/recommendations/page.tsx` | rank, symbol, strategy, score, expected_rr, confidence, `score_before_momentum`, `score_after_momentum`, `momentum_score_delta`, `momentum_realized_score_delta`, `score_consistency_status`, `momentum_contribution`, `risk_calendar` |
+| `apps/web/lib/momentum-impact.ts` | `buildMomentumImpactRows` and `summarizeMomentumImpact` are reused verbatim — the journal does **not** recompute Momentum math |
+| `apps/web/lib/momentum-ranking.ts` | `getMomentumContributionReasonLabels`, `normalizeMomentumRankingMode`, `momentumRankingModeLabel` for label rendering only |
+
+No new endpoint is called. No extra fetch happens. No payload field is
+recomputed. If the queue is empty, the journal renders an empty state
+with the capture button disabled.
+
+### Surfaces
+
+| Surface | File |
+|---|---|
+| Pure helpers | `apps/web/lib/momentum-trial-journal.ts` (`buildMomentumTrialSnapshot`, `summarizeMomentumTrialSnapshot`, `topMomentumTrialMovers`, `topMomentumTrialWarnings`, `rankMovementBuckets`, `classifyMomentumTrialCandidate`, `momentumTrialWarnings`, `sanitizeMomentumTrialNote`, `formatMomentumTrialTimestamp`, `validateMomentumTrialSnapshot`, `buildMomentumTrialJson`, `buildMomentumTrialMarkdown`, `MOMENTUM_TRIAL_JOURNAL_VERSION`, `MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE`). |
+| Reusable component | `apps/web/components/recommendations/momentum-trial-journal.tsx` (`<MomentumTrialJournal candidates universeSymbols title compact initialSnapshot persistLatest />` plus the presentational `<MomentumTrialJournalView snapshot … />`). |
+| Recommendations integration | `apps/web/app/(console)/recommendations/page.tsx` renders `<MomentumTrialJournal candidates={queue} />` directly below `<MomentumImpactReview>`. No new fetch, no change to queue ordering, no change to approval/promote/paper-order/replay behavior. |
+| Settings pointer | `apps/web/components/recommendations/momentum-ranking-status-card.tsx` adds a one-line "Capture trial evidence in Recommendations." pointer — link only, no new navigation. |
+
+### Snapshot shape
+
+`MomentumTrialSnapshot` is the canonical export envelope. Each captured
+candidate carries:
+
+- `rank`, `symbol`, `strategy`, `mode`
+- `classification` (`active_positive` / `active_negative` / `active_zero` /
+  `shadow_positive` / `shadow_negative` / `shadow_zero` / `off` /
+  `blocked_active` / `contribution_missing`)
+- `current_score`, `baseline_score`, `active_score` (all clamped to `[0, 1]`)
+- `raw_contribution` (raw ±20 ranking-score units)
+- `applied_delta` (intended, in `[0, 1]` units), `realized_delta`
+  (post-clamp realized, `0` when not active)
+- `total_score`, `total_label`, `trend_score`, `momo_score`
+- `reason_codes`, `reason_labels`, `warning_flags`
+- `score_consistency_status`, `risk_calendar_decision`,
+  `risk_calendar_level`, `expected_rr`, `confidence`
+
+`MomentumTrialSummary` aggregates: candidate / active / shadow / off /
+parity-pending / direction-unknown / warning / positive / negative /
+zero contribution / consistency-corrected / contribution-missing /
+blocked-active counts; `net_estimated_score_delta`; `reason_code_counts`;
+the requested + effective + observed ranking modes; and the
+`active_delta_scale` actually observed in the queue payload.
+
+`schema_version` is pinned to `phase_b7.v1` and emitted in both the
+snapshot and the export payload so future versions can co-exist without
+silently shifting field meanings.
+
+### Operator note safety
+
+`sanitizeMomentumTrialNote` strips and `[redacted]`s a forbidden phrase
+list (`buy now`, `sell now`, `enter now`, `short now`, `auto approve`,
+`auto-approve`, `route order`, `place order`, `submit order`), collapses
+whitespace, and length-caps at 1200 characters. The journal can never
+publish trade-direction action language even through an operator note.
+
+### Local / export-only behavior
+
+- The component persists the latest snapshot to `localStorage` under
+  `macmarket.momentumTrial.latest` (controllable via `persistLatest`).
+  Tests pass `persistLatest={false}` so they never depend on a browser.
+- Snapshots are user-driven: nothing is captured automatically — the
+  operator must click **Capture Momentum Trial Snapshot**.
+- The component exposes **Copy Markdown**, **Download Markdown**,
+  **Download JSON**, and **Clear snapshot** actions. Downloads use a
+  client-side `Blob` + temporary `<a download>`; there is no upload, no
+  backend write, and no DB row.
+- `validateMomentumTrialSnapshot` rejects unknown schema versions when
+  re-hydrating from `localStorage`.
+
+### Deterministic guardrail copy
+
+Every snapshot, every Markdown export, and every JSON export carries
+the canonical operator note:
+
+> *This trial journal records Momentum ranking evidence only. It does
+> not approve, reject, size, or route trades.*
+
+A `momentum-integration` guard test confirms the string appears in the
+helper and that no forbidden action language appears in either the
+helper module or the component module.
+
+### Suggested operator workflow
+
+1. Open `/recommendations` and generate or refresh the active queue so
+   the rows on screen are the picture you want to record.
+2. Scroll to **Active Momentum Trial Journal** and press
+   **Capture Momentum Trial Snapshot**. The summary cards, top-candidate
+   table, and warnings table populate from the rows already loaded.
+3. Add a short **Operator note** (optional). Action language is
+   redacted and a warning hint appears if the sanitizer had to rewrite
+   anything.
+4. Export with **Download Markdown** or **Download JSON** for archival;
+   use **Copy Markdown** to paste into another tool.
+5. Later, compare the snapshot side-by-side against the paper-order
+   result, the replay run, or external research notes. The snapshot's
+   `schema_version`, `generated_at`, mode summary, and reason-code
+   counts make it possible to align after the fact without retrofitting
+   the live queue.
+
+### What Phase B7 does NOT do
+
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, Phase B1 bounded caps, Phase B6 safety
+  guard, Phase B6.1–B6.4 wiring, and the active-delta formula are
+  byte-identical.
+- **No queue sorting change.** Live queue ordering is preserved; the
+  snapshot's "top candidates" view is a per-snapshot label only.
+- **No approval, promote, save, paper-order, settle, replay, or
+  options-preview behavior change.**
+- **No backend mutation.** No new HTTP endpoint, no DB row, no migration.
+- **No LLM call.** The helpers are deterministic and side-effect-free.
+- **No strategy families.** Phase C remains gated and separate.
+- **No live routing or expiration-settlement work.** Out of scope for
+  the Momentum Intelligence layer.
+
+### Tests (Phase B7)
+
+- `apps/web/lib/momentum-trial-journal.test.ts` — pure-helper suite
+  covering snapshot construction from active/shadow/off/missing
+  candidates, parity / direction-unknown / consistency-corrected /
+  blocked-active counts, NaN/Infinity sanitization, operator-note
+  sanitization, top-mover and top-warning ordering, movement-bucket
+  classification, JSON/Markdown export round-trips, schema validation,
+  and a forbidden-language guard on Markdown + JSON output.
+- `apps/web/components/recommendations/momentum-trial-journal.test.tsx`
+  — render suite covering empty state, capture-disabled state with no
+  candidates, captured-summary rendering via `initialSnapshot`,
+  copy / download / clear button surface, warning-table presence and
+  compact-mode hiding, operator-note display, deterministic-guardrail
+  copy in every branch, and a no-action-language guard on rendered
+  HTML.
+- `apps/web/lib/momentum-integration.test.ts` — strengthened with
+  Phase B7 guards: Recommendations page imports
+  `<MomentumTrialJournal>` and passes the existing `queue`, the helper
+  + component stay out of order / paper-position / paper-trade /
+  options-paper / replay-preview routes and out of the order /
+  recommendation helper files, the helper carries the deterministic
+  operator-evidence guardrail copy, and neither surface emits
+  forbidden trade-approval / order-routing language.
+
+### Still pending
+
+- **Thinkorswim fixture parity.** Phase B7 surfaces parity-pending and
+  consistency-corrected counts in the snapshot summary, but the
+  `parity_required_for_active` flag still depends on dropping
+  measured fixtures into `tests/fixtures/thinkorswim_momentum/` per
+  the parity-fixtures plan above.
+- **Phase C strategy families.** Dedicated momentum-aware strategy
+  families remain a separate, explicitly-gated phase. Phase B7 does
+  not introduce, implement, or schedule any strategy-family code.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into
