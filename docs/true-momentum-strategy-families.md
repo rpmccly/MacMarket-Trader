@@ -216,6 +216,106 @@ reason code.
 - Real Thinkorswim fixture parity.
 - Operator authorization before any active Phase C.
 
+## Phase C2 — research-preview evidence bundle
+
+Phase C2 wraps the Phase C1 classification into an operator-facing
+**evidence bundle workflow**. It captures whatever rows Phase C1
+matched, lets the operator overlay a global research conclusion plus
+per-family and per-candidate notes / tags, and exports the result as
+deterministic Markdown / JSON. Everything is local/export-only — no
+backend write, no DB row, no migration, no LLM call.
+
+### What it does
+
+- Builds a `TrueMomentumPreviewEvidenceBundle` from an existing
+  Phase C1 `TrueMomentumStrategyPreviewResult` and the already-loaded
+  queue candidates.
+- Records the resolved ranking mode and active delta scale from the
+  Phase C1 result (no recomputation).
+- Surfaces `evaluated_universe` (when the page passes
+  `universeSymbols`) or falls back to `captured_symbols` derived from
+  the loaded queue.
+- Groups the matched preview rows per family (continuation /
+  pullback / reversal-watch), with per-family preview / strong /
+  moderate / watch / blocked counts plus per-row trade warnings and
+  operational caveats (`thinkorswim_parity_pending`,
+  `derived_higher_timeframe`, `score_consistency_corrected`, …).
+- Records whether a Phase B7 trial snapshot and Phase B8 outcome
+  review are linked (presence flags only — no shared mutable state).
+- Lets the operator attach a global conclusion, per-family notes, and
+  per-candidate notes / review tags
+  (`research_candidate`, `watchlist_only`, `needs_tos_parity_check`,
+  `needs_b8_outcome_evidence`, `too_noisy`, `defer`).
+- Exports as **Markdown** (Copy + Download) and **JSON**, both
+  carrying the deterministic guardrail copy and the "Active Phase C
+  True Momentum strategy families are not implemented" reminder.
+- Persists the latest captured bundle to
+  `macmarket.trueMomentumPreviewEvidence.latest`, keyed by the queue
+  signature so stale caches across different queues are discarded.
+
+### What it does NOT do
+
+- **No new queue candidates.** The bundle only re-frames already
+  matched Phase C1 rows.
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, Phase B1 / B6 / B6.x wiring are
+  byte-identical.
+- **No queue sorting change.**
+- **No approval / promote / save / paper-order / settle / replay /
+  options-preview behavior change.**
+- **No backend mutation.** No DB write, no migration, no LLM call, no
+  provider / market-data call. Phase C2 is frontend-only.
+- **No Phase C active behavior.** `MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=active`
+  remains reserved — Phase C1 still degrades it to
+  `research_preview` with the
+  `true_momentum_strategy_active_mode_not_implemented` reason code.
+
+### Surfaces
+
+- **Pure helpers** —
+  `apps/web/lib/true-momentum-preview-evidence.ts`
+  (`buildTrueMomentumPreviewEvidenceBundle`,
+  `summarizeTrueMomentumPreviewEvidence`,
+  `partitionTrueMomentumPreviewEvidenceByFamily`,
+  `topTrueMomentumPreviewEvidence`,
+  `trueMomentumPreviewEvidenceWarnings`,
+  `sanitizeTrueMomentumPreviewEvidenceNote`,
+  `buildTrueMomentumPreviewEvidenceMarkdown`,
+  `buildTrueMomentumPreviewEvidenceJson`,
+  `validateTrueMomentumPreviewEvidenceBundle`,
+  `trueMomentumPreviewEvidenceTagLabel`,
+  `trueMomentumPreviewEvidenceTagTone`,
+  `TRUE_MOMENTUM_PREVIEW_EVIDENCE_DETERMINISTIC_NOTE`,
+  `TRUE_MOMENTUM_PREVIEW_EVIDENCE_STORAGE_KEY`).
+- **Reusable component** —
+  `apps/web/components/recommendations/true-momentum-preview-evidence-panel.tsx`
+  (`<TrueMomentumPreviewEvidencePanel candidates previewResult
+  universeSymbols b8Snapshot b8OutcomeReview persistLatest
+  initialBundle />`).
+- **C1 integration** —
+  `apps/web/components/recommendations/true-momentum-strategy-preview-panel.tsx`
+  mounts the evidence panel below its preview table whenever Phase C1
+  produced at least one preview row.
+
+### Recommended workflow
+
+1. Run the active Momentum queue from Recommendations.
+2. Review the Phase C1 family preview panel.
+3. Press **Capture True Momentum Preview Evidence** to record the
+   current C1 classification + operator notes / tags into a Phase C2
+   evidence bundle.
+4. Capture a Phase B7 trial-journal snapshot and a Phase B8 outcome
+   review for the same session.
+5. Compare the exported Phase C2 preview evidence (Markdown / JSON)
+   against the Phase B8 outcome reviews before any Phase C3 / active
+   Phase C authorization.
+
+### Still pending (carried forward)
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

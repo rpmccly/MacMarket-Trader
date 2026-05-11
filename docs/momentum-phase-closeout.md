@@ -59,7 +59,7 @@ Under these values:
 - Paper-order creation remains manual.
 - Parity pending is visible on every surface.
 
-## Implemented (Phase B closeout + B8)
+## Implemented (Phase B closeout + B8 + Phase C0/C1/C2)
 
 - Phase A/B closeout — see the layer charter.
 - **Phase B8 Active Momentum Trial Outcome Review (feature
@@ -71,6 +71,21 @@ Under these values:
   Markdown / JSON. Local/export-only (no backend persistence, no DB
   row, no DB migration). The review surface lives in the
   Recommendations workspace directly under the Trial Journal snapshot.
+- **Phase C0 scaffolding (disabled by default).** Three planned True
+  Momentum families exposed as specs + a read-only status endpoint at
+  `GET /user/true-momentum-strategy-families/status`. No active
+  behavior.
+- **Phase C1 research-preview classifier (feature implemented).**
+  Backend evaluator + `POST /user/true-momentum-strategy-families/preview`
+  + frontend lib + Recommendations panel. Classifies the already-loaded
+  queue into the three planned families with precedence
+  `reversal_watch > pullback > continuation`. Does **not** generate
+  new queue candidates. Active mode remains reserved.
+- **Phase C2 preview-evidence bundle workflow (feature implemented).**
+  Operators capture a deterministic Markdown / JSON bundle of the
+  current C1 classification + per-family / per-candidate notes and
+  review tags. Local/export-only. Mounted inside the C1 preview panel
+  whenever C1 matched at least one row.
 
 ## Outstanding items
 
@@ -80,10 +95,13 @@ Under these values:
    is implemented — what remains pending is enough exported B8
    outcome reviews across a representative sector / regime mix to
    support a Phase C1 go/no-go review.
-3. **Phase C strategy-family implementation.** Phase C0 specs are
-   scaffold-only and disabled by default. **C1 should wait for the
-   accumulated B8 outcome evidence corpus and the real Thinkorswim
-   parity review before any activation is authorized.**
+3. **Active Phase C strategy-family implementation.** Phase C0
+   scaffolding + Phase C1 research-preview classifier + Phase C2
+   preview-evidence bundle workflow are implemented and disabled by
+   default. **Active Phase C strategy generation should wait for the
+   accumulated B8 outcome evidence corpus, the real Thinkorswim parity
+   review, and explicit operator authorization before any active
+   Phase C is enabled.**
 4. **Possible Thinkorswim review for XLY / XLE / XLV differences**
    before Phase C activation.
 

@@ -12,6 +12,7 @@ import {
   type TrueMomentumStrategyPreviewCandidate,
   type TrueMomentumStrategyPreviewResult,
 } from "@/lib/true-momentum-strategy-preview";
+import { TrueMomentumPreviewEvidencePanel } from "@/components/recommendations/true-momentum-preview-evidence-panel";
 import {
   fetchTrueMomentumStrategyFamilyStatus,
   trueMomentumStrategyModeLabel,
@@ -128,6 +129,13 @@ function PreviewRow({ preview }: { preview: TrueMomentumStrategyPreviewCandidate
 
 export type TrueMomentumStrategyPreviewPanelProps = {
   candidates: ReadonlyArray<QueueCandidate> | null | undefined;
+  /**
+   * Phase C2 — evaluated universe (e.g. the parsed manual-symbol input
+   * from the Recommendations page) passed through to the evidence
+   * bundle so it can label "Evaluated universe" rather than
+   * "Captured symbols". Optional.
+   */
+  universeSymbols?: ReadonlyArray<string> | null;
   title?: string;
   /**
    * Test-only: render with a pre-fetched status object instead of
@@ -135,6 +143,12 @@ export type TrueMomentumStrategyPreviewPanelProps = {
    * undefined.
    */
   initialStatus?: TrueMomentumStrategyFamilyStatus | null;
+  /**
+   * Phase C2 — disable localStorage persistence on the nested evidence
+   * panel. Tests should pass ``false``; production callers leave it
+   * undefined (defaults to ``true``).
+   */
+  persistEvidenceLatest?: boolean;
 };
 
 export function TrueMomentumStrategyPreviewPanelView({
@@ -143,12 +157,18 @@ export function TrueMomentumStrategyPreviewPanelView({
   loading = false,
   error = null,
   title = "True Momentum strategy preview (Phase C1 research-only)",
+  candidates = null,
+  universeSymbols = null,
+  persistEvidenceLatest = true,
 }: {
   result: TrueMomentumStrategyPreviewResult | null;
   status: TrueMomentumStrategyFamilyStatus | null;
   loading?: boolean;
   error?: string | null;
   title?: string;
+  candidates?: ReadonlyArray<QueueCandidate> | null;
+  universeSymbols?: ReadonlyArray<string> | null;
+  persistEvidenceLatest?: boolean;
 }) {
   if (error) {
     return (
@@ -373,6 +393,15 @@ MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true`}
           </div>
         )}
 
+        {previews.length > 0 ? (
+          <TrueMomentumPreviewEvidencePanel
+            candidates={candidates}
+            previewResult={result}
+            universeSymbols={universeSymbols ?? null}
+            persistLatest={persistEvidenceLatest}
+          />
+        ) : null}
+
         <p
           style={NOTE_STYLE}
           data-testid="true-momentum-strategy-preview-deterministic-note"
@@ -390,8 +419,10 @@ MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true`}
 
 export function TrueMomentumStrategyPreviewPanel({
   candidates,
+  universeSymbols = null,
   title,
   initialStatus = null,
+  persistEvidenceLatest = true,
 }: TrueMomentumStrategyPreviewPanelProps) {
   const [status, setStatus] = useState<TrueMomentumStrategyFamilyStatus | null>(initialStatus);
   const [loading, setLoading] = useState<boolean>(!initialStatus);
@@ -435,6 +466,9 @@ export function TrueMomentumStrategyPreviewPanel({
       loading={loading}
       error={error}
       title={title}
+      candidates={candidates ?? null}
+      universeSymbols={universeSymbols ?? null}
+      persistEvidenceLatest={persistEvidenceLatest}
     />
   );
 }

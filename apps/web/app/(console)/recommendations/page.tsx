@@ -1962,7 +1962,10 @@ export default function RecommendationsPage() {
         MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=research_preview and the
         MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES guard.
       */}
-      <TrueMomentumStrategyPreviewPanel candidates={queue} />
+      <TrueMomentumStrategyPreviewPanel
+        candidates={queue}
+        universeSymbols={parsedSymbols.symbols}
+      />
     </section>
   );
 }
