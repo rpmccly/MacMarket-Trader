@@ -1460,3 +1460,57 @@ class MomentumChartPayload(BaseModel):
     higher_timeframe: str | None = None
     parity_status: str = "pending_thinkorswim_fixture_validation"
     calculation_notes: list[str] = Field(default_factory=list)
+
+
+class TrueMomentumStrategyFamilySpecPayload(BaseModel):
+    """Phase C0 — pure spec payload for a planned True Momentum family.
+
+    Surfaced read-only from
+    ``GET /user/true-momentum-strategy-families/status`` so the
+    operator UI can render the planned families. These specs never
+    generate recommendations, approve trades, or route orders.
+    """
+
+    id: str
+    label: str
+    description: str
+    status: Literal["planned", "research_preview", "disabled"] = "planned"
+    intended_direction: Literal["long", "short", "watch"] = "watch"
+    required_inputs: list[str] = Field(default_factory=list)
+    deterministic_signals: list[str] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
+    not_allowed_actions: list[str] = Field(default_factory=list)
+    phase: str = "C0"
+    implementation_status: str = "scaffold_only"
+
+
+class TrueMomentumStrategyFamilyStatusPayload(BaseModel):
+    """Phase C0 — read-only resolved status for the True Momentum scaffold.
+
+    Returned by the read-only Phase C0 status endpoint and rendered by
+    the optional frontend status card. Mirrors the pure dataclass
+    ``TrueMomentumStrategyStatus`` from the recommendation package.
+
+    This payload never approves, rejects, sizes, routes, opens, closes,
+    or settles trades. It also never adds queue candidates.
+    """
+
+    requested_mode: Literal["disabled", "research_preview", "active"] = "disabled"
+    effective_mode: Literal["disabled", "research_preview", "active"] = "disabled"
+    enabled: bool = False
+    guard_enabled: bool = False
+    invalid_env_value: bool = False
+    mode_env_var: str = "MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE"
+    guard_env_var: str = "MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES"
+    reason_codes: list[str] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
+    family_specs: list[TrueMomentumStrategyFamilySpecPayload] = Field(default_factory=list)
+    phase: str = "C0"
+    implementation_status: str = "scaffold_only"
+    parity_status: str = "pending_thinkorswim_fixture_validation"
+    parity_required_for_active: bool = True
+
+
+# Back-compat alias requested in the Phase C0 spec — both names refer
+# to the same resolved status payload.
+TrueMomentumStrategyModeStatus = TrueMomentumStrategyFamilyStatusPayload

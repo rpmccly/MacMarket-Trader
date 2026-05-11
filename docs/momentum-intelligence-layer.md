@@ -2061,6 +2061,133 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase A/B Closeout
+
+This section closes out the completed Momentum Intelligence Phase A and
+Phase B work. It is intentionally stable — it records what shipped, the
+active-mode operator knobs, the current safety posture, and what
+remains outstanding before any Phase C activation can be considered.
+
+### Phase A completed (research surface)
+
+- Backend Momentum indicator + score engine wired through the
+  recommendation pipeline.
+- `/charts/momentum` payload exposes the candles, indicator lines,
+  HiLo thrust strip, score strip, signal markers, latest snapshot,
+  and chart explanation in one deterministic blob.
+- Momentum workspace surfaces the chart + summary + markers in a
+  read-only operator surface.
+- Symbol Snapshot, Strategy Workbench, and Recommendation Detail
+  surfaces consume the same Momentum snapshot for context.
+- Thinkorswim parity fixture infrastructure exists at
+  `tests/fixtures/thinkorswim_momentum/` with a `manifest.json`
+  pointer; real fixtures remain pending.
+
+### Phase B completed (bounded ranking influence)
+
+- B1 — bounded contribution capped at ±20 score units, mode-aware
+  (`off`/`shadow`/`active`) with the safety-guard scaffolding.
+- B2 — operator UI for the ranking contribution per candidate.
+- B3 — operator status visibility through the
+  `/user/momentum-ranking-status` endpoint and the Settings
+  Momentum-ranking status card.
+- B4 — Momentum Shadow Impact Review on Recommendations.
+- B4.2 — improved direction inference for bullish strategy families.
+- B6 — controlled active-mode safety guard
+  (`MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING`).
+- B6.1 — active-mode score saturation control via
+  `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE`.
+- B6.2 — active-mode score wiring fix; baseline score before Momentum
+  was applied is surfaced on each candidate.
+- B6.3 — single source of truth for the active queue score plus the
+  always-on ranking-score consistency guard.
+- B6.4 — last-boundary queue-response consistency guard re-stamping
+  active-applied rows in the queue route.
+- B7 — Active Momentum Trial Journal / Comparison Report (operator
+  evidence capture, local/export-only, no backend write).
+- B7.1 — trial-journal polish: trade warnings vs operational caveats
+  separated, evaluated universe vs captured symbols labeling, single
+  deterministic guardrail note.
+- Deploy temp handling was hardened so pytest temp directories no
+  longer collide with the deployed working tree under
+  `C:\Dashboard\MacMarket-Trader`.
+
+### Active-mode env vars (current operator knobs)
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `MACMARKET_MOMENTUM_RANKING_MODE` | `off` / `shadow` / `active` | `shadow` |
+| `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING` | Phase B6 safety guard for active mode | `false` |
+| `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE` | Phase B6.1 scale applied to the bounded raw contribution | `0.35` |
+
+### Current recommended active-trial values
+
+```env
+MACMARKET_MOMENTUM_RANKING_MODE=active
+MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true
+MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE=0.35
+```
+
+Under these values:
+
+- Raw `+20.00` contribution maps to applied `+0.070` on the
+  `[0, 1]` ranking score.
+- Active queue no longer broadly saturates to `1.000`.
+- Operator can still flip `MACMARKET_MOMENTUM_RANKING_MODE=shadow`
+  or toggle the safety guard back to `false` to revert to the
+  display-only Phase B baseline at any time.
+
+### Safety posture
+
+- **Ranking only.** Phase B influences candidate ordering only.
+- **No approval behavior change.** Promote / save / approve flows are
+  byte-identical to pre-Phase-B behavior.
+- **No paper-order behavior change.** Paper-order creation remains
+  manual and operator-initiated.
+- **No auto-ordering.** Active mode never routes, opens, closes, or
+  settles a position.
+- **Parity pending visible.** Every Momentum status surface (Settings
+  card, Recommendations impact review, Trial Journal snapshot, status
+  endpoint) surfaces `parity_pending` and the
+  `thinkorswim_parity_pending` reason code while real fixtures
+  remain absent.
+
+### Outstanding items
+
+- **Real Thinkorswim parity fixtures.** Drop CSVs into
+  `tests/fixtures/thinkorswim_momentum/` per the parity-fixtures plan
+  and update `manifest.json`. Once a fixture passes, flip
+  `parity_required_for_active` to `True` so active mode requires
+  measured parity rather than operator discretion alone.
+- **Active trial outcome tagging / review.** The Phase B7 trial
+  journal captures evidence locally; a future iteration may add
+  operator-side tagging of outcomes against captured snapshots.
+- **Phase C strategy-family implementation.** Phase C0 (scaffolding)
+  is documented in
+  [`docs/true-momentum-strategy-families.md`](true-momentum-strategy-families.md);
+  no Phase C strategy currently generates queue candidates.
+- **Possible Thinkorswim review for XLY / XLE / XLV differences.**
+  Operator-flagged sectors where the deployed Momentum scoring differed
+  noticeably from the Thinkorswim view during the active trial; this is
+  a precondition before any Phase C activation.
+
+### Phase C posture (explicit)
+
+- **Phase C is not active.**
+- **Phase C strategies are not generating queue candidates.**
+- **Phase C does not approve, reject, size, or route trades.**
+
+The Phase C0 scaffold module is read-only: it exposes specs and a
+resolved status, gated behind both
+`MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE` and the explicit
+`MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES` guard. With the
+default settings, the effective mode is `disabled` and no preview rows
+or queue candidates are produced. See
+[`docs/momentum-phase-closeout.md`](momentum-phase-closeout.md) for the
+operator-friendly checklist and
+[`docs/true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
+for the full Phase C0 specification.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

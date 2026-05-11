@@ -170,6 +170,39 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Phase C0 — True Momentum strategy-family scaffolding mode.
+    # disabled         = no Phase C strategy candidates generated, only
+    #                    status/specs available via the read-only API.
+    # research_preview = render specs and resolved status only; still
+    #                    does not generate queue candidates, approve,
+    #                    reject, size, route, open, close, or settle
+    #                    trades. Requires the guard env var below.
+    # active           = reserved for a future Phase C1; resolves to
+    #                    research_preview in Phase C0.
+    # See ``docs/true-momentum-strategy-families.md``.
+    true_momentum_strategy_mode: str = Field(
+        default="disabled",
+        validation_alias=AliasChoices(
+            "MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE",
+            "TRUE_MOMENTUM_STRATEGY_MODE",
+        ),
+    )
+
+    # Phase C0 — explicit guard for the True Momentum strategy-family
+    # scaffolding. ``research_preview``/``active`` require this to be
+    # truthy; otherwise the effective mode is forced back to ``disabled``
+    # with the ``true_momentum_strategy_mode_blocked_by_guard`` reason
+    # code. Truthy values: ``true`` / ``1`` / ``yes`` / ``on``
+    # (case-insensitive). Default False so production cannot silently
+    # flip Phase C state.
+    allow_true_momentum_strategy_families: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES",
+            "ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES",
+        ),
+    )
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
     @model_validator(mode="after")

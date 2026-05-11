@@ -623,6 +623,63 @@ def momentum_ranking_status(_user=Depends(require_approved_user)):
     return status.model_dump(mode="json")
 
 
+@user_router.get("/true-momentum-strategy-families/status")
+def true_momentum_strategy_families_status(_user=Depends(require_approved_user)):
+    """Phase C0 read-only operator status for True Momentum strategy families.
+
+    No DB writes, no provider calls, no market-data calls, no LLM calls,
+    no recommendation generation, no order routing. Resolves the
+    configured Phase C0 mode + guard from settings and returns the
+    planned family specs alongside reason codes and guardrails. Invalid
+    env values resolve to ``disabled`` with the
+    ``true_momentum_strategy_invalid_env_value_resolved_to_disabled``
+    reason code. ``research_preview`` / ``active`` are forced back to
+    ``disabled`` unless the
+    ``MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES`` guard is truthy.
+    """
+    from macmarket_trader.domain.schemas import (
+        TrueMomentumStrategyFamilySpecPayload,
+        TrueMomentumStrategyFamilyStatusPayload,
+    )
+    from macmarket_trader.recommendation.true_momentum_strategy_families import (
+        build_true_momentum_strategy_status,
+    )
+
+    status = build_true_momentum_strategy_status(settings)
+    payload = TrueMomentumStrategyFamilyStatusPayload(
+        requested_mode=status.requested_mode,
+        effective_mode=status.effective_mode,
+        enabled=status.enabled,
+        guard_enabled=status.guard_enabled,
+        invalid_env_value=status.invalid_env_value,
+        mode_env_var=status.mode_env_var,
+        guard_env_var=status.guard_env_var,
+        reason_codes=list(status.reason_codes),
+        guardrails=list(status.guardrails),
+        family_specs=[
+            TrueMomentumStrategyFamilySpecPayload(
+                id=spec.id,
+                label=spec.label,
+                description=spec.description,
+                status=spec.status,
+                intended_direction=spec.intended_direction,
+                required_inputs=list(spec.required_inputs),
+                deterministic_signals=list(spec.deterministic_signals),
+                guardrails=list(spec.guardrails),
+                not_allowed_actions=list(spec.not_allowed_actions),
+                phase=spec.phase,
+                implementation_status=spec.implementation_status,
+            )
+            for spec in status.family_specs
+        ],
+        phase=status.phase,
+        implementation_status=status.implementation_status,
+        parity_status=status.parity_status,
+        parity_required_for_active=status.parity_required_for_active,
+    )
+    return payload.model_dump(mode="json")
+
+
 def _update_user_settings(req: dict[str, object], user) -> dict[str, object]:
     """Update operator-controlled settings for sizing and commission defaults."""
     allowed_keys = {

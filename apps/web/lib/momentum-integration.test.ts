@@ -470,6 +470,125 @@ describe("Momentum Intelligence Phase B7 trial-journal guards", () => {
   });
 });
 
+describe("Momentum Intelligence Phase C0 True Momentum scaffolding guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase C0 lib + component exist and render the scaffold-only copy", () => {
+    const lib = read("lib/true-momentum-strategy-families.ts");
+    const view = read("components/recommendations/true-momentum-strategy-families-status-card.tsx");
+    expect(lib).toContain("Phase C0");
+    expect(lib).toContain("scaffold");
+    expect(lib).toContain("/api/user/true-momentum-strategy-families/status");
+    expect(view).toContain("Phase C0");
+    expect(view).toContain("scaffold");
+    expect(view).toContain("Still pending");
+  });
+
+  it("Phase C0 module is not imported into order, paper-position, paper-trade, options-paper, or replay-preview routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-strategy-families",
+      "@/components/recommendations/true-momentum-strategy-families-status-card",
+      "TrueMomentumStrategyFamiliesStatusCard",
+      "TrueMomentumStrategyFamiliesStatusCardView",
+      "fetchTrueMomentumStrategyFamilyStatus",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C0 module is not imported into order/recommendation helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+      "lib/recommendations.ts",
+      "lib/momentum-impact.ts",
+      "lib/momentum-trial-journal.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-strategy-families",
+      "@/components/recommendations/true-momentum-strategy-families-status-card",
+      "TrueMomentumStrategyFamiliesStatusCard",
+      "fetchTrueMomentumStrategyFamilyStatus",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C0 surfaces avoid forbidden trade-approval / order-routing language", () => {
+    const surfaces = [
+      "lib/true-momentum-strategy-families.ts",
+      "components/recommendations/true-momentum-strategy-families-status-card.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("Settings page mounts the Phase C0 card under Momentum ranking status", () => {
+    const source = read("app/(console)/settings/page.tsx");
+    expect(source).toContain("TrueMomentumStrategyFamiliesStatusCard");
+    expect(source).toContain(
+      "@/components/recommendations/true-momentum-strategy-families-status-card",
+    );
+    // The card sits AFTER the Phase B Momentum ranking status section.
+    const momentumIdx = source.indexOf("MomentumRankingStatusSection");
+    const phaseCIdx = source.indexOf("<TrueMomentumStrategyFamiliesStatusCard");
+    expect(momentumIdx).toBeGreaterThan(-1);
+    expect(phaseCIdx).toBeGreaterThan(momentumIdx);
+  });
+
+  it("Recommendations page does not mount the Phase C0 card", () => {
+    // Phase C0 explicitly stays out of the recommendation queue surface
+    // — operator status only, under Settings.
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).not.toContain("TrueMomentumStrategyFamiliesStatusCard");
+    expect(source).not.toContain("true-momentum-strategy-families");
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

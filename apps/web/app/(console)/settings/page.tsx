@@ -12,6 +12,7 @@ import {
   OPTIONS_COMMISSION_NOT_PER_SHARE_TEXT,
 } from "@/lib/recommendations";
 import { MomentumRankingStatusSection } from "@/components/recommendations/momentum-ranking-status-card";
+import { TrueMomentumStrategyFamiliesStatusCard } from "@/components/recommendations/true-momentum-strategy-families-status-card";
 
 type UserMe = {
   id: number;
@@ -306,6 +307,16 @@ export default function SettingsPage() {
       </Card>
 
       <MomentumRankingStatusSection title="Momentum ranking status (operator readiness)" />
+
+      {/*
+        Phase C0 — True Momentum strategy families. Read-only status only.
+        Mounted under Settings (not Recommendations / not order paths).
+        Does not generate queue candidates and does not approve, reject,
+        size, or route trades.
+      */}
+      <TrueMomentumStrategyFamiliesStatusCard
+        title="True Momentum strategy families (Phase C0 scaffolding)"
+      />
     </section>
   );
 }
