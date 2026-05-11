@@ -115,6 +115,107 @@ status payload:
 Requires an approved user. No DB writes. No provider / market-data
 calls. No recommendation generation.
 
+## Phase C1 — read-only research-preview classifier
+
+Phase C1 layers a **read-only research-preview classifier** on top of
+the Phase C0 scaffolding. It classifies the already-loaded
+Recommendations queue into the three planned True Momentum families
+without generating new queue candidates and without changing ranking,
+queue sorting, approval, paper-order, replay, or options behavior.
+
+### What it does
+
+- Reads the current Recommendations queue (already loaded in memory).
+- Normalizes each candidate's Momentum contribution (total score,
+  total label, trend / momo / direction / pullback / reversal flags,
+  raw contribution, applied delta, parity / derived-HTF caveats).
+- Applies family rules with precedence
+  **reversal_watch > pullback > continuation**:
+  - `true_momentum_reversal_watch` when any of: `reversal_warning`,
+    `no_trade_warning`, bear total label on a long-biased strategy, or
+    `total_score ≤ -50` on a long-biased strategy. Match strength is
+    always `watch`.
+  - `true_momentum_pullback` when a long-biased candidate is bullish
+    (`Bull` / `Max Bull` or `total_score ≥ 80`), `raw_contribution > 0`,
+    no warnings, and either the `pullback_signal` flag is active or the
+    source strategy is "Pullback / Trend Continuation". Strength is
+    `strong` if both pullback signal and bullish label fire, otherwise
+    `moderate`.
+  - `true_momentum_continuation` when a long-biased candidate is
+    bullish (`Bull` / `Max Bull` or `total_score ≥ 80`),
+    `raw_contribution > 0`, no warnings, and not bearish. Strength is
+    `strong` if both `trend_score ≥ 70` and `momo_score ≥ 70` confirm,
+    otherwise `moderate`.
+- Surfaces operational caveats (`thinkorswim_parity_pending`,
+  `derived_higher_timeframe`, `direction_unknown`,
+  `active_mode_blocked_by_safety_guard`, `score_consistency_corrected`)
+  per preview row.
+- Always marks every preview row `non_actionable: true` and never
+  includes entry / stop / target / size / approval / order fields.
+
+### What it does NOT do
+
+- **No new queue candidates.** Phase C1 only *labels* existing rows.
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, Phase B1 / B6 / B6.x wiring are
+  byte-identical.
+- **No queue sorting change.**
+- **No approval, promote, save, paper-order, settle, replay, or
+  options-preview behavior change.**
+- **No backend mutation.** No DB write, no migration, no LLM call, no
+  provider / market-data call.
+- **No Phase C active behavior.** `MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=active`
+  is still reserved — the resolved effective mode degrades to
+  `research_preview` with the
+  `true_momentum_strategy_active_mode_not_implemented` reason code.
+
+### Env to enable the read-only research preview
+
+```env
+MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=research_preview
+MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true
+```
+
+Both env vars are required. The guard alone with `mode=disabled` is a
+no-op; the mode alone without the guard forces the effective mode back
+to `disabled` with the `true_momentum_strategy_mode_blocked_by_guard`
+reason code.
+
+### Surfaces
+
+- **Backend pure evaluator** —
+  `src/macmarket_trader/recommendation/true_momentum_strategy_families.py`
+  exposes `evaluate_true_momentum_strategy_preview(settings, *,
+  candidates)`. Returns a dict carrying `status`, `previews`,
+  `previews_generated`, `summary`, `guardrails`, `phase`,
+  `implementation_status`, `preview_phase`,
+  `preview_implementation_status`, `deterministic_note`, and a typed
+  `TrueMomentumStrategyPreviewResult` under `result`.
+- **Read-only endpoint** —
+  `POST /user/true-momentum-strategy-families/preview` (approved-user
+  auth). Request: `{ "candidates": [...] }`. Response: the typed
+  `TrueMomentumStrategyPreviewResultPayload` (status + summary +
+  previews + guardrails + deterministic note). No DB writes, no
+  provider calls, no market-data calls.
+- **Frontend pure helper** —
+  `apps/web/lib/true-momentum-strategy-preview.ts`
+  (`buildTrueMomentumStrategyPreview`,
+  `summarizeTrueMomentumStrategyPreview`,
+  `trueMomentumPreviewReasonLabels`, `trueMomentumPreviewTone`,
+  `familyPreviewLabel`).
+- **Frontend panel** —
+  `apps/web/components/recommendations/true-momentum-strategy-preview-panel.tsx`
+  is mounted on the Recommendations page directly after the Momentum
+  Trial Journal. Renders the disabled empty state with env
+  instructions, the research-preview summary cards + preview table,
+  the active-reserved copy, and the deterministic guardrail note.
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

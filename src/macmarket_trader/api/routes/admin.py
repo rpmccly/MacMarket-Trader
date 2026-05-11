@@ -623,6 +623,135 @@ def momentum_ranking_status(_user=Depends(require_approved_user)):
     return status.model_dump(mode="json")
 
 
+@user_router.post("/true-momentum-strategy-families/preview")
+def true_momentum_strategy_families_preview(
+    req: dict,
+    _user=Depends(require_approved_user),
+):
+    """Phase C1 read-only research-preview classifier.
+
+    Accepts already-loaded queue-candidate-like payloads in
+    ``req["candidates"]`` (the operator UI submits the existing
+    Recommendations queue). Classifies them into the three planned
+    True Momentum families without changing ranking, queue sorting,
+    approval, paper-order, replay, or options behavior.
+
+    No DB writes. No provider / market-data / LLM calls. No new queue
+    candidates are emitted — the classifier only labels existing rows.
+    Disabled / guard-blocked modes return zero previews and the
+    appropriate reason code.
+    """
+    from macmarket_trader.domain.schemas import (
+        TrueMomentumStrategyFamilySpecPayload,
+        TrueMomentumStrategyFamilyStatusPayload,
+        TrueMomentumStrategyPreviewCandidatePayload,
+        TrueMomentumStrategyPreviewResultPayload,
+        TrueMomentumStrategyPreviewSummaryPayload,
+    )
+    from macmarket_trader.recommendation.true_momentum_strategy_families import (
+        evaluate_true_momentum_strategy_preview,
+    )
+
+    candidates_raw = req.get("candidates") if isinstance(req, dict) else None
+    if not isinstance(candidates_raw, list):
+        candidates_raw = []
+    result_dict = evaluate_true_momentum_strategy_preview(
+        settings, candidates=candidates_raw
+    )
+    typed = result_dict["result"]
+
+    status = typed.status
+    status_payload = TrueMomentumStrategyFamilyStatusPayload(
+        requested_mode=status.requested_mode,
+        effective_mode=status.effective_mode,
+        enabled=status.enabled,
+        guard_enabled=status.guard_enabled,
+        invalid_env_value=status.invalid_env_value,
+        mode_env_var=status.mode_env_var,
+        guard_env_var=status.guard_env_var,
+        reason_codes=list(status.reason_codes),
+        guardrails=list(status.guardrails),
+        family_specs=[
+            TrueMomentumStrategyFamilySpecPayload(
+                id=spec.id,
+                label=spec.label,
+                description=spec.description,
+                status=spec.status,
+                intended_direction=spec.intended_direction,
+                required_inputs=list(spec.required_inputs),
+                deterministic_signals=list(spec.deterministic_signals),
+                guardrails=list(spec.guardrails),
+                not_allowed_actions=list(spec.not_allowed_actions),
+                phase=spec.phase,
+                implementation_status=spec.implementation_status,
+            )
+            for spec in status.family_specs
+        ],
+        phase=status.phase,
+        implementation_status=status.implementation_status,
+        parity_status=status.parity_status,
+        parity_required_for_active=status.parity_required_for_active,
+    )
+
+    summary_payload = TrueMomentumStrategyPreviewSummaryPayload(
+        candidate_count=typed.summary.candidate_count,
+        preview_count=typed.summary.preview_count,
+        continuation_count=typed.summary.continuation_count,
+        pullback_count=typed.summary.pullback_count,
+        reversal_watch_count=typed.summary.reversal_watch_count,
+        strong_count=typed.summary.strong_count,
+        moderate_count=typed.summary.moderate_count,
+        watch_count=typed.summary.watch_count,
+        blocked_count=typed.summary.blocked_count,
+        parity_pending_count=typed.summary.parity_pending_count,
+        derived_higher_timeframe_count=typed.summary.derived_higher_timeframe_count,
+        operational_caveat_count=typed.summary.operational_caveat_count,
+    )
+
+    preview_payloads = [
+        TrueMomentumStrategyPreviewCandidatePayload(
+            preview_id=p.preview_id,
+            family_id=p.family_id,
+            family_label=p.family_label,
+            symbol=p.symbol,
+            strategy=p.strategy,
+            rank=p.rank,
+            baseline_score=p.baseline_score,
+            active_score=p.active_score,
+            raw_contribution=p.raw_contribution,
+            applied_delta=p.applied_delta,
+            total_score=p.total_score,
+            total_label=p.total_label,
+            trend_score=p.trend_score,
+            momo_score=p.momo_score,
+            inferred_direction=p.inferred_direction,
+            pullback_signal=p.pullback_signal,
+            reversal_warning=p.reversal_warning,
+            no_trade_warning=p.no_trade_warning,
+            reason_codes=list(p.reason_codes),
+            operational_caveats=list(p.operational_caveats),
+            match_strength=p.match_strength,
+            research_notes=list(p.research_notes),
+            non_actionable=p.non_actionable,
+        )
+        for p in typed.previews
+    ]
+
+    payload = TrueMomentumStrategyPreviewResultPayload(
+        status=status_payload,
+        summary=summary_payload,
+        previews=preview_payloads,
+        previews_generated=typed.previews_generated,
+        guardrails=list(typed.guardrails),
+        phase=typed.phase,
+        implementation_status=typed.implementation_status,
+        preview_phase=typed.preview_phase,
+        preview_implementation_status=typed.preview_implementation_status,
+        deterministic_note=typed.deterministic_note,
+    )
+    return payload.model_dump(mode="json")
+
+
 @user_router.get("/true-momentum-strategy-families/status")
 def true_momentum_strategy_families_status(_user=Depends(require_approved_user)):
     """Phase C0 read-only operator status for True Momentum strategy families.

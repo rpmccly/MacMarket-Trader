@@ -44,11 +44,17 @@ from macmarket_trader.recommendation.true_momentum_strategy_families import (
     IMPLEMENTATION_STATUS,
     MODE_ENV_VAR,
     PHASE,
+    PREVIEW_DETERMINISTIC_NOTE,
+    PREVIEW_IMPLEMENTATION_STATUS,
+    PREVIEW_PHASE,
     REASON_INVALID_ENV_VALUE_RESOLVED_TO_DISABLED,
     REASON_THINKORSWIM_PARITY_PENDING,
     REASON_TRUE_MOMENTUM_ACTIVE_NOT_IMPLEMENTED,
     REASON_TRUE_MOMENTUM_STRATEGY_MODE_BLOCKED_BY_GUARD,
     TrueMomentumStrategyFamilySpec,
+    TrueMomentumStrategyPreviewCandidate,
+    TrueMomentumStrategyPreviewResult,
+    TrueMomentumStrategyPreviewSummary,
     TrueMomentumStrategyStatus,
     build_true_momentum_strategy_status,
     evaluate_true_momentum_strategy_preview,
@@ -272,20 +278,462 @@ def test_evaluate_preview_returns_no_candidates_in_disabled_mode() -> None:
     assert result["implementation_status"] == IMPLEMENTATION_STATUS
 
 
-def test_evaluate_preview_returns_no_candidates_in_research_preview() -> None:
+def test_evaluate_preview_in_research_preview_with_no_candidates_runs_classifier() -> None:
+    # Phase C1: research_preview mode runs the classifier even when the
+    # caller passes no candidates. The output is no previews + the
+    # no-match reason code, not a "feature disabled" signal.
     result = evaluate_true_momentum_strategy_preview(
         _settings_ns(mode="research_preview", guard="true")
     )
     assert result["previews"] == []
-    assert result["previews_generated"] is False
+    assert result["previews_generated"] is True
+    assert "true_momentum_strategy_mode_disabled" not in result["status"].reason_codes
+    assert "true_momentum_preview_no_candidates" in result["status"].reason_codes
 
 
-def test_evaluate_preview_returns_no_candidates_in_active_mode_too() -> None:
+def test_evaluate_preview_active_requested_with_guard_degrades_to_research_preview() -> None:
+    # Phase C1: active mode is still reserved. With the guard truthy
+    # the effective mode degrades to research_preview, so the classifier
+    # runs but the result carries the active-not-implemented reason.
     result = evaluate_true_momentum_strategy_preview(
         _settings_ns(mode="active", guard="true")
     )
     assert result["previews"] == []
+    assert result["previews_generated"] is True
+    assert (
+        "true_momentum_strategy_active_mode_not_implemented"
+        in result["status"].reason_codes
+    )
+
+
+# ── Phase C1 — research-preview classifier ─────────────────────────────
+
+
+def _contribution(
+    *,
+    mode: str = "active",
+    applied: bool = True,
+    total_score: int | None = 80,
+    total_label: str | None = "Bull",
+    trend_score: float | None = 75.0,
+    momo_score: float | None = 72.0,
+    raw_total_contribution: float = 20.0,
+    applied_score_delta: float = 0.07,
+    inferred_direction: str = "long",
+    pullback_signal: bool = False,
+    reversal_warning: bool = False,
+    no_trade_warning: bool = False,
+    reason_codes: list[str] | None = None,
+    active_delta_scale: float = 0.35,
+) -> dict:
+    return {
+        "mode": mode,
+        "enabled": True,
+        "applied": applied,
+        "raw_total_contribution": raw_total_contribution,
+        "applied_score_delta": applied_score_delta,
+        "total_contribution": raw_total_contribution,
+        "shadow_contribution": raw_total_contribution,
+        "total_score": total_score,
+        "total_label": total_label,
+        "trend_score": trend_score,
+        "momo_score": momo_score,
+        "inferred_direction": inferred_direction,
+        "pullback_signal": pullback_signal,
+        "reversal_warning": reversal_warning,
+        "no_trade_warning": no_trade_warning,
+        "reason_codes": list(reason_codes) if reason_codes else [],
+        "active_delta_scale": active_delta_scale,
+    }
+
+
+def _queue_candidate(
+    *,
+    symbol: str,
+    strategy: str = "Event Continuation",
+    rank: int = 1,
+    score: float = 0.95,
+    score_before_momentum: float = 0.88,
+    contribution: dict | None = None,
+    score_consistency_status: str = "ok",
+) -> dict:
+    return {
+        "symbol": symbol,
+        "strategy": strategy,
+        "rank": rank,
+        "score": score,
+        "score_before_momentum": score_before_momentum,
+        "score_after_momentum": score,
+        "momentum_score_delta": score - score_before_momentum,
+        "momentum_realized_score_delta": score - score_before_momentum,
+        "momentum_contribution": contribution if contribution is not None else _contribution(),
+        "score_consistency_status": score_consistency_status,
+    }
+
+
+def test_evaluate_preview_classifies_continuation_candidate() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="XLK",
+            strategy="Event Continuation",
+            contribution=_contribution(
+                total_score=85,
+                total_label="Bull",
+                trend_score=78,
+                momo_score=73,
+                raw_total_contribution=20.0,
+                inferred_direction="long",
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    assert result["previews_generated"] is True
+    previews = result["previews"]
+    assert len(previews) == 1
+    preview = previews[0]
+    assert isinstance(preview, TrueMomentumStrategyPreviewCandidate)
+    assert preview.family_id == "true_momentum_continuation"
+    assert preview.family_label == "True Momentum Continuation"
+    assert preview.symbol == "XLK"
+    assert preview.match_strength == "strong"
+    assert preview.non_actionable is True
+    assert "true_momentum_continuation_match" in preview.reason_codes
+    assert "momentum_total_label_bullish" in preview.reason_codes
+    assert "trend_alignment_long_confirmed" in preview.reason_codes
+    assert "momo_score_long_confirmed" in preview.reason_codes
+
+
+def test_evaluate_preview_classifies_continuation_as_moderate_when_trend_or_momo_weak() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="QQQ",
+            strategy="Breakout / Prior-Day High",
+            contribution=_contribution(
+                total_score=82,
+                total_label="Bull",
+                trend_score=65,  # below 70 → not strong
+                momo_score=68,
+                raw_total_contribution=18.0,
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    assert len(result["previews"]) == 1
+    preview = result["previews"][0]
+    assert preview.family_id == "true_momentum_continuation"
+    assert preview.match_strength == "moderate"
+
+
+def test_evaluate_preview_classifies_pullback_via_signal_flag() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="IWM",
+            strategy="Pullback / Trend Continuation",
+            contribution=_contribution(
+                total_score=82,
+                total_label="Bull",
+                trend_score=72,
+                momo_score=74,
+                raw_total_contribution=15.0,
+                pullback_signal=True,
+                inferred_direction="long",
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    previews = result["previews"]
+    assert len(previews) == 1
+    assert previews[0].family_id == "true_momentum_pullback"
+    assert previews[0].match_strength == "strong"
+    assert "true_momentum_pullback_match" in previews[0].reason_codes
+    assert "momentum_pullback_signal_active" in previews[0].reason_codes
+
+
+def test_evaluate_preview_classifies_pullback_via_strategy_label_only() -> None:
+    # No pullback_signal flag but the source strategy is the Pullback /
+    # Trend Continuation row — moderate strength.
+    queue = [
+        _queue_candidate(
+            symbol="DIA",
+            strategy="Pullback / Trend Continuation",
+            contribution=_contribution(
+                total_score=82,
+                total_label="Bull",
+                trend_score=72,
+                momo_score=74,
+                raw_total_contribution=12.0,
+                pullback_signal=False,
+                inferred_direction="long",
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    previews = result["previews"]
+    assert len(previews) == 1
+    assert previews[0].family_id == "true_momentum_pullback"
+    assert previews[0].match_strength == "moderate"
+    assert "strategy_is_pullback_or_trend_continuation" in previews[0].reason_codes
+
+
+def test_evaluate_preview_classifies_reversal_watch_on_no_trade_warning() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="BAD",
+            strategy="Event Continuation",
+            contribution=_contribution(
+                no_trade_warning=True,
+                total_score=70,
+                total_label="Bull",
+                reason_codes=["momentum_no_trade_warning"],
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    previews = result["previews"]
+    assert len(previews) == 1
+    preview = previews[0]
+    assert preview.family_id == "true_momentum_reversal_watch"
+    assert preview.match_strength == "watch"
+    assert "momentum_no_trade_warning" in preview.reason_codes
+
+
+def test_evaluate_preview_classifies_reversal_watch_on_reversal_warning() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="REV",
+            strategy="Event Continuation",
+            contribution=_contribution(
+                reversal_warning=True,
+                reason_codes=["momentum_reversal_warning"],
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    assert result["previews"][0].family_id == "true_momentum_reversal_watch"
+
+
+def test_evaluate_preview_classifies_reversal_watch_on_bear_label_for_long_strategy() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="CONTRA",
+            strategy="Event Continuation",
+            contribution=_contribution(
+                total_label="Max Bear",
+                total_score=-65,
+                raw_total_contribution=-15.0,
+                inferred_direction="long",
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    previews = result["previews"]
+    assert len(previews) == 1
+    assert previews[0].family_id == "true_momentum_reversal_watch"
+    assert "bear_total_label_long_strategy_contradiction" in previews[0].reason_codes
+    assert "bear_total_score_long_strategy_contradiction" in previews[0].reason_codes
+
+
+def test_evaluate_preview_precedence_reversal_watch_beats_continuation() -> None:
+    # A candidate that would otherwise match continuation but also has
+    # a reversal warning must be classified as reversal_watch only.
+    queue = [
+        _queue_candidate(
+            symbol="MIXED",
+            strategy="Event Continuation",
+            contribution=_contribution(
+                total_score=85,
+                total_label="Bull",
+                trend_score=78,
+                momo_score=72,
+                reversal_warning=True,
+                reason_codes=["momentum_reversal_warning"],
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    previews = result["previews"]
+    assert len(previews) == 1
+    assert previews[0].family_id == "true_momentum_reversal_watch"
+
+
+def test_evaluate_preview_skips_candidates_with_no_family_match() -> None:
+    # Short-biased / off-mode rows do not fit any of the three planned
+    # families.
+    queue = [
+        _queue_candidate(
+            symbol="OFF",
+            strategy="Mean Reversion",
+            contribution=_contribution(
+                mode="off",
+                applied=False,
+                inferred_direction="unknown",
+                total_label=None,
+                total_score=None,
+                trend_score=None,
+                momo_score=None,
+                raw_total_contribution=0.0,
+                applied_score_delta=0.0,
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    assert result["previews"] == []
+    # Summary still counts the candidate input.
+    assert result["summary"].candidate_count == 1
+    assert result["summary"].preview_count == 0
+
+
+def test_evaluate_preview_disabled_mode_returns_disabled_reason() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="XLK",
+            strategy="Event Continuation",
+            contribution=_contribution(),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(), candidates=queue
+    )
+    assert result["previews"] == []
     assert result["previews_generated"] is False
+    assert "true_momentum_strategy_mode_disabled" in result["status"].reason_codes
+
+
+def test_evaluate_preview_summary_carries_per_family_counts() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="XLK",
+            contribution=_contribution(
+                total_score=85, total_label="Bull",
+                trend_score=78, momo_score=73,
+            ),
+        ),
+        _queue_candidate(
+            symbol="IWM",
+            strategy="Pullback / Trend Continuation",
+            rank=2,
+            contribution=_contribution(
+                total_score=82, total_label="Bull",
+                trend_score=72, momo_score=72,
+                pullback_signal=True,
+            ),
+        ),
+        _queue_candidate(
+            symbol="BAD",
+            rank=3,
+            contribution=_contribution(
+                no_trade_warning=True,
+                reason_codes=["momentum_no_trade_warning"],
+            ),
+        ),
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    summary = result["summary"]
+    assert isinstance(summary, TrueMomentumStrategyPreviewSummary)
+    assert summary.candidate_count == 3
+    assert summary.preview_count == 3
+    assert summary.continuation_count == 1
+    assert summary.pullback_count == 1
+    assert summary.reversal_watch_count == 1
+
+
+def test_evaluate_preview_records_operational_caveats_from_contribution() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="PARITY",
+            contribution=_contribution(
+                total_score=85, total_label="Bull",
+                trend_score=78, momo_score=72,
+                reason_codes=["thinkorswim_parity_pending", "derived_higher_timeframe"],
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    preview = result["previews"][0]
+    assert "thinkorswim_parity_pending" in preview.operational_caveats
+    assert "derived_higher_timeframe" in preview.operational_caveats
+    assert result["summary"].parity_pending_count == 1
+    assert result["summary"].derived_higher_timeframe_count == 1
+
+
+def test_evaluate_preview_records_non_actionable_and_no_order_fields() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="XLK",
+            contribution=_contribution(
+                total_score=85, total_label="Bull",
+                trend_score=78, momo_score=73,
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    preview = result["previews"][0]
+    # The dataclass exposes exactly the documented preview fields.
+    keys = set(preview.__dataclass_fields__.keys())
+    assert preview.non_actionable is True
+    forbidden_keys = {
+        "entry", "stop", "target", "size", "order_id", "approved", "route",
+    }
+    assert keys.isdisjoint(forbidden_keys)
+
+
+def test_evaluate_preview_typed_result_is_self_contained() -> None:
+    queue = [
+        _queue_candidate(
+            symbol="XLK",
+            contribution=_contribution(
+                total_score=85, total_label="Bull",
+                trend_score=78, momo_score=73,
+            ),
+        )
+    ]
+    result = evaluate_true_momentum_strategy_preview(
+        _settings_ns(mode="research_preview", guard="true"),
+        candidates=queue,
+    )
+    typed = result["result"]
+    assert isinstance(typed, TrueMomentumStrategyPreviewResult)
+    assert typed.preview_phase == "C1"
+    assert typed.preview_implementation_status == "research_preview"
+    assert typed.deterministic_note == PREVIEW_DETERMINISTIC_NOTE
+    assert len(typed.previews) == 1
+    assert typed.previews[0].family_id == "true_momentum_continuation"
 
 
 def test_evaluate_preview_payload_has_no_action_fields() -> None:
@@ -393,6 +841,127 @@ def test_status_endpoint_blocks_research_preview_without_guard(monkeypatch) -> N
     assert (
         REASON_TRUE_MOMENTUM_STRATEGY_MODE_BLOCKED_BY_GUARD in payload["reason_codes"]
     )
+
+
+def test_preview_endpoint_requires_auth() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/user/true-momentum-strategy-families/preview", json={"candidates": []}
+    )
+    assert response.status_code == 401
+
+
+def test_preview_endpoint_disabled_mode_returns_no_previews(monkeypatch) -> None:
+    monkeypatch.setattr(_settings, "true_momentum_strategy_mode", "disabled")
+    monkeypatch.setattr(_settings, "allow_true_momentum_strategy_families", False)
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/user/true-momentum-strategy-families/preview",
+        json={
+            "candidates": [
+                _queue_candidate(
+                    symbol="XLK",
+                    contribution=_contribution(
+                        total_score=85, total_label="Bull",
+                        trend_score=78, momo_score=73,
+                    ),
+                )
+            ]
+        },
+        headers={"Authorization": "Bearer user-token"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["previews"] == []
+    assert payload["previews_generated"] is False
+    assert payload["status"]["effective_mode"] == "disabled"
+    assert "true_momentum_strategy_mode_disabled" in payload["status"]["reason_codes"]
+
+
+def test_preview_endpoint_research_preview_classifies_continuation(monkeypatch) -> None:
+    monkeypatch.setattr(_settings, "true_momentum_strategy_mode", "research_preview")
+    monkeypatch.setattr(_settings, "allow_true_momentum_strategy_families", True)
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/user/true-momentum-strategy-families/preview",
+        json={
+            "candidates": [
+                _queue_candidate(
+                    symbol="XLK",
+                    contribution=_contribution(
+                        total_score=85, total_label="Bull",
+                        trend_score=78, momo_score=73,
+                    ),
+                ),
+                _queue_candidate(
+                    symbol="BAD",
+                    rank=2,
+                    contribution=_contribution(
+                        no_trade_warning=True,
+                        reason_codes=["momentum_no_trade_warning"],
+                    ),
+                ),
+            ]
+        },
+        headers={"Authorization": "Bearer user-token"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["previews_generated"] is True
+    assert payload["preview_phase"] == "C1"
+    family_ids = [row["family_id"] for row in payload["previews"]]
+    assert "true_momentum_continuation" in family_ids
+    assert "true_momentum_reversal_watch" in family_ids
+    for row in payload["previews"]:
+        assert row["non_actionable"] is True
+        # No order / approval fields on any preview row.
+        assert "entry" not in row
+        assert "order_id" not in row
+        assert "approved" not in row
+    assert payload["summary"]["preview_count"] == 2
+
+
+def test_preview_endpoint_handles_missing_candidates_payload(monkeypatch) -> None:
+    monkeypatch.setattr(_settings, "true_momentum_strategy_mode", "research_preview")
+    monkeypatch.setattr(_settings, "allow_true_momentum_strategy_families", True)
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/user/true-momentum-strategy-families/preview",
+        json={},
+        headers={"Authorization": "Bearer user-token"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["previews"] == []
+    assert payload["previews_generated"] is True
+
+
+def test_preview_endpoint_does_not_call_market_provider(monkeypatch) -> None:
+    def _no_provider(*args, **kwargs):  # pragma: no cover - guard
+        raise AssertionError("Phase C1 preview endpoint must not call providers")
+
+    import macmarket_trader.api.routes.admin as admin_module
+
+    monkeypatch.setattr(
+        admin_module.market_data_service, "historical_bars", _no_provider, raising=False
+    )
+    monkeypatch.setattr(
+        admin_module.market_data_service, "provider_health", _no_provider, raising=False
+    )
+    monkeypatch.setattr(_settings, "true_momentum_strategy_mode", "research_preview")
+    monkeypatch.setattr(_settings, "allow_true_momentum_strategy_families", True)
+
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/user/true-momentum-strategy-families/preview",
+        json={"candidates": []},
+        headers={"Authorization": "Bearer user-token"},
+    )
+    assert response.status_code == 200
 
 
 def test_status_endpoint_does_not_call_market_provider(monkeypatch) -> None:

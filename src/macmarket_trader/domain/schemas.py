@@ -1514,3 +1514,90 @@ class TrueMomentumStrategyFamilyStatusPayload(BaseModel):
 # Back-compat alias requested in the Phase C0 spec — both names refer
 # to the same resolved status payload.
 TrueMomentumStrategyModeStatus = TrueMomentumStrategyFamilyStatusPayload
+
+
+class TrueMomentumStrategyPreviewCandidatePayload(BaseModel):
+    """Phase C1 — non-actionable preview row.
+
+    Describes how the planned True Momentum families would classify an
+    already-loaded recommendation queue candidate. Never proposes an
+    entry / stop / target / size / approval / order.
+    """
+
+    preview_id: str
+    family_id: Literal[
+        "true_momentum_continuation",
+        "true_momentum_pullback",
+        "true_momentum_reversal_watch",
+    ]
+    family_label: str
+    symbol: str
+    strategy: str
+    rank: int = 0
+    baseline_score: float = 0.0
+    active_score: float = 0.0
+    raw_contribution: float = 0.0
+    applied_delta: float = 0.0
+    total_score: int | None = None
+    total_label: str | None = None
+    trend_score: float | None = None
+    momo_score: float | None = None
+    inferred_direction: Literal["long", "short", "unknown"] = "unknown"
+    pullback_signal: bool = False
+    reversal_warning: bool = False
+    no_trade_warning: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+    operational_caveats: list[str] = Field(default_factory=list)
+    match_strength: Literal["strong", "moderate", "watch", "blocked"] = "watch"
+    research_notes: list[str] = Field(default_factory=list)
+    non_actionable: bool = True
+
+
+class TrueMomentumStrategyPreviewSummaryPayload(BaseModel):
+    """Phase C1 — per-family / per-strength preview counts."""
+
+    candidate_count: int = 0
+    preview_count: int = 0
+    continuation_count: int = 0
+    pullback_count: int = 0
+    reversal_watch_count: int = 0
+    strong_count: int = 0
+    moderate_count: int = 0
+    watch_count: int = 0
+    blocked_count: int = 0
+    parity_pending_count: int = 0
+    derived_higher_timeframe_count: int = 0
+    operational_caveat_count: int = 0
+
+
+class TrueMomentumStrategyPreviewResultPayload(BaseModel):
+    """Phase C1 — read-only research-preview result envelope."""
+
+    status: TrueMomentumStrategyFamilyStatusPayload
+    summary: TrueMomentumStrategyPreviewSummaryPayload = Field(
+        default_factory=TrueMomentumStrategyPreviewSummaryPayload
+    )
+    previews: list[TrueMomentumStrategyPreviewCandidatePayload] = Field(
+        default_factory=list
+    )
+    previews_generated: bool = False
+    guardrails: list[str] = Field(default_factory=list)
+    phase: str = "C0"
+    implementation_status: str = "scaffold_only"
+    preview_phase: str = "C1"
+    preview_implementation_status: str = "research_preview"
+    deterministic_note: str = (
+        "True Momentum strategy previews are research-only. They do not "
+        "generate queue candidates, approve, reject, size, or route trades."
+    )
+
+
+class TrueMomentumStrategyPreviewRequest(BaseModel):
+    """Phase C1 — read-only preview endpoint request body.
+
+    ``candidates`` accepts already-loaded queue-candidate-like payloads
+    so the operator UI can submit the existing queue. No DB writes, no
+    provider calls, no market-data calls are made when this is consumed.
+    """
+
+    candidates: list[dict[str, Any]] = Field(default_factory=list)

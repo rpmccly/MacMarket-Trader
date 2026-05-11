@@ -796,6 +796,134 @@ describe("Momentum Intelligence Phase B8.1 copy polish guards", () => {
   });
 });
 
+describe("Momentum Intelligence Phase C1 research-preview guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase C1 lib + panel exist and carry the deterministic preview note", () => {
+    const lib = read("lib/true-momentum-strategy-preview.ts");
+    const view = read("components/recommendations/true-momentum-strategy-preview-panel.tsx");
+    expect(lib).toContain("Phase C1");
+    expect(lib).toContain("buildTrueMomentumStrategyPreview");
+    expect(lib).toContain("summarizeTrueMomentumStrategyPreview");
+    expect(lib).toContain(
+      "True Momentum strategy previews are research-only. They do not generate queue candidates, approve, reject, size, or route trades.",
+    );
+    expect(view).toContain("TrueMomentumStrategyPreviewPanel");
+    expect(view).toContain("true-momentum-strategy-preview");
+    expect(view).toContain("Phase C1 research preview is disabled.");
+  });
+
+  it("Recommendations page mounts the Phase C1 preview panel near the trial journal", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain(
+      "@/components/recommendations/true-momentum-strategy-preview-panel",
+    );
+    expect(source).toContain("<TrueMomentumStrategyPreviewPanel candidates={queue}");
+    // The Trial Journal mount must still come earlier in the file —
+    // the preview panel sits *after* it.
+    const trialIdx = source.indexOf("<MomentumTrialJournal");
+    const previewIdx = source.indexOf("<TrueMomentumStrategyPreviewPanel");
+    expect(trialIdx).toBeGreaterThan(-1);
+    expect(previewIdx).toBeGreaterThan(trialIdx);
+  });
+
+  it("Phase C1 lib / panel are not imported into order, paper, replay, options-paper routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-strategy-preview",
+      "@/components/recommendations/true-momentum-strategy-preview-panel",
+      "TrueMomentumStrategyPreviewPanel",
+      "buildTrueMomentumStrategyPreview",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C1 lib / panel do not leak into order/recommendation helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+      "lib/recommendations.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-strategy-preview",
+      "@/components/recommendations/true-momentum-strategy-preview-panel",
+      "TrueMomentumStrategyPreviewPanel",
+      "buildTrueMomentumStrategyPreview",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C1 surfaces avoid forbidden trade-approval / order-routing language", () => {
+    const surfaces = [
+      "lib/true-momentum-strategy-preview.ts",
+      "components/recommendations/true-momentum-strategy-preview-panel.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("Phase C1 surfaces never imply queue-candidate generation", () => {
+    const surfaces = [
+      "lib/true-momentum-strategy-preview.ts",
+      "components/recommendations/true-momentum-strategy-preview-panel.tsx",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      // The phrase appears only as a negation ("do not generate queue
+      // candidates"). We assert the bare assertion phrase is absent so a
+      // future edit cannot silently say "generates queue candidates".
+      expect(lowered).not.toContain("generates queue candidates");
+    }
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

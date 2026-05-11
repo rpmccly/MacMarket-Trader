@@ -2061,6 +2061,71 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C1 — True Momentum strategy-family research preview
+
+Phase C1 is a **read-only research-preview classifier** that labels
+the already-loaded Recommendations queue into the three planned True
+Momentum families (continuation, pullback, reversal / weakening watch)
+documented in [`true-momentum-strategy-families.md`](true-momentum-strategy-families.md).
+
+It does not generate new queue candidates, does not change ranking
+math, queue sorting, approval, promote, save, paper-order, settle,
+replay, or options-preview behavior, does not auto-approve / size /
+route trades, does not call an LLM, and does not require any database
+migration. Phase C0 scaffolding remains in place; C1 just adds a
+classifier on top.
+
+### Enabling Phase C1
+
+```env
+MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=research_preview
+MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true
+```
+
+Both env vars are required. With the defaults (mode `disabled` and
+guard `false`) the Phase C1 panel renders a clear "disabled" empty
+state with the env-var instructions and no preview rows.
+`MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=active` is still **reserved**:
+even with the guard truthy, active degrades to `research_preview` with
+the `true_momentum_strategy_active_mode_not_implemented` reason code.
+
+### Classification
+
+Precedence is **reversal_watch > pullback > continuation** — exactly
+one preview row per candidate. Each row carries
+`non_actionable: true`, the `match_strength` tag
+(`strong` / `moderate` / `watch` / `blocked`), the source candidate's
+Momentum totals + flags, and any operational caveats
+(`thinkorswim_parity_pending`, `derived_higher_timeframe`,
+`direction_unknown`, `active_mode_blocked_by_safety_guard`,
+`score_consistency_corrected`). No preview row ever includes entry,
+stop, target, size, approval, or order fields.
+
+### Surfaces
+
+- Backend: `evaluate_true_momentum_strategy_preview(settings, *,
+  candidates)` in
+  `src/macmarket_trader/recommendation/true_momentum_strategy_families.py`.
+- Read-only endpoint: `POST /user/true-momentum-strategy-families/preview`
+  (approved-user auth; no DB writes, no provider / market-data /
+  LLM calls).
+- Pydantic payloads:
+  `TrueMomentumStrategyPreviewCandidatePayload`,
+  `TrueMomentumStrategyPreviewSummaryPayload`,
+  `TrueMomentumStrategyPreviewResultPayload`,
+  `TrueMomentumStrategyPreviewRequest`.
+- Frontend helper: `apps/web/lib/true-momentum-strategy-preview.ts`.
+- Frontend panel:
+  `apps/web/components/recommendations/true-momentum-strategy-preview-panel.tsx`,
+  mounted on the Recommendations page directly after the Momentum
+  Trial Journal.
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Phase B8 — Active Momentum Trial Outcome Review
 
 Phase B8 is the **operator-side evidence loop** for the Phase B7 trial

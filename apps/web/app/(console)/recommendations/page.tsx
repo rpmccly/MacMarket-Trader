@@ -19,6 +19,7 @@ import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel
 import { MomentumRankingCard } from "@/components/recommendations/momentum-ranking-card";
 import { MomentumImpactReview } from "@/components/recommendations/momentum-impact-review";
 import { MomentumTrialJournal } from "@/components/recommendations/momentum-trial-journal";
+import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -1949,6 +1950,19 @@ export default function RecommendationsPage() {
         candidates={queue}
         universeSymbols={parsedSymbols.symbols}
       />
+
+      {/*
+        Phase C1 — True Momentum strategy-family research-preview panel.
+        Read-only classification of the already-loaded queue into the
+        three planned True Momentum families. Does not generate queue
+        candidates, does not approve / reject / size / route trades, and
+        does not change ranking, queue sorting, approval, paper-order,
+        replay, or options behavior. Disabled by default; the
+        research_preview mode requires both
+        MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=research_preview and the
+        MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES guard.
+      */}
+      <TrueMomentumStrategyPreviewPanel candidates={queue} />
     </section>
   );
 }
