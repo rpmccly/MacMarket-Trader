@@ -44,11 +44,17 @@ echo   RUN_E2E : %RUN_E2E%
 echo =========================================================
 echo.
 
+set "IS_ADMIN=0"
 net session >nul 2>&1
 if errorlevel 1 (
   echo [WARN] Not running as Administrator. Continuing, but port/process cleanup may be limited.
+  echo [WARN] Stale child python/node processes from a previous run can keep .tmp\pytest-deploy
+  echo [WARN] and .pytest_cache directories locked. If deploy tests fail with WinError 5
+  echo [WARN] PermissionError, close prior backend/frontend windows or rerun from an
+  echo [WARN] elevated PowerShell.
 ) else (
   echo [INFO] Running with Administrator privileges.
+  set "IS_ADMIN=1"
 )
 
 if not exist "%SRC%\README.md" (
@@ -85,6 +91,10 @@ call :StopPort "%FRONTEND_PORT%"
 call :StopPort "%BACKEND_PORT%"
 call :KillByCmdLine "%KILLPAT_API%"
 call :KillByCmdLine "%KILLPAT_WEB%"
+REM Brief grace period for OS to release sockets/handles, then one retry pass.
+timeout /t 2 /nobreak >nul
+call :StopPort "%FRONTEND_PORT%"
+call :StopPort "%BACKEND_PORT%"
 
 echo.
 if /I "%SRC%"=="%DST%" goto :SKIP_MIRROR
@@ -169,9 +179,40 @@ if not exist "%DST%\macmarket_trader.db" (
 )
 
 if "%RUN_TESTS%"=="1" (
+  echo [INFO] Preparing deploy-test temp area...
+  REM Best-effort: clean stale macmarket-pytest-deploy entries older than 1 day.
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode CleanStale -MaxAgeDays 1 >nul 2>&1
+
+  REM Best-effort: remove any lingering deploy-local fixed temp folder from
+  REM older deploy versions. This is the path that caused WinError 5 in deploys
+  REM prior to the per-run temp fix.
+  if exist "%TMP_DIR%\pytest-deploy" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode Remove -Path "%TMP_DIR%\pytest-deploy" >nul 2>&1
+  )
+  if exist "%DST%\.pytest-tmp" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode Remove -Path "%DST%\.pytest-tmp" >nul 2>&1
+  )
+
+  REM Allocate a unique per-run basetemp under %TEMP%\macmarket-pytest-deploy.
+  set "DEPLOY_PYTEST_BASETEMP="
+  for /f "usebackq delims=" %%T in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode New`) do set "DEPLOY_PYTEST_BASETEMP=%%T"
+  if not defined DEPLOY_PYTEST_BASETEMP (
+    echo [WARN] Failed to allocate unique deploy pytest basetemp; falling back to default temp.
+    set "DEPLOY_PYTEST_BASETEMP=%TEMP%\macmarket-pytest-deploy-fallback"
+    if not exist "!DEPLOY_PYTEST_BASETEMP!" mkdir "!DEPLOY_PYTEST_BASETEMP!" >nul 2>&1
+  )
+
   echo [INFO] Running backend tests...
-  pytest -q --basetemp "%TMP_DIR%\pytest-deploy"
-  if errorlevel 1 (
+  echo [INFO]   basetemp: !DEPLOY_PYTEST_BASETEMP!
+  echo [INFO]   pytest cache provider disabled for deploy run.
+  pytest -q -p no:cacheprovider --basetemp "!DEPLOY_PYTEST_BASETEMP!"
+  set "PYTEST_RC=!ERRORLEVEL!"
+
+  REM Best-effort cleanup after the run. Cleanup failures must not mask the
+  REM test result, so we always honour PYTEST_RC for the deploy exit code.
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode Remove -Path "!DEPLOY_PYTEST_BASETEMP!" >nul 2>&1
+
+  if not "!PYTEST_RC!"=="0" (
     echo [ERROR] Backend tests failed.
     set "RC=1"
     goto :FAIL_POP
