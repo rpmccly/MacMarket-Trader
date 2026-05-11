@@ -2061,6 +2061,170 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase B8 — Active Momentum Trial Outcome Review
+
+Phase B8 is the **operator-side evidence loop** for the Phase B7 trial
+journal. After a session, the operator opens a captured snapshot and
+tags each candidate with the observed outcome — did Momentum actually
+help, did it over-weight a name, did it miss something, did its warning
+turn out to be useful or false, does this still need a Thinkorswim
+parity spot-check. The review is then exported to Markdown / JSON and
+stored locally so a later cohort can compare the tagged outcomes
+against paper or research results.
+
+It is **local/export-only**: no backend persistence, no DB row, no DB
+migration, no LLM call, no ranking math change, no queue-sorting
+change, and no approval / promote / save / paper-order / settle /
+replay / options-preview behavior change. Phase C True Momentum
+strategy families remain inactive.
+
+### Purpose
+
+Phase B7 captures a deterministic snapshot of what Momentum showed at
+the moment of the decision. Phase B8 lets the operator overlay the
+later-observed outcome on that same snapshot, producing an archivable
+record that pairs *prior context* with *measured result*. Aggregating
+these outcome reviews across an active-trial cohort is what Phase C1
+will use to decide whether True Momentum strategy families should be
+activated, and on which sectors.
+
+### Outcome tags
+
+| Tag | Meaning |
+|---|---|
+| `worked` | Momentum elevated this name and the move played out cleanly. |
+| `missed` | Momentum did not flag this name but the move clearly belonged in the queue. |
+| `too_aggressive` | Momentum lifted this name too far / too early — operator over-relied. |
+| `good_warning` | A no-trade / reversal / contradiction warning correctly held us out. |
+| `false_warning` | A warning fired but the name actually behaved fine. |
+| `watchlist_only` | Right context, wrong timing — keep on the watchlist. |
+| `needs_tos_parity_check` | Score / scoring differed from the Thinkorswim view; flag for parity review. |
+| `ignored` | Operator chose not to act on this candidate at all. |
+| `unclear` | Default; outcome was not visible enough to tag yet. |
+
+### Surfaces
+
+| Surface | File |
+|---|---|
+| Pure helpers | `apps/web/lib/momentum-trial-outcomes.ts` (`buildMomentumTrialOutcomeReview`, `candidateOutcomeDefaults`, `summarizeMomentumTrialOutcomes`, `outcomeReasonCounts`, `sanitizeMomentumOutcomeNote`, `validateMomentumTrialOutcomeReview`, `buildMomentumOutcomeMarkdown`, `buildMomentumOutcomeJson`, `outcomeTagLabel`, `outcomeTagTone`, `momentumCandidateOutcomeKey`, `MOMENTUM_TRIAL_OUTCOME_REVIEW_VERSION`, `MOMENTUM_TRIAL_OUTCOME_DETERMINISTIC_NOTE`, `MOMENTUM_TRIAL_OUTCOME_STORAGE_KEY`, `MOMENTUM_TRIAL_OUTCOME_TAGS`). |
+| Reusable component | `apps/web/components/recommendations/momentum-trial-outcome-review.tsx` (`<MomentumTrialOutcomeReviewPanel snapshot persistLatest initialOutcomes initialGlobalConclusion />`). |
+| Trial-journal integration | `apps/web/components/recommendations/momentum-trial-journal.tsx` mounts `<MomentumTrialOutcomeReviewPanel snapshot={snapshot} persistLatest={persistLatest} />` directly after `MomentumTrialJournalView` whenever a snapshot is captured. The panel is hidden in the empty state. |
+| LocalStorage | `macmarket.momentumTrial.outcome.latest` — keyed by the source snapshot's `generated_at`. A cached payload is re-hydrated only when it matches the current snapshot timestamp; mismatched payloads are discarded silently. |
+
+### Review shape
+
+`MomentumTrialOutcomeReview` is the canonical export envelope. It bundles:
+
+- `schema_version` pinned to `phase_b8.v1`,
+- `generated_at` (review timestamp, distinct from the snapshot's),
+- the full source `snapshot` (so the export stands alone),
+- the optional operator `global_conclusion` text + authored timestamp,
+- per-candidate `candidate_outcomes` (rank, symbol, strategy, tag,
+  note, reason codes, trade-warning flags, operational-caveat flags),
+- a per-tag `summary` plus an aggregated `reason_code_counts`.
+
+### Markdown export sections
+
+Always emitted, in order:
+
+1. Snapshot timestamp / review timestamp / schema version.
+2. Requested + effective mode.
+3. Active delta scale.
+4. `Evaluated universe` or `Captured symbols` (mirrors the Phase B7.1
+   universe-kind labeling).
+5. Snapshot operator note (only when present).
+6. `## Global outcome conclusion` — operator's session-level recap or
+   `_No global conclusion recorded._`.
+7. `## Outcome summary` — counts per tag.
+8. `## Candidate outcomes` — rank / symbol / strategy / baseline /
+   active-or-current / raw / applied Δ / total / outcome tag /
+   operator note / reasons + caveats.
+9. `## Remaining caveats` — explicit Thinkorswim-parity-pending
+   reminder, derived-higher-timeframe row count, and the explicit
+   "Phase C True Momentum strategy families are not active." line.
+10. Trailing line: the deterministic outcome guardrail copy.
+
+### Deterministic guardrail copy
+
+Every review carries:
+
+> *Outcome tags are operator research notes only. They do not change
+> ranking, approval, sizing, or order routing.*
+
+Notes are passed through `sanitizeMomentumOutcomeNote` which trims and
+length-caps and `[redacted]`s the same forbidden phrase list as the
+Phase B7 note sanitizer (constructed from token pairs so trade-action
+literals never appear in the helper source). The integration guards
+assert no forbidden trade-direction / order-routing language appears in
+either the helper module or the component module.
+
+### What Phase B8 does NOT do
+
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, Phase B1 / B6 / B6.x wiring are
+  byte-identical.
+- **No queue sorting change.**
+- **No approval, promote, save, paper-order, settle, replay, or
+  options-preview behavior change.**
+- **No backend mutation.** No new endpoint, no DB row, no migration.
+- **No LLM call.**
+- **No Phase C activation.** True Momentum strategy families remain
+  scaffold-only. The Phase B8 outcome corpus is one of the explicit
+  prerequisites before any Phase C1 activation can be authorized.
+
+### How B8 informs C1
+
+A Phase C1 authorization decision needs three sources of evidence:
+
+1. Real Thinkorswim parity fixtures (Phase A outstanding item).
+2. An active-trial outcome corpus — exactly what Phase B8 captures.
+3. Explicit operator authorization per planned family.
+
+When a meaningful number of Phase B8 reviews have been exported and
+reviewed across a representative sector / regime mix, the operator can
+audit which planned True Momentum families would have produced clean,
+neutral, or counter-productive outcomes against the captured snapshots.
+That review — not the Phase B8 helper itself — is the input to a
+Phase C1 go/no-go.
+
+### Tests (Phase B8)
+
+- `apps/web/lib/momentum-trial-outcomes.test.ts` — 28 pure-helper
+  tests covering: outcome tag labels / tones / membership predicate;
+  note sanitization (trimming, redaction, length cap); candidate
+  defaults from snapshot (top + warning + caveat candidates, deduped,
+  default `unclear` tag, reason flag copy); review construction with
+  and without existing outcomes; stale-row rejection;
+  global-conclusion sanitization; null-snapshot graceful degradation;
+  per-tag summary counts; reason-code count aggregation; validation
+  acceptance + rejection; Markdown export sections (headers, global
+  conclusion empty state, universe-kind heading); JSON round-trip;
+  forbidden trade-action language guard on both Markdown and JSON.
+- `apps/web/components/recommendations/momentum-trial-outcome-review.test.tsx`
+  — 8 render tests covering empty state, table per default outcome,
+  summary cards with new labels, export + clear buttons, global
+  conclusion textarea, `initialOutcomes` / `initialGlobalConclusion`
+  honored, deterministic-note rendered, no forbidden action language.
+- `apps/web/lib/momentum-integration.test.ts` — Phase B8 isolation
+  guard suite: helper and component carry the deterministic outcome
+  copy; trial-journal container mounts the outcome panel; outcome
+  surfaces stay out of order / paper / replay / options-paper routes
+  and out of order / recommendation helper files; no forbidden
+  trade-action language; Recommendations page still mounts the trial
+  journal only (no direct outcome-panel mount).
+
+### Still pending (carried forward)
+
+- **Thinkorswim fixture parity.** Phase B8 surfaces a
+  `needs_tos_parity_check` tag the operator can apply per-row, plus a
+  "Remaining caveats" Markdown section that reminds the reader parity
+  is still pending — but landing real fixtures in
+  `tests/fixtures/thinkorswim_momentum/` and flipping
+  `parity_required_for_active = True` is still future work.
+- **Phase C strategy families.** Phase C0 scaffolding remains
+  disabled-by-default. Activation is gated on the Phase B8 outcome
+  corpus + Thinkorswim parity + operator authorization.
+
 ## Phase A/B Closeout
 
 This section closes out the completed Momentum Intelligence Phase A and

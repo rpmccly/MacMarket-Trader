@@ -14,6 +14,7 @@ import {
   type MomentumTrialCandidateSnapshot,
   type MomentumTrialSnapshot,
 } from "@/lib/momentum-trial-journal";
+import { MomentumTrialOutcomeReviewPanel } from "@/components/recommendations/momentum-trial-outcome-review";
 import { momentumRankingModeLabel } from "@/lib/momentum-ranking";
 import type { QueueCandidate } from "@/lib/recommendations";
 
@@ -710,14 +711,26 @@ export function MomentumTrialJournal({
         </label>
 
         {snapshot ? (
-          <MomentumTrialJournalView
-            snapshot={snapshot}
-            onCopyMarkdown={copyMarkdownHandler}
-            onDownloadMarkdown={downloadMarkdownHandler}
-            onDownloadJson={downloadJsonHandler}
-            onClear={clearSnapshot}
-            compact={compact}
-          />
+          <>
+            <MomentumTrialJournalView
+              snapshot={snapshot}
+              onCopyMarkdown={copyMarkdownHandler}
+              onDownloadMarkdown={downloadMarkdownHandler}
+              onDownloadJson={downloadJsonHandler}
+              onClear={clearSnapshot}
+              compact={compact}
+            />
+            {/*
+              Phase B8 — Active Momentum Trial Outcome Review.
+              Operator research notes only. Local/export-only — no
+              backend persistence, no DB migration, no ranking, queue,
+              approval, paper-order, or strategy-family behavior change.
+            */}
+            <MomentumTrialOutcomeReviewPanel
+              snapshot={snapshot}
+              persistLatest={persistLatest}
+            />
+          </>
         ) : (
           <div role="region" aria-label="Momentum trial journal empty" data-testid="momentum-trial-journal-empty">
             <EmptyState

@@ -589,6 +589,123 @@ describe("Momentum Intelligence Phase C0 True Momentum scaffolding guards", () =
   });
 });
 
+describe("Momentum Intelligence Phase B8 outcome review guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase B8 lib + component exist and carry the deterministic outcome copy", () => {
+    const lib = read("lib/momentum-trial-outcomes.ts");
+    const view = read("components/recommendations/momentum-trial-outcome-review.tsx");
+    expect(lib).toContain("Phase B8");
+    expect(lib).toContain(
+      "Outcome tags are operator research notes only. They do not change ranking, approval, sizing, or order routing.",
+    );
+    expect(lib).toContain("MOMENTUM_TRIAL_OUTCOME_STORAGE_KEY");
+    expect(lib).toContain("macmarket.momentumTrial.outcome.latest");
+    expect(view).toContain("MomentumTrialOutcomeReviewPanel");
+    expect(view).toContain("momentum-trial-outcome-review");
+  });
+
+  it("Trial-journal container mounts the outcome review panel after capture", () => {
+    const source = read("components/recommendations/momentum-trial-journal.tsx");
+    expect(source).toContain(
+      "@/components/recommendations/momentum-trial-outcome-review",
+    );
+    expect(source).toContain("MomentumTrialOutcomeReviewPanel");
+  });
+
+  it("Outcome helpers/components are not imported into order, paper, replay, or options-paper routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-trial-outcomes",
+      "@/components/recommendations/momentum-trial-outcome-review",
+      "MomentumTrialOutcomeReviewPanel",
+      "buildMomentumTrialOutcomeReview",
+      "buildMomentumOutcomeMarkdown",
+      "buildMomentumOutcomeJson",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Outcome helpers/components do not leak into order/recommendation helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+      "lib/recommendations.ts",
+    ];
+    const patterns = [
+      "@/lib/momentum-trial-outcomes",
+      "@/components/recommendations/momentum-trial-outcome-review",
+      "MomentumTrialOutcomeReviewPanel",
+      "buildMomentumTrialOutcomeReview",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Outcome surfaces avoid forbidden trade-approval / order-routing language", () => {
+    const surfaces = [
+      "lib/momentum-trial-outcomes.ts",
+      "components/recommendations/momentum-trial-outcome-review.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("Recommendations page still mounts the trial journal only (no direct outcome panel mount)", () => {
+    // The trial-journal container is the canonical mount site for the
+    // outcome review (it owns the snapshot). The Recommendations page
+    // never imports the outcome panel directly.
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("MomentumTrialJournal");
+    expect(source).not.toContain("@/components/recommendations/momentum-trial-outcome-review");
+    expect(source).not.toContain("MomentumTrialOutcomeReviewPanel");
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {
