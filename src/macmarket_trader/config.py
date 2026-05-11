@@ -153,6 +153,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Phase B6.1 — operator-tunable scale applied to the bounded Momentum
+    # ranking contribution **after** Phase B1's raw score-unit math runs.
+    # Raw contribution stays in score units (max ±20). The applied
+    # ranking-score delta is ``raw / 100 * active_delta_scale``, so at the
+    # default 0.35 a +20 raw contribution becomes +0.07 on the [0, 1]
+    # ranking score — keeping Momentum meaningful without saturating
+    # too many candidates at 1.000. Stored as a string so pydantic does
+    # not raise on bad input; ``_resolve_active_delta_scale`` clamps to
+    # [0.0, 1.0] and falls back to 0.35 with an invalid-reason code.
+    momentum_active_delta_scale: str = Field(
+        default="0.35",
+        validation_alias=AliasChoices(
+            "MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE",
+            "MOMENTUM_ACTIVE_DELTA_SCALE",
+        ),
+    )
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
     @model_validator(mode="after")

@@ -84,9 +84,58 @@ class MomentumRankingConfig:
     # bounded contribution into the same ranking-score scale by dividing by
     # 100. Tests cover this so the cap stays operator-visible.
     ranking_score_scale: float = 100.0
+    # Phase B6.1 — operator-tunable scale applied on top of the
+    # ``ranking_score_scale`` division. Default 0.35 keeps Max Bull
+    # candidates from saturating to 1.000. Always finite and clamped to
+    # ``[0.0, 1.0]``.
+    active_delta_scale: float = 0.35
+    # Phase B6.1 — set to True when the raw env value could not be parsed
+    # or was out of range. The status payload surfaces this via the
+    # ``momentum_active_delta_scale_invalid`` reason code.
+    active_delta_scale_invalid: bool = False
 
 
 _TRUTHY_STRINGS: frozenset[str] = frozenset({"true", "1", "yes", "y", "on"})
+
+# Phase B6.1 — default operator scale applied to the bounded Momentum
+# ranking contribution when active mode is allowed. Kept as a module
+# constant so tests and the docs reference the same value.
+DEFAULT_ACTIVE_DELTA_SCALE: float = 0.35
+
+
+def _resolve_active_delta_scale(value: Any) -> tuple[float, bool]:
+    """Parse the operator-tunable active-delta scale.
+
+    Returns ``(scale, invalid)``. ``invalid=True`` indicates the raw
+    value could not be parsed as a float or was outside ``[0.0, 1.0]``.
+    On invalid input the scale falls back to
+    :data:`DEFAULT_ACTIVE_DELTA_SCALE` and the status layer adds the
+    ``momentum_active_delta_scale_invalid`` reason code.
+    """
+    if value is None:
+        return DEFAULT_ACTIVE_DELTA_SCALE, False
+    if isinstance(value, bool):
+        # bool is a subclass of int; reject because operators almost
+        # certainly didn't mean "True"/"False" for a scale.
+        return DEFAULT_ACTIVE_DELTA_SCALE, True
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return DEFAULT_ACTIVE_DELTA_SCALE, False
+        try:
+            parsed = float(text)
+        except ValueError:
+            return DEFAULT_ACTIVE_DELTA_SCALE, True
+    else:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return DEFAULT_ACTIVE_DELTA_SCALE, True
+    if not math.isfinite(parsed):
+        return DEFAULT_ACTIVE_DELTA_SCALE, True
+    if parsed < 0.0 or parsed > 1.0:
+        return DEFAULT_ACTIVE_DELTA_SCALE, True
+    return parsed, False
 
 
 def _resolve_active_allowed(value: Any) -> bool:
@@ -125,14 +174,17 @@ def resolve_effective_momentum_ranking_mode(
 def momentum_ranking_config_from_settings(settings: Any) -> MomentumRankingConfig:
     """Build a MomentumRankingConfig from the application settings object.
 
-    Reads both ``momentum_ranking_mode`` and the Phase B6 safety guard
-    ``momentum_active_ranking_allowed``. When active is requested but the
-    guard is not set, ``mode`` falls back to ``shadow`` while
+    Reads ``momentum_ranking_mode`` (Phase B1), the Phase B6 safety guard
+    ``momentum_active_ranking_allowed``, and the Phase B6.1 operator
+    delta-scale ``momentum_active_delta_scale``. When active is requested
+    but the guard is not set, ``mode`` falls back to ``shadow`` while
     ``requested_mode`` preserves the original request for status reporting.
     """
     raw_mode = getattr(settings, "momentum_ranking_mode", "shadow")
     raw_allowed = getattr(settings, "momentum_active_ranking_allowed", False)
+    raw_scale = getattr(settings, "momentum_active_delta_scale", None)
     active_allowed = _resolve_active_allowed(raw_allowed)
+    active_delta_scale, scale_invalid = _resolve_active_delta_scale(raw_scale)
     effective, requested, _blocked = resolve_effective_momentum_ranking_mode(
         raw_mode, active_allowed=active_allowed
     )
@@ -140,6 +192,8 @@ def momentum_ranking_config_from_settings(settings: Any) -> MomentumRankingConfi
         mode=effective,
         requested_mode=requested,
         active_allowed=active_allowed,
+        active_delta_scale=active_delta_scale,
+        active_delta_scale_invalid=scale_invalid,
     )
 
 
@@ -527,6 +581,21 @@ def build_momentum_ranking_contribution(
 
     applied_total = bounded_total if (mode == "active" and can_apply_active) else 0.0
 
+    # Phase B6.1 — surface the operator delta scale and the actual
+    # ranking-score delta separately from the raw score-unit
+    # contribution. Frontend renders ``raw_total_contribution`` (still in
+    # ±20 score units) alongside ``applied_score_delta`` (in [0, 1]
+    # ranking-score units) so operators can see the scale in effect.
+    raw_total_contribution = bounded_total
+    ranking_scale = max(getattr(config, "ranking_score_scale", 100.0) or 100.0, 1.0)
+    active_delta_scale = float(getattr(config, "active_delta_scale", DEFAULT_ACTIVE_DELTA_SCALE))
+    if not math.isfinite(active_delta_scale) or active_delta_scale < 0.0 or active_delta_scale > 1.0:
+        active_delta_scale = DEFAULT_ACTIVE_DELTA_SCALE
+    if mode == "active" and can_apply_active:
+        applied_score_delta = round(applied_total / ranking_scale * active_delta_scale, 6)
+    else:
+        applied_score_delta = 0.0
+
     return MomentumRankingContribution(
         mode=mode,
         enabled=True,
@@ -549,6 +618,9 @@ def build_momentum_ranking_contribution(
         inferred_direction=direction,
         calculation_notes=notes,
         reason_codes=reason_codes,
+        active_delta_scale=active_delta_scale,
+        raw_total_contribution=round(raw_total_contribution, 4),
+        applied_score_delta=applied_score_delta,
     )
 
 
@@ -685,6 +757,10 @@ def build_momentum_ranking_status(
 
     raw_active_allowed = getattr(settings, "momentum_active_ranking_allowed", False)
     active_allowed = _resolve_active_allowed(raw_active_allowed)
+    raw_active_delta_scale = getattr(settings, "momentum_active_delta_scale", None)
+    active_delta_scale, active_delta_scale_invalid = _resolve_active_delta_scale(
+        raw_active_delta_scale
+    )
     effective_mode, requested_mode, active_mode_blocked = resolve_effective_momentum_ranking_mode(
         raw_value, active_allowed=active_allowed
     )
@@ -694,6 +770,8 @@ def build_momentum_ranking_status(
         mode=effective_mode,
         requested_mode=requested_mode,
         active_allowed=active_allowed,
+        active_delta_scale=active_delta_scale,
+        active_delta_scale_invalid=active_delta_scale_invalid,
     )
 
     manifest_resolved = (manifest_path or _DEFAULT_PARITY_MANIFEST_PATH).resolve()
@@ -717,6 +795,8 @@ def build_momentum_ranking_status(
         reason_codes.append("invalid_env_value_resolved_to_shadow")
     if active_mode_blocked:
         reason_codes.append("active_mode_blocked_by_safety_guard")
+    if resolved_config.active_delta_scale_invalid:
+        reason_codes.append("momentum_active_delta_scale_invalid")
     if real_thinkorswim_parity_pending:
         reason_codes.append("thinkorswim_parity_pending")
     if mode == "active" and real_thinkorswim_parity_pending:
@@ -755,6 +835,13 @@ def build_momentum_ranking_status(
     if real_thinkorswim_parity_pending:
         guardrails.append("Thinkorswim parity fixtures are still pending.")
 
+    active_delta_scale_warning: str | None = None
+    if resolved_config.active_delta_scale_invalid:
+        active_delta_scale_warning = (
+            "Configured MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE was unparseable or out of "
+            "range [0.0, 1.0]; falling back to the deterministic default 0.35."
+        )
+
     return MomentumRankingStatus(
         mode=mode,
         default_mode="shadow",
@@ -777,6 +864,10 @@ def build_momentum_ranking_status(
         active_guard_env_var="MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING",
         active_mode_blocked=active_mode_blocked,
         active_mode_block_reason=active_mode_block_reason,
+        active_delta_scale=resolved_config.active_delta_scale,
+        active_delta_scale_env_var="MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE",
+        active_delta_scale_invalid=resolved_config.active_delta_scale_invalid,
+        active_delta_scale_warning=active_delta_scale_warning,
     )
 
 

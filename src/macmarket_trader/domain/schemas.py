@@ -1372,6 +1372,13 @@ class MomentumRankingStatus(BaseModel):
     active_guard_env_var: str = "MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING"
     active_mode_blocked: bool = False
     active_mode_block_reason: str | None = None
+    # Phase B6.1 — operator-tunable scale applied on top of Phase B1's
+    # bounded raw contribution. Saturated-active runs lower this to keep
+    # high-Momentum candidates from clamping to 1.000.
+    active_delta_scale: float = 0.35
+    active_delta_scale_env_var: str = "MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE"
+    active_delta_scale_invalid: bool = False
+    active_delta_scale_warning: str | None = None
 
 
 class MomentumRankingContribution(BaseModel):
@@ -1404,6 +1411,12 @@ class MomentumRankingContribution(BaseModel):
     inferred_direction: Literal["long", "short", "unknown"] = "unknown"
     calculation_notes: list[str] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
+    # Phase B6.1 — operator-tunable scale applied on top of the
+    # ranking-score scale. Surfaced so the frontend can render the
+    # raw-vs-applied delta without re-reading the status endpoint.
+    active_delta_scale: float | None = None
+    raw_total_contribution: float | None = None
+    applied_score_delta: float | None = None
 
 
 class MomentumChartPayload(BaseModel):

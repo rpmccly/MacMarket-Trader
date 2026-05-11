@@ -27,6 +27,15 @@ export type MomentumRankingContribution = {
   inferred_direction?: "long" | "short" | "unknown" | string;
   calculation_notes?: string[];
   reason_codes?: string[];
+  // Phase B6.1 — surfaced so the frontend can render raw vs applied score
+  // delta without re-reading the status endpoint. ``active_delta_scale``
+  // mirrors the operator-tunable scale on the contribution payload;
+  // ``applied_score_delta`` is the actual [0, 1] ranking-score delta that
+  // was added to the candidate's score (zero in shadow / blocked-active /
+  // off modes).
+  active_delta_scale?: number | null;
+  raw_total_contribution?: number | null;
+  applied_score_delta?: number | null;
 };
 
 export type QueueCandidate = {

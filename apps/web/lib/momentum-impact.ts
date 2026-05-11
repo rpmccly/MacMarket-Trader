@@ -35,6 +35,10 @@ export type MomentumImpactRow = {
   estimatedRankBefore: number;
   estimatedRankAfter: number;
   estimatedRankDelta: number;
+  // Phase B6.1 — operator-tunable scale + applied ranking-score delta.
+  activeDeltaScale: number;
+  rawTotalContribution: number;
+  appliedScoreDelta: number;
 };
 
 export type MomentumImpactSummary = {
@@ -51,6 +55,20 @@ export type MomentumImpactSummary = {
 };
 
 const RANKING_SCORE_SCALE = 100; // mirrors MomentumRankingConfig.ranking_score_scale
+
+// Phase B6.1 — fallback when the contribution payload does not carry the
+// operator scale (older backend, or off-mode contributions). Mirrors
+// ``DEFAULT_ACTIVE_DELTA_SCALE`` in
+// ``src/macmarket_trader/recommendation/momentum_ranking.py``.
+const DEFAULT_ACTIVE_DELTA_SCALE = 0.35;
+
+function resolveActiveDeltaScale(value: number | null | undefined): number {
+  if (value == null || Number.isNaN(value) || !Number.isFinite(value)) {
+    return DEFAULT_ACTIVE_DELTA_SCALE;
+  }
+  if (value < 0 || value > 1) return DEFAULT_ACTIVE_DELTA_SCALE;
+  return value;
+}
 
 function sanitizeNumber(value: unknown, fallback = 0): number {
   if (value == null) return fallback;
@@ -110,10 +128,13 @@ export function estimateActiveScore(candidate: QueueCandidate | null | undefined
   const mode = normalizeMomentumRankingMode(contribution.mode);
   if (mode === "off") return score;
   if (reasonHasDirectionUnknown(contribution.reason_codes)) return score;
-  if (mode === "active") return score; // already applied, no double count
+  // Phase B6.1 — active scores are already published with the scaled
+  // delta applied. Don't double-count.
+  if (mode === "active") return score;
   if (mode === "shadow") {
     const shadow = sanitizeNumber(contribution.shadow_contribution, 0);
-    return clampUnit(score + shadow / RANKING_SCORE_SCALE);
+    const scale = resolveActiveDeltaScale(contribution.active_delta_scale);
+    return clampUnit(score + (shadow / RANKING_SCORE_SCALE) * scale);
   }
   return score;
 }
@@ -203,6 +224,12 @@ export function buildMomentumImpactRows(
       estimatedRankBefore: rankBefore,
       estimatedRankAfter: rankAfter,
       estimatedRankDelta,
+      activeDeltaScale: resolveActiveDeltaScale(contribution?.active_delta_scale),
+      rawTotalContribution: sanitizeNumber(
+        contribution?.raw_total_contribution ?? contribution?.shadow_contribution,
+        0,
+      ),
+      appliedScoreDelta: sanitizeNumber(contribution?.applied_score_delta, 0),
     });
   });
   return out;

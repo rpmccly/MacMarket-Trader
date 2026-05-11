@@ -217,7 +217,68 @@ export function MomentumRankingStatusCard({
               {activeGuardEnvVar}
             </code>
           </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "4px 8px",
+              borderRadius: 6,
+              background: "rgba(15, 24, 34, 0.45)",
+              border: "1px solid rgba(115, 138, 163, 0.18)",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>Active delta scale</span>
+            <StatusBadge tone={status.active_delta_scale_invalid ? "warn" : "neutral"}>
+              {typeof status.active_delta_scale === "number" ? status.active_delta_scale.toFixed(2) : "0.35"}
+            </StatusBadge>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "4px 8px",
+              borderRadius: 6,
+              background: "rgba(15, 24, 34, 0.45)",
+              border: "1px solid rgba(115, 138, 163, 0.18)",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>Active delta scale env var</span>
+            <code
+              style={{ fontVariantNumeric: "tabular-nums" }}
+              data-testid="momentum-ranking-status-active-delta-scale-env-var"
+            >
+              {status.active_delta_scale_env_var ?? "MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE"}
+            </code>
+          </div>
         </div>
+        <p
+          style={{ ...NOTE_STYLE, marginTop: 0 }}
+          data-testid="momentum-ranking-status-active-delta-scale-helper"
+        >
+          Active score delta = raw contribution ÷ 100 × active delta scale.
+        </p>
+        {status.active_delta_scale_invalid ? (
+          <div
+            data-testid="momentum-ranking-status-active-delta-scale-invalid"
+            role="alert"
+            style={{
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: "rgba(76, 56, 24, 0.5)",
+              border: "1px solid rgba(242, 160, 63, 0.4)",
+              color: "#f2c89a",
+              fontSize: "0.85rem",
+              lineHeight: 1.5,
+            }}
+          >
+            {status.active_delta_scale_warning ??
+              "Configured MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE was unparseable or out of range; falling back to 0.35."}
+          </div>
+        ) : null}
 
         {status.active_mode_warning ? (
           <div

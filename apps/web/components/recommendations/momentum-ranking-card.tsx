@@ -100,6 +100,25 @@ export function MomentumRankingCard({
     ? formatMomentumContribution(contribution.total_contribution ?? 0)
     : formatMomentumContribution(contribution.shadow_contribution ?? 0);
 
+  // Phase B6.1 — surface the applied ranking-score delta separately
+  // from the raw score-unit contribution. Default to 0.35 when older
+  // payloads omit the scale.
+  const activeDeltaScale = (() => {
+    const raw = contribution.active_delta_scale;
+    if (raw == null || Number.isNaN(raw) || !Number.isFinite(raw)) return 0.35;
+    if (raw < 0 || raw > 1) return 0.35;
+    return raw;
+  })();
+  const rawContribution =
+    contribution.raw_total_contribution ?? contribution.shadow_contribution ?? 0;
+  const estimatedAppliedDelta =
+    contribution.applied_score_delta ??
+    (applied ? (rawContribution / 100) * activeDeltaScale : 0);
+  const formattedAppliedDelta = formatMomentumContribution(estimatedAppliedDelta);
+  const formattedShadowDelta = formatMomentumContribution(
+    (rawContribution / 100) * activeDeltaScale,
+  );
+
   return (
     <Card title={title}>
       <div
@@ -120,11 +139,17 @@ export function MomentumRankingCard({
             tone={applied ? tone : shadow ? "neutral" : tone}
             ariaLabel={
               applied
-                ? `Applied contribution ${headerContrib}`
-                : `Shadow contribution ${headerContrib}`
+                ? `Applied contribution ${headerContrib} (raw score units)`
+                : `Shadow contribution ${headerContrib} (raw score units)`
             }
           >
-            {applied ? "Applied" : "Shadow"} {headerContrib}
+            {applied ? "Applied" : "Shadow"} {headerContrib} raw
+          </ToneBadge>
+          <ToneBadge
+            tone={applied ? tone : "neutral"}
+            ariaLabel={`Active score delta ${applied ? formattedAppliedDelta : formattedShadowDelta} at scale ${activeDeltaScale.toFixed(2)}`}
+          >
+            {applied ? "Score delta" : "Est. delta @ scale"} {applied ? formattedAppliedDelta : formattedShadowDelta}
           </ToneBadge>
           {shadow ? (
             <StatusBadge tone="neutral" data-testid="momentum-ranking-final-score-unchanged">
@@ -208,6 +233,12 @@ export function MomentumRankingCard({
             Inferred direction: {String(contribution.inferred_direction)}
           </div>
         ) : null}
+        <div
+          style={{ fontSize: "0.78rem", color: "var(--op-muted, #7a8999)" }}
+          data-testid="momentum-ranking-active-delta-scale"
+        >
+          Active delta scale: {activeDeltaScale.toFixed(2)} · raw ÷ 100 × scale = applied score delta.
+        </div>
 
         <p style={NOTE_STYLE} data-testid="momentum-ranking-deterministic-note">
           {MOMENTUM_RANKING_DETERMINISTIC_NOTE}

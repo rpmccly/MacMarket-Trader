@@ -1018,6 +1018,198 @@ stay `None`.
   impact review, and forbids the safety-guard symbols from
   order/paper-order/options-paper/replay-preview routes.
 
+## Phase B6.1 — active-mode score saturation control
+
+Phase B6 confirmed active mode works, but operators observed too many
+Max Bull / Bull candidates clamping to `score = 1.000` because Phase B1
+mapped the bounded +20 score-unit contribution onto +0.20 of the
+ranking-score scale. With many base scores already at 0.80–0.90, active
+mode flattened high-Momentum candidates into ties at the ceiling.
+
+**Phase B6.1 introduces a configurable scale that dampens active-mode
+score application without changing the bounded raw-contribution math,
+the safety guard, the parity gate, the default mode, recommendation
+approval behavior, or paper-order behavior.**
+
+### Env var
+
+| Variable | Allowed values | Default |
+|---|---|---|
+| `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE` (alias `MOMENTUM_ACTIVE_DELTA_SCALE`) | float in `[0.0, 1.0]` | `0.35` |
+
+Invalid env values (non-numeric, infinite, out of range) fall back to
+the deterministic default `0.35`. The status payload surfaces
+`active_delta_scale_invalid=True` and the
+`momentum_active_delta_scale_invalid` reason code so operators can see
+the fallback was used without the application crashing.
+
+### Formula
+
+```
+applied_score_delta = raw_total_contribution / 100 × active_delta_scale
+score_after_momentum = clamp01(score_before_momentum + applied_score_delta)
+```
+
+The **raw** contribution remains in Phase B1's score-units cap (`±20`).
+The **applied** delta lives in the ranking engine's `[0, 1]` score
+space.
+
+| `active_delta_scale` | Max applied delta | Min applied delta |
+|---|---|---|
+| `0.35` (default) | `+0.070` | `-0.042` |
+| `0.50` | `+0.100` | `-0.060` |
+| `0.70` | `+0.140` | `-0.084` |
+| `1.00` (pre-B6.1 behavior) | `+0.200` | `-0.120` |
+
+A baseline of `0.898` plus `+20` raw at default scale lands at
+`0.968`, not `1.000`. Higher-scoring candidates can still clamp at
+`1.0`, but only when baseline + scaled delta legitimately exceeds the
+ceiling.
+
+### Tuning guidance
+
+- **Lower the scale (e.g., `0.20`)** when the active queue keeps
+  saturating — Momentum still nudges ordering but contributes less.
+- **Raise the scale (e.g., `0.70`)** when Momentum should pull rank
+  movement harder during a research session.
+- Keep the safety guard (`MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`)
+  set explicitly — Phase B6.1 only operates after the Phase B6 guard
+  permits active mode.
+
+### Status payload additions
+
+`MomentumRankingStatus` gained:
+
+| Field | Meaning |
+|---|---|
+| `active_delta_scale` | Resolved float (clamped to `[0.0, 1.0]`). |
+| `active_delta_scale_env_var` | Always `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE`. |
+| `active_delta_scale_invalid` | True when env was unparseable / out of range. |
+| `active_delta_scale_warning` | Operator-facing fallback message when invalid. |
+
+The Settings status card renders the scale value, the env-var label,
+the operator helper line *"Active score delta = raw contribution ÷ 100
+× active delta scale."*, and an `role="alert"` invalid-fallback warning
+when applicable.
+
+### Contribution payload additions
+
+`MomentumRankingContribution` gained:
+
+| Field | Meaning |
+|---|---|
+| `active_delta_scale` | Per-candidate copy of the resolved scale. |
+| `raw_total_contribution` | Bounded raw contribution in score units (unchanged math, just published explicitly). |
+| `applied_score_delta` | `0` in shadow / blocked-active / off; the actual ranking-score delta in active mode. |
+
+Existing fields (`total_contribution`, `shadow_contribution`, the
+component breakdowns) keep their Phase B1 semantics — Phase B6.1 does
+**not** reduce the raw contribution calculation. Operators still see
+the same `+20 / -12` audit explanation; the applied delta is shown
+alongside.
+
+### Ranking-engine behavior
+
+- **Active + allow + valid scale.** Engine applies
+  `applied_score_delta` (already scaled by the contribution payload)
+  to the candidate score, clamped to `[0, 1]`. Old code that used
+  `total_contribution / 100` is replaced by the
+  `applied_score_delta` field so the per-row math has one source of
+  truth.
+- **Shadow.** Final score unchanged. The frontend impact review uses
+  the contribution's `active_delta_scale` (or default `0.35` when
+  absent) to estimate what active mode would produce.
+- **Blocked active.** Effective shadow. The contribution still
+  carries `raw_total_contribution` and `active_delta_scale`; the
+  applied delta stays `0`.
+- **Off.** Unchanged.
+
+### Frontend display
+
+- **Momentum ranking card** now shows two header badges per candidate:
+  `Shadow +X.XX raw` *and* `Est. delta @ scale +Y.YY` (or `Applied
+  +X.XX raw` and `Score delta +Y.YY` in active mode), plus a footer
+  line `Active delta scale: 0.35 · raw ÷ 100 × scale = applied score
+  delta.`.
+- **Momentum Shadow Impact Review** renders a small "Active delta
+  scale: 0.35" note beneath the mode framing and splits the table
+  column from "Shadow / applied (score units)" into two columns: "Raw
+  contribution (score units)" and "Applied delta @ scale".
+- **Settings status card** renders `Active delta scale` and `Active
+  delta scale env var` rows plus the helper copy line.
+
+### What Phase B6.1 does NOT change
+
+- **Raw contribution math / caps.** Phase B1's bounded `[-12, +20]`
+  cap and per-component caps are byte-identical. The bounded scoring
+  helper is untouched except to publish three new optional fields.
+- **Default mode.** Default remains `shadow`. The safety guard
+  (`MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING`) still must be truthy
+  before active mode applies.
+- **Recommendation approval / paper-order / options / replay / HACO
+  behavior.** None of those code paths was touched.
+- **Indicator math.** No changes to
+  `compute_true_momentum`, `compute_hilo_elite`,
+  `compute_true_momentum_score`, or any other Phase A indicator
+  surface.
+- **Parity gate.** `parity_required_for_active` defaults unchanged;
+  Thinkorswim parity fixtures remain pending and surfacing the
+  `thinkorswim_parity_pending` reason code on every contribution.
+- **Strategy families.** No new strategy registry entries; no new
+  setup-engine paths.
+
+### Operator checklist
+
+1. Set the scale alongside the existing env vars (paper / research
+   environment only):
+
+   ```bash
+   export MACMARKET_MOMENTUM_RANKING_MODE=active
+   export MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true
+   export MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE=0.35   # tune as needed
+   ```
+
+2. Restart the backend so settings reload.
+3. Confirm Settings → Momentum ranking status shows the chosen scale
+   value (and **no** invalid-scale alert).
+4. Confirm Recommendations queue no longer saturates to 1.000 for
+   bullish Momentum candidates with baseline ≤ ~0.93.
+5. Approval and paper-order creation remain manual — Phase B6.1
+   cannot change either.
+6. To revert, unset `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE` (returns
+   to the deterministic default `0.35`) or set
+   `MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE=1.0` for pre-B6.1 behavior.
+
+### Tests (Phase B6.1)
+
+- `tests/test_momentum_active_delta_scale.py` — 35 tests covering:
+  parsing every env-value shape (truthy, valid floats, out-of-range,
+  garbage, NaN/inf, bools), config wiring, contribution payload
+  scaling (default / explicit scale / blocked-active / shadow / no
+  double counting), ranking-engine end-to-end (no saturation at
+  default scale, clamp still active at scale `1.0`, shadow score
+  unchanged at any scale, blocked-active unchanged, higher scale
+  produces a larger applied delta), status builder + endpoint
+  exposing the scale and the invalid-fallback reason code, and the
+  no-approval/no-routing payload guard at every scale.
+- `tests/test_momentum_ranking_status.py`, `test_momentum_ranking_engine_integration.py`,
+  `test_momentum_ranking_contribution.py` — existing suites still pass
+  unchanged.
+- `apps/web/lib/momentum-impact.test.ts` — 4 new tests pinning the
+  helper's default-scale fallback, candidate-supplied scale honored,
+  no-double-count in active mode, and the impact-row carrying
+  `activeDeltaScale` / `rawTotalContribution` / `appliedScoreDelta`.
+- `apps/web/components/recommendations/momentum-ranking-card.test.tsx`
+  — 3 new tests pinning the raw/applied dual badges, the active-mode
+  applied-delta path, and the default-scale fallback when the scale
+  is absent.
+- `apps/web/components/recommendations/momentum-ranking-status-card.test.tsx`
+  — 2 new tests for the Phase B6.1 scale row + env-var and the
+  invalid-fallback `role="alert"` block.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 2 new tests for the per-row "Applied delta @ scale" column and
+  the scale-helper note.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

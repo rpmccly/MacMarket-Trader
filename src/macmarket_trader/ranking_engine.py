@@ -245,7 +245,20 @@ class DeterministicRankingEngine:
                         # Translate the bounded score-unit contribution into
                         # the engine's [0,1] score scale, then re-clamp the
                         # final score so we never exit the engine's domain.
-                        delta = contribution.total_contribution / max(active_config.ranking_score_scale, 1.0)
+                        # Phase B6.1 — multiply by ``active_delta_scale``
+                        # so the operator can dampen active-mode influence
+                        # without changing Phase B1's raw contribution math.
+                        # The contribution object already carries the
+                        # scaled ``applied_score_delta``; prefer that when
+                        # available to keep one source of truth.
+                        if contribution.applied_score_delta is not None:
+                            delta = contribution.applied_score_delta
+                        else:
+                            delta = (
+                                contribution.total_contribution
+                                / max(active_config.ranking_score_scale, 1.0)
+                                * active_config.active_delta_scale
+                            )
                         new_total = max(0.0, min(1.0, total + delta))
                         momentum_score_delta = new_total - total
                         total = new_total

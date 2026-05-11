@@ -26,6 +26,11 @@ export type MomentumRankingStatus = {
   active_guard_env_var?: string;
   active_mode_blocked?: boolean;
   active_mode_block_reason?: string | null;
+  // Phase B6.1 — operator-tunable active-mode delta scale.
+  active_delta_scale?: number;
+  active_delta_scale_env_var?: string;
+  active_delta_scale_invalid?: boolean;
+  active_delta_scale_warning?: string | null;
 };
 
 /**

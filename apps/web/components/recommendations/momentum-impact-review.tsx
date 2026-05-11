@@ -194,6 +194,31 @@ export function MomentumImpactReview({
           {modeFraming(mode, blockedActive)}
         </div>
 
+        {(() => {
+          // Phase B6.1 — surface the operator delta scale once, near the
+          // mode framing, so operators see why the per-row "Estimated
+          // active score" deltas are dampened vs. the raw contribution
+          // column. Falls back to 0.35 when older payloads omit the
+          // scale.
+          const scaleFromRow = sortedRows.find(
+            (row) => Number.isFinite(row.activeDeltaScale) && row.activeDeltaScale > 0,
+          )?.activeDeltaScale;
+          const effectiveScale = scaleFromRow ?? 0.35;
+          return (
+            <div
+              data-testid="momentum-impact-delta-scale"
+              style={{
+                fontSize: "0.78rem",
+                color: "var(--op-muted, #7a8999)",
+                lineHeight: 1.5,
+              }}
+            >
+              Active delta scale: {effectiveScale.toFixed(2)} ·
+              applied score delta = raw contribution ÷ 100 × scale (default 0.35).
+            </div>
+          );
+        })()}
+
         <div className="op-row" style={{ flexWrap: "wrap", gap: 8 }} aria-label="Estimated rank movement summary">
           <StatusBadge tone={rankDelta.upgraded > 0 ? "good" : "neutral"}>
             ▲ {rankDelta.upgraded} would move up
@@ -220,7 +245,8 @@ export function MomentumImpactReview({
                   <th style={{ textAlign: "left" }}>Symbol / strategy</th>
                   <th style={{ textAlign: "left" }}>Mode</th>
                   <th style={{ textAlign: "right" }}>Current score</th>
-                  <th style={{ textAlign: "right" }}>Shadow / applied (score units)</th>
+                  <th style={{ textAlign: "right" }}>Raw contribution (score units)</th>
+                  <th style={{ textAlign: "right" }}>Applied delta @ scale</th>
                   <th style={{ textAlign: "right" }}>Estimated active</th>
                   <th style={{ textAlign: "right" }}>Rank Δ</th>
                   <th style={{ textAlign: "left" }}>Score</th>
@@ -264,6 +290,24 @@ export function MomentumImpactReview({
                         <StatusBadge tone={tone}>
                           {formatScoreUnit(row.shadowContributionScoreUnits)}
                         </StatusBadge>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {(() => {
+                          // Phase B6.1 — in active mode the contribution
+                          // payload already carries ``appliedScoreDelta``;
+                          // in shadow mode we estimate it locally so
+                          // operators see what active would have produced.
+                          const rawForScale = row.shadowContributionScoreUnits;
+                          const scaled =
+                            row.mode === "active"
+                              ? row.appliedScoreDelta
+                              : (rawForScale / 100) * row.activeDeltaScale;
+                          return (
+                            <StatusBadge tone={tone}>
+                              {formatUnitScore(scaled)}
+                            </StatusBadge>
+                          );
+                        })()}
                       </td>
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatUnitScore(row.estimatedActiveScore)}

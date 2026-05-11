@@ -66,10 +66,42 @@ function candidate(overrides: Partial<QueueCandidate> = {}): QueueCandidate {
 }
 
 describe("estimateActiveScore", () => {
-  it("shadow mode adds shadow_contribution / 100 then clamps to [0,1]", () => {
-    expect(estimateActiveScore(candidate({ score: 0.7 }))).toBeCloseTo(0.88, 5);
-    expect(estimateActiveScore(candidate({ score: 0.95, momentum_contribution: contribution({ shadow_contribution: 18 }) }))).toBe(1);
-    expect(estimateActiveScore(candidate({ score: 0.05, momentum_contribution: contribution({ shadow_contribution: -12 }) }))).toBe(0);
+  it("shadow mode adds shadow_contribution / 100 * scale then clamps to [0,1]", () => {
+    // Phase B6.1 — default scale 0.35 dampens active estimates: 18/100*0.35 = 0.063.
+    expect(estimateActiveScore(candidate({ score: 0.7 }))).toBeCloseTo(0.763, 5);
+    expect(
+      estimateActiveScore(
+        candidate({
+          score: 0.95,
+          momentum_contribution: contribution({ shadow_contribution: 18, active_delta_scale: 1.0 }),
+        }),
+      ),
+    ).toBe(1);
+    expect(
+      estimateActiveScore(
+        candidate({
+          score: 0.05,
+          momentum_contribution: contribution({ shadow_contribution: -12, active_delta_scale: 1.0 }),
+        }),
+      ),
+    ).toBe(0);
+  });
+
+  it("uses the candidate-level active_delta_scale when provided", () => {
+    expect(
+      estimateActiveScore(
+        candidate({
+          score: 0.5,
+          momentum_contribution: contribution({ shadow_contribution: 20, active_delta_scale: 0.5 }),
+        }),
+      ),
+    ).toBeCloseTo(0.6, 5); // 0.5 + 20/100 * 0.5
+  });
+
+  it("defaults to 0.35 when active_delta_scale is missing on the contribution", () => {
+    const c = contribution({ shadow_contribution: 20 });
+    delete (c as Partial<typeof c>).active_delta_scale;
+    expect(estimateActiveScore(candidate({ score: 0.5, momentum_contribution: c }))).toBeCloseTo(0.57, 5);
   });
 
   it("active mode returns the candidate score unchanged (no double count)", () => {

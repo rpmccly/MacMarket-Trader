@@ -44,6 +44,10 @@ function shadowStatus(overrides: Partial<MomentumRankingStatus> = {}): MomentumR
     env_var: "MACMARKET_MOMENTUM_RANKING_MODE",
     raw_env_value: "shadow",
     invalid_env_value: false,
+    active_delta_scale: 0.35,
+    active_delta_scale_env_var: "MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE",
+    active_delta_scale_invalid: false,
+    active_delta_scale_warning: null,
     enabled: true,
     applied_by_default: false,
     parity_status: "pending_thinkorswim_fixture_validation",
@@ -253,5 +257,33 @@ describe("MomentumRankingStatusCard", () => {
     expect(html).toContain("Active guard env var");
     expect(html).toContain('data-testid="momentum-ranking-status-active-guard-env-var"');
     expect(html).toContain("MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING");
+  });
+
+  // ── Phase B6.1 — active delta scale rendering ────────────────────────
+
+  it("renders the Phase B6.1 active delta scale + env var", () => {
+    const html = renderToStaticMarkup(<MomentumRankingStatusCard status={shadowStatus()} />);
+    expect(html).toContain("Active delta scale");
+    expect(html).toContain("0.35");
+    expect(html).toContain('data-testid="momentum-ranking-status-active-delta-scale-env-var"');
+    expect(html).toContain("MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE");
+    expect(html).toContain("Active score delta = raw contribution ÷ 100 × active delta scale.");
+  });
+
+  it("renders the invalid-scale alert when active_delta_scale_invalid is true", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          active_delta_scale: 0.35,
+          active_delta_scale_invalid: true,
+          active_delta_scale_warning:
+            "Configured MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE was unparseable or out of range [0.0, 1.0]; falling back to the deterministic default 0.35.",
+          reason_codes: ["thinkorswim_parity_pending", "momentum_active_delta_scale_invalid"],
+        })}
+      />,
+    );
+    expect(html).toContain("data-testid=\"momentum-ranking-status-active-delta-scale-invalid\"");
+    expect(html).toContain("MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE");
+    expect(html).toContain("falling back to the deterministic default 0.35");
   });
 });

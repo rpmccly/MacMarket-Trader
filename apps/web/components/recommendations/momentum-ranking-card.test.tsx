@@ -61,6 +61,9 @@ function shadow(overrides: Partial<MomentumRankingContribution> = {}): MomentumR
     inferred_direction: "long",
     calculation_notes: [],
     reason_codes: ["thinkorswim_parity_pending", "derived_higher_timeframe"],
+    active_delta_scale: 0.35,
+    raw_total_contribution: 18,
+    applied_score_delta: 0,
     ...overrides,
   };
 }
@@ -150,6 +153,43 @@ describe("MomentumRankingCard", () => {
   it("compact mode collapses the breakdown to two-column grid", () => {
     const html = renderToStaticMarkup(<MomentumRankingCard contribution={shadow()} compact />);
     expect(html).toContain("op-grid-2");
+  });
+
+  // ── Phase B6.1 raw-vs-applied surfacing ──────────────────────────────
+
+  it("shows raw contribution and estimated active delta at scale in shadow mode", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingCard
+        contribution={shadow({ shadow_contribution: 20, raw_total_contribution: 20, active_delta_scale: 0.35 })}
+      />,
+    );
+    expect(html).toContain("Shadow +20.00 raw");
+    expect(html).toContain("Est. delta @ scale +0.07");
+    expect(html).toContain("Active delta scale: 0.35");
+  });
+
+  it("shows applied score delta in active mode without double counting", () => {
+    const active = shadow({
+      mode: "active",
+      applied: true,
+      total_contribution: 20,
+      shadow_contribution: 20,
+      raw_total_contribution: 20,
+      applied_score_delta: 0.07,
+      active_delta_scale: 0.35,
+    });
+    const html = renderToStaticMarkup(<MomentumRankingCard contribution={active} />);
+    expect(html).toContain("Applied +20.00 raw");
+    expect(html).toContain("Score delta +0.07");
+    expect(html).toContain("Active delta scale: 0.35");
+  });
+
+  it("defaults to 0.35 scale when active_delta_scale is missing", () => {
+    const missingScale = shadow({ shadow_contribution: 20, raw_total_contribution: 20 });
+    delete (missingScale as Partial<typeof missingScale>).active_delta_scale;
+    const html = renderToStaticMarkup(<MomentumRankingCard contribution={missingScale} />);
+    expect(html).toContain("Active delta scale: 0.35");
+    expect(html).toContain("Est. delta @ scale +0.07");
   });
 });
 

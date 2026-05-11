@@ -60,6 +60,9 @@ function contribution(
     inferred_direction: "long",
     calculation_notes: [],
     reason_codes: ["thinkorswim_parity_pending", "derived_higher_timeframe"],
+    active_delta_scale: 0.35,
+    raw_total_contribution: 12,
+    applied_score_delta: 0,
     ...overrides,
   };
 }
@@ -238,5 +241,50 @@ describe("MomentumImpactReview", () => {
       />,
     );
     expect(active).toContain(DETERMINISTIC_NOTE);
+  });
+
+  // ── Phase B6.1 — active delta scale visibility ──────────────────────
+
+  it("surfaces the active delta scale and the new table column header", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            momentum_contribution: contribution({
+              shadow_contribution: 18,
+              raw_total_contribution: 18,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="momentum-impact-delta-scale"');
+    expect(html).toContain("Active delta scale: 0.35");
+    expect(html).toContain("applied score delta = raw contribution ÷ 100 × scale");
+    expect(html).toContain("Raw contribution (score units)");
+    expect(html).toContain("Applied delta @ scale");
+  });
+
+  it("active-mode review uses payload-supplied applied_score_delta instead of recomputing", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              total_contribution: 20,
+              shadow_contribution: 20,
+              raw_total_contribution: 20,
+              applied_score_delta: 0.07,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain("Applied delta @ scale");
+    expect(html).toContain("0.070");
   });
 });
