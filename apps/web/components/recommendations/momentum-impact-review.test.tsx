@@ -323,7 +323,10 @@ describe("MomentumImpactReview", () => {
     expect(html).not.toMatch(/Applied delta @ scale<\/th>[^]*?>0\.000</);
     // Active-mode framing copy explains baseline vs current.
     expect(html).toContain("Current score already includes the applied Momentum delta");
-    expect(html).toContain("Applied delta shows the scaled Momentum score impact");
+    // Phase B6.3 widened the framing copy to include the realized-delta
+    // distinction; the original "scaled Momentum score impact" phrase
+    // remains, just inside a longer sentence.
+    expect(html).toContain("intended scaled Momentum score impact");
   });
 
   it("active rows fall back to contribution.applied_score_delta when candidate field is absent", () => {
@@ -347,5 +350,187 @@ describe("MomentumImpactReview", () => {
     expect(html).toContain("0.070");
     // Baseline computed locally: 0.882 - 0.07 = 0.812.
     expect(html).toContain("0.812");
+  });
+
+  // ── Phase B6.3 regressions ───────────────────────────────────────────
+
+  it("renders the Phase B6.3 Realized delta column for active rows", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            symbol: "SPY",
+            score: 0.882,
+            score_before_momentum: 0.812,
+            score_after_momentum: 0.882,
+            momentum_score_delta: 0.07,
+            momentum_realized_score_delta: 0.07,
+            momentum_rank_mode: "active",
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              total_contribution: 20,
+              shadow_contribution: 20,
+              raw_total_contribution: 20,
+              applied_score_delta: 0.07,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    );
+    // New column header.
+    expect(html).toContain(">Realized delta<");
+    // Active framing copy explicitly distinguishes the two deltas.
+    expect(html).toContain("Applied delta @ scale is the intended scaled Momentum score impact");
+    expect(html).toContain("Realized delta is what actually changed on the score");
+    expect(html).toContain('data-testid="momentum-impact-realized-delta"');
+  });
+
+  it("renders intended +0.07 and realized +0.03 when the [0,1] clamp truncates", () => {
+    // Phase B6.3 — baseline 0.97 + intended +0.07 → score 1.000,
+    // realized delta is the clamp-truncated +0.03. Both numbers must
+    // appear in the row so the operator sees that the clamp engaged.
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            symbol: "MSFT",
+            score: 1.0,
+            score_before_momentum: 0.97,
+            score_after_momentum: 1.0,
+            momentum_score_delta: 0.07,
+            momentum_realized_score_delta: 0.03,
+            momentum_rank_mode: "active",
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              total_contribution: 20,
+              shadow_contribution: 20,
+              raw_total_contribution: 20,
+              applied_score_delta: 0.07,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    );
+    // Intended applied delta column: 0.070.
+    expect(html).toContain("0.070");
+    // Realized delta column: 0.030 (clamp-truncated).
+    expect(html).toContain("0.030");
+    // Current score is 1.000 (clamp), baseline is 0.970.
+    expect(html).toContain("1.000");
+    expect(html).toContain("0.970");
+  });
+
+  it("legacy-bug shape still renders intended 0.070 even when score=1.000 and baseline=0.812", () => {
+    // Phase B6.3 — backward-compatibility check. If a stale wire
+    // payload shows current=1.000 but contribution.applied_score_delta
+    // is 0.07, the row must still surface the **intended** scaled
+    // delta as 0.070, never the legacy 0.188 implied by current - base.
+    const c = candidate({
+      symbol: "SPY",
+      score: 1.0,
+      score_before_momentum: 0.812,
+      score_after_momentum: 1.0,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.188,
+      momentum_rank_mode: "active",
+      momentum_contribution: contribution({
+        mode: "active",
+        applied: true,
+        total_contribution: 20,
+        shadow_contribution: 20,
+        raw_total_contribution: 20,
+        applied_score_delta: 0.07,
+        active_delta_scale: 0.35,
+        reason_codes: [
+          "thinkorswim_parity_pending",
+          "momentum_score_consistency_corrected",
+        ],
+      }),
+    });
+    const html = renderToStaticMarkup(<MomentumImpactReview candidates={[c]} />);
+    // Applied delta @ scale must surface the intended 0.070.
+    expect(html).toContain("0.070");
+    // The consistency-corrected diagnostic note must surface.
+    expect(html).toContain('data-testid="momentum-impact-consistency-corrected"');
+    expect(html).toContain("Score consistency corrected");
+  });
+
+  it("shadow rows surface a dash for Realized delta", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            momentum_contribution: contribution({
+              mode: "shadow",
+              applied: false,
+              shadow_contribution: 12,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="momentum-impact-realized-delta">—<');
+  });
+
+  it("never renders NaN or Infinity in the impact-review rows", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            symbol: "AAPL",
+            score: Number.NaN,
+            score_before_momentum: Number.NaN,
+            score_after_momentum: Number.NaN,
+            momentum_score_delta: Number.NaN,
+            momentum_realized_score_delta: Number.NaN,
+            momentum_rank_mode: "active",
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              applied_score_delta: Number.NaN,
+              raw_total_contribution: Number.NaN,
+              active_delta_scale: Number.NaN,
+            }),
+          }),
+        ]}
+      />,
+    );
+    expect(html).not.toMatch(/NaN/);
+    expect(html).not.toMatch(/Infinity/);
+  });
+
+  it("never contains trade-approval, order-routing, or action language (Phase B6.3 regression)", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              total_contribution: 20,
+              shadow_contribution: 20,
+              raw_total_contribution: 20,
+              applied_score_delta: 0.07,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    ).toLowerCase();
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ]) {
+      expect(html.includes(forbidden)).toBe(false);
+    }
   });
 });

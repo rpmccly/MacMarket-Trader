@@ -63,7 +63,7 @@ function modeFraming(mode: MomentumRankingMode, blockedActive: boolean): string 
       return (
         "Momentum contribution is currently applied to ranking. " +
         "Current score already includes the applied Momentum delta; the Baseline column shows the pre-Momentum score. " +
-        "Applied delta shows the scaled Momentum score impact. " +
+        "Applied delta @ scale is the intended scaled Momentum score impact; Realized delta is what actually changed on the score after the [0,1] clamp. " +
         "Approval and paper orders remain manual. Active mode changes ranking order only; it does not approve, reject, size, or route trades."
       );
     case "shadow":
@@ -253,6 +253,7 @@ export function MomentumImpactReview({
                   <th style={{ textAlign: "right" }}>Current score</th>
                   <th style={{ textAlign: "right" }}>Raw contribution (score units)</th>
                   <th style={{ textAlign: "right" }}>Applied delta @ scale</th>
+                  <th style={{ textAlign: "right" }}>Realized delta</th>
                   <th style={{ textAlign: "right" }}>Estimated active</th>
                   <th style={{ textAlign: "right" }}>Rank Δ</th>
                   <th style={{ textAlign: "left" }}>Score</th>
@@ -300,7 +301,7 @@ export function MomentumImpactReview({
                           {formatScoreUnit(row.shadowContributionScoreUnits)}
                         </StatusBadge>
                       </td>
-                      <td style={{ textAlign: "right" }}>
+                      <td style={{ textAlign: "right" }} data-testid="momentum-impact-applied-delta">
                         {(() => {
                           // Phase B6.2 — single source of truth for the
                           // applied score delta. ``row.appliedScoreDelta``
@@ -316,6 +317,26 @@ export function MomentumImpactReview({
                             </StatusBadge>
                           );
                         })()}
+                        {row.consistencyCorrected ? (
+                          <div
+                            data-testid="momentum-impact-consistency-corrected"
+                            style={{
+                              fontSize: "0.72rem",
+                              color: "var(--op-warn-text, #d6a25b)",
+                              marginTop: 2,
+                            }}
+                          >
+                            Score consistency corrected
+                          </div>
+                        ) : null}
+                      </td>
+                      <td
+                        style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                        data-testid="momentum-impact-realized-delta"
+                      >
+                        {row.mode === "active"
+                          ? formatUnitScore(row.realizedScoreDelta)
+                          : "—"}
                       </td>
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatUnitScore(row.estimatedActiveScore)}

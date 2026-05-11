@@ -12,6 +12,7 @@ from macmarket_trader.recommendation.momentum_ranking import (
     MomentumRankingConfig,
     apply_momentum_score_delta,
     build_momentum_ranking_contribution,
+    enforce_score_consistency,
     momentum_ranking_config_from_settings,
 )
 from macmarket_trader.strategy_registry import StrategyRegistryEntry, list_strategies
@@ -52,6 +53,12 @@ class RankedCandidate:
     score_after_momentum: float | None = None
     momentum_score_delta: float | None = None
     momentum_rank_mode: str | None = None
+    # Phase B6.3 — realized score delta after the [0, 1] clamp engages.
+    # Equal to ``momentum_score_delta`` when the clamp does not truncate
+    # (e.g. baseline 0.812 + intended +0.07 → score 0.882, realized
+    # +0.07). Differs from the intended value when the clamp truncates
+    # (e.g. baseline 0.97 + intended +0.07 → score 1.000, realized +0.03).
+    momentum_realized_score_delta: float | None = None
 
 
 def _regime_alignment_bonus(bars: list[Bar], strategy: str) -> float:
@@ -229,6 +236,7 @@ class DeterministicRankingEngine:
                 # known bullish/bearish strategies surface the inferred
                 # direction instead of falling back to unknown.
                 contribution_dict: dict[str, Any] = {}
+                momentum_realized_score_delta: float | None = None
                 if active_config.mode != "off":
                     payload = momentum_by_symbol.get(symbol)
                     contribution = build_momentum_ranking_contribution(
@@ -241,18 +249,39 @@ class DeterministicRankingEngine:
                         },
                         config=active_config,
                     )
-                    contribution_dict = contribution.model_dump(mode="json")
                     if active_config.mode == "active" and contribution.applied:
                         # Phase B6.2 — route every score change through the
                         # single ``apply_momentum_score_delta`` helper so
                         # the engine, the contribution payload, and the
-                        # frontend all see the same scaled delta. The
-                        # helper handles the [0,1] clamp and the Phase
-                        # B6.1 scale internally; this engine call site
-                        # never reaches for un-scaled raw math anymore.
+                        # frontend all see the same scaled delta.
                         new_total, applied_delta = apply_momentum_score_delta(total, contribution)
-                        momentum_score_delta = applied_delta
-                        total = new_total
+                        # Phase B6.3 — single-source-of-truth output guard.
+                        # Recompute the expected score from the contribution
+                        # payload and force ``total`` to match. If any other
+                        # path mutated the score, ``corrected=True`` and a
+                        # reason code is appended so the operator UI shows
+                        # which row needed correction.
+                        guard = enforce_score_consistency(
+                            observed_score=new_total,
+                            score_before_momentum=score_before_momentum,
+                            contribution=contribution,
+                        )
+                        if guard.corrected and "momentum_score_consistency_corrected" not in contribution.reason_codes:
+                            contribution = contribution.model_copy(
+                                update={
+                                    "reason_codes": list(contribution.reason_codes)
+                                    + ["momentum_score_consistency_corrected"],
+                                }
+                            )
+                        # ``momentum_score_delta`` is the **intended**
+                        # scaled delta and must equal
+                        # ``contribution.applied_score_delta`` so the
+                        # operator card and queue agree even when the
+                        # clamp truncates the realized value.
+                        momentum_score_delta = guard.intended_applied_delta
+                        momentum_realized_score_delta = guard.realized_score_delta
+                        total = guard.final_score
+                    contribution_dict = contribution.model_dump(mode="json")
                 else:
                     # off-mode: still emit a stable shape so clients/tests
                     # can read momentum_contribution without conditional logic.
@@ -298,6 +327,11 @@ class DeterministicRankingEngine:
                         score_after_momentum=round(total, 4) if score_before_momentum is not None else None,
                         momentum_score_delta=(
                             round(momentum_score_delta, 6) if momentum_score_delta is not None else None
+                        ),
+                        momentum_realized_score_delta=(
+                            round(momentum_realized_score_delta, 6)
+                            if momentum_realized_score_delta is not None
+                            else None
                         ),
                         momentum_rank_mode=active_config.mode if active_config.mode != "off" else "off",
                         targets=f"{latest.close * 1.02:.2f} / {latest.close * 1.04:.2f}",

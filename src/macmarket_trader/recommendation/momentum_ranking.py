@@ -868,6 +868,8 @@ def build_momentum_ranking_status(
         active_delta_scale_env_var="MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE",
         active_delta_scale_invalid=resolved_config.active_delta_scale_invalid,
         active_delta_scale_warning=active_delta_scale_warning,
+        active_delta_formula_version=ACTIVE_DELTA_FORMULA_VERSION,
+        ranking_score_consistency_guard=RANKING_SCORE_CONSISTENCY_GUARD,
     )
 
 
@@ -926,12 +928,115 @@ def apply_momentum_score_delta(
     return score_after, float(applied_delta)
 
 
+# ── Phase B6.3 single-source-of-truth output guard ─────────────────────────
+
+
+# Operator-visible marker that the deployed build is running the post-B6.1
+# scaled active-delta formula. Surfaced in MomentumRankingStatus so a stale
+# deploy is obvious from the Settings card without grepping git history.
+ACTIVE_DELTA_FORMULA_VERSION: str = "scaled_v1"
+
+# Always-on Phase B6.3 consistency guard. Kept as a module constant so the
+# status payload, tests, and docs reference the same source of truth.
+RANKING_SCORE_CONSISTENCY_GUARD: bool = True
+
+# Floating-point tolerance for the consistency check. A divergence wider
+# than this (post-clamp) is treated as a real mismatch that the guard had
+# to correct rather than a rounding artifact.
+_SCORE_CONSISTENCY_EPSILON: float = 1e-6
+
+
+@dataclass(frozen=True)
+class MomentumScoreConsistencyResult:
+    """Output of :func:`enforce_score_consistency`.
+
+    ``intended_applied_delta`` is the **scaled** ranking-score delta from
+    ``contribution.applied_score_delta`` (Phase B6.1). It is the value the
+    operator UI should label "Applied delta @ scale" / "Intended delta".
+
+    ``realized_score_delta`` is ``final_score - score_before_momentum``
+    after the [0, 1] clamp. When the clamp does not engage it equals
+    ``intended_applied_delta``; when the clamp truncates (e.g. baseline
+    0.97 + intended +0.07 → 1.000) it shrinks to fit and is therefore
+    the right value for any "what actually happened to the score" UI.
+
+    ``corrected`` is True only when the observed score diverged from the
+    Phase B6.1 formula by more than the floating-point tolerance — i.e.
+    a legacy code path applied a different delta. The contribution's
+    reason codes pick up ``momentum_score_consistency_corrected``.
+    """
+
+    final_score: float
+    intended_applied_delta: float
+    realized_score_delta: float
+    corrected: bool
+
+
+def enforce_score_consistency(
+    *,
+    observed_score: float,
+    score_before_momentum: float | None,
+    contribution: MomentumRankingContribution | None,
+) -> MomentumScoreConsistencyResult:
+    """Enforce the Phase B6.3 single source of truth for active scores.
+
+    Recomputes ``expected_score = clamp01(score_before + applied_delta)``
+    from the contribution payload, compares it against ``observed_score``,
+    and returns the corrected score plus the intended/realized delta
+    split. Off / shadow / blocked-active / disabled contributions
+    pass-through unchanged (final = observed, intended = realized = 0).
+
+    Never raises; sanitizes NaN/inf inputs to deterministic defaults so a
+    malformed payload cannot crash the queue endpoint.
+    """
+    observed = _sanitize(float(observed_score))
+    if contribution is None or contribution.enabled is False:
+        clean = _clamp_unit(observed)
+        return MomentumScoreConsistencyResult(
+            final_score=clean,
+            intended_applied_delta=0.0,
+            realized_score_delta=0.0,
+            corrected=False,
+        )
+    if contribution.mode != "active" or not contribution.applied:
+        clean = _clamp_unit(observed)
+        return MomentumScoreConsistencyResult(
+            final_score=clean,
+            intended_applied_delta=0.0,
+            realized_score_delta=0.0,
+            corrected=False,
+        )
+
+    base = (
+        _sanitize(float(score_before_momentum))
+        if score_before_momentum is not None
+        else 0.0
+    )
+    # apply_momentum_score_delta already handles the
+    # backward-compatibility fallback when ``applied_score_delta`` is
+    # missing on legacy payloads, so the guard delegates to it for the
+    # intended value rather than duplicating the fallback logic.
+    expected_score, intended_delta = apply_momentum_score_delta(base, contribution)
+    realized_delta = expected_score - base
+    corrected = abs(observed - expected_score) > _SCORE_CONSISTENCY_EPSILON
+    return MomentumScoreConsistencyResult(
+        final_score=expected_score,
+        intended_applied_delta=float(intended_delta),
+        realized_score_delta=float(realized_delta),
+        corrected=corrected,
+    )
+
+
 __all__ = [
+    "ACTIVE_DELTA_FORMULA_VERSION",
     "DEFAULT_ACTIVE_DELTA_SCALE",
     "MomentumRankingConfig",
+    "MomentumScoreConsistencyResult",
+    "RANKING_SCORE_CONSISTENCY_GUARD",
     "apply_momentum_score_delta",
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
+    "enforce_score_consistency",
     "momentum_ranking_config_from_settings",
     "resolve_effective_momentum_ranking_mode",
     "resolve_momentum_ranking_mode",

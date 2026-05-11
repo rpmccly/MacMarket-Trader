@@ -1379,6 +1379,14 @@ class MomentumRankingStatus(BaseModel):
     active_delta_scale_env_var: str = "MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE"
     active_delta_scale_invalid: bool = False
     active_delta_scale_warning: str | None = None
+    # Phase B6.3 — read-only diagnostics. ``active_delta_formula_version``
+    # is bumped whenever the active-score wiring changes so a stale deploy
+    # is obvious from the Settings card. ``ranking_score_consistency_guard``
+    # reports whether the engine output is enforced through the Phase B6.3
+    # single-source-of-truth guard. Both are pure status fields — they
+    # never gate approval, sizing, or routing.
+    active_delta_formula_version: str = "scaled_v1"
+    ranking_score_consistency_guard: bool = True
 
 
 class MomentumRankingContribution(BaseModel):

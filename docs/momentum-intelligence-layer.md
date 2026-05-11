@@ -1373,6 +1373,181 @@ a delta.
 4. To revert behavior, disable active mode via env (
    `MACMARKET_MOMENTUM_RANKING_MODE=shadow` or `off`).
 
+## Phase B6.3 — Single source of truth for the active queue score
+
+Phase B6.3 closes the deployed-but-incompletely-fixed regression: even
+after Phase B6.2 routed the engine through `apply_momentum_score_delta`,
+the deployed `/user/recommendations/queue` payload still reported
+queue rows with the **legacy un-scaled** delta (`raw / 100 = +0.20`)
+while the selected-recommendation card showed the correct **scaled**
+delta (`raw / 100 × 0.35 = +0.07`). Reproduced shapes:
+
+```
+SPY  baseline 0.812 → queue score 1.000  (expected 0.882)
+MSFT baseline 0.792 → queue score 0.992  (implies +0.200 delta)
+NVDA baseline 0.779 → queue score 0.979  (implies +0.200 delta)
+```
+
+The Phase B6.3 fix is **defensive hardening plus diagnostics**. Even
+if a stale deploy or a future regression reintroduces a different
+score-modification path, the engine output is now provably equal to
+the Phase B6.1 scaled formula on every active queue row.
+
+### Single-source-of-truth output guard
+
+`enforce_score_consistency(...)` (new in
+`src/macmarket_trader/recommendation/momentum_ranking.py`) is called on
+every active-mode candidate inside
+`DeterministicRankingEngine.rank_candidates`. It:
+
+1. Recomputes `expected = clamp01(score_before + contribution.applied_score_delta)`.
+2. Compares `observed_score` (what the loop had just produced) to
+   `expected`. If the absolute difference exceeds `1e-6`, the guard
+   appends `momentum_score_consistency_corrected` to the contribution
+   reason codes so the operator UI can flag it.
+3. Sets `score`, `score_after_momentum`, and `momentum_score_delta`
+   from the guard's output so every field is consistent with the
+   Phase B6.1 scaled formula.
+4. Returns `realized_score_delta = expected - score_before`, which
+   equals the intended delta unless the `[0, 1]` clamp truncates.
+
+The guard is **deterministic, never raises, and never changes
+approval, sizing, or routing**. It exists strictly to ensure that
+`candidate.score`, `candidate.score_after_momentum`,
+`contribution.applied_score_delta`, and the operator-visible
+"Score delta" pill cannot disagree.
+
+### Intended vs realized delta
+
+Phase B6.3 makes the operator-visible distinction explicit on
+every active row:
+
+- **Intended applied delta** (`momentum_score_delta`,
+  `contribution.applied_score_delta`,
+  "Applied delta @ scale" column) — the scaled Phase B6.1 value
+  `raw / 100 × active_delta_scale`. Always the operator-visible
+  audit number on the recommendation card.
+- **Realized score delta** (`momentum_realized_score_delta`,
+  "Realized delta" column) — `score_after - score_before` after the
+  `[0, 1]` clamp. Equal to the intended value unless the clamp
+  truncates (e.g. baseline 0.97 + intended +0.07 → score 1.000,
+  realized +0.03).
+
+The frontend `MomentumImpactReview` now renders a `Realized delta`
+column alongside `Applied delta @ scale` for active rows so operators
+can see at a glance when the clamp engaged. The active-mode framing
+copy is updated to "Applied delta @ scale is the intended scaled
+Momentum score impact; Realized delta is what actually changed on the
+score after the [0, 1] clamp."
+
+### Runtime diagnostics on the status payload
+
+`MomentumRankingStatus` exposes two read-only diagnostic fields so a
+stale deploy is visible without git log forensics:
+
+- `active_delta_formula_version`: `"scaled_v1"`. Bumped whenever the
+  active-score wiring changes. Operators confirming a fresh deploy
+  can read this directly from the Settings card.
+- `ranking_score_consistency_guard`: `true`. Reports that the engine
+  output is enforced through Phase B6.3's single-source-of-truth
+  guard. Stays `true` for as long as the guard is wired in.
+
+These fields are pure status; they never gate approval, sizing, or
+order routing.
+
+### Frontend display invariants
+
+`apps/web/lib/momentum-impact.ts` and the impact-review component
+now adhere to these rules on every render:
+
+- `currentScore` prefers `candidate.score_after_momentum` when present
+  so even a stale wire payload (where `candidate.score` drifted) lines
+  up with the backend guard.
+- `appliedScoreDelta` always reads `candidate.momentum_score_delta`
+  (intended), then `contribution.applied_score_delta`, then the
+  legacy `raw / 100 × scale` fallback. It is **never** derived from
+  `currentScore - baselineScore`.
+- `realizedScoreDelta` reads `candidate.momentum_realized_score_delta`
+  when present, otherwise `currentScore - baselineScore`. Shadow rows
+  always report `0`.
+- `consistencyCorrected` is `true` when the contribution carries the
+  `momentum_score_consistency_corrected` reason code, and the row
+  surfaces "Score consistency corrected" near the applied-delta cell.
+
+### What did not change
+
+- **Raw contribution caps** remain ±20 with the Phase B1 inputs.
+- **Default Momentum mode** is still `off` in every deployment that
+  does not explicitly set `MACMARKET_MOMENTUM_RANKING_MODE=active` +
+  `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`.
+- **Approval and paper-order behavior** remain manual. Phase B6.3
+  changes no approval gate, no broker routing, no
+  `BROKER_PROVIDER`/`LIVE_TRADING_ALLOWED` semantics.
+- **Indicator math, parity gates, Thinkorswim fixtures** are
+  untouched. `parity_required_for_active` defaults stay as they were,
+  and the `thinkorswim_parity_pending` reason code still surfaces.
+- **Strategy registry** is unchanged. No Phase C work landed.
+- **Active delta scale env var, parsing, and defaults** are Phase
+  B6.1's responsibility and were not modified.
+- **`apply_momentum_score_delta`** (Phase B6.2) is unchanged; the
+  Phase B6.3 guard delegates to it for the intended-delta value.
+
+### Tests (Phase B6.3)
+
+- `tests/test_momentum_b63_queue_consistency.py` — 21 new pytest tests
+  covering: pure-helper `enforce_score_consistency` behavior across
+  pass-through / legacy-bug correction / clamp-truncated realized
+  delta / shadow + blocked-active + off-mode pass-through / NaN-inf
+  sanitization; engine end-to-end at baselines `0.812 / 0.898 / 0.970 /
+  0.500 / 1.000` with the realized-delta field present; the
+  contribution payload's `applied_score_delta` equals
+  `candidate.momentum_score_delta`; **real `/user/recommendations/queue`
+  endpoint** integration tests via `fastapi.testclient.TestClient`
+  that assert the response payload publishes the scaled `+0.07`
+  intended delta and **never** the legacy `+0.20`; shadow / blocked-
+  active queue rows leave the baseline score untouched; the API never
+  leaks approval, sizing, or routing fields onto a queue row; and the
+  `MomentumRankingStatus` payload exposes
+  `active_delta_formula_version = "scaled_v1"` plus
+  `ranking_score_consistency_guard = True`.
+- `apps/web/lib/momentum-impact.test.ts` — 9 new tests in a
+  "Phase B6.3 realized-delta + consistency-corrected wiring" block:
+  realized-delta preferred from candidate field; realized tracks the
+  clamp-truncated value; realized fallback to `current - baseline`;
+  realized = 0 in shadow mode; `consistencyCorrected` mirrors the
+  reason code; `currentScore` prefers `score_after_momentum`; the
+  legacy-bug shape still surfaces intended `+0.07`; NaN/inf
+  sanitization on every new field.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 5 new render tests pinning the new `Realized delta` column header,
+  the realized value next to the intended applied delta for the
+  clamp-truncated case (intended `0.070`, realized `0.030`), the
+  consistency-corrected diagnostic note, the legacy-bug shape (intended
+  stays `0.070` even when `currentScore=1.000`), the `—` placeholder
+  for shadow rows, and the "no NaN/Infinity, no action language"
+  regression.
+
+### Operator checklist (Phase B6.3)
+
+1. After deploying Phase B6.3, open Settings → Momentum ranking
+   status and confirm `Active delta formula: scaled_v1` plus
+   `Ranking score consistency guard: on`. This is the fastest way
+   to verify the new build is actually running.
+2. Open the Recommendations queue and confirm bullish active rows
+   with baseline ≲ 0.93 no longer saturate to `1.000`. SPY at
+   baseline `0.812` should land at `0.882`.
+3. Open the Momentum Shadow Impact Review and verify each active
+   row shows both the **intended** applied delta (e.g. `0.070`) and
+   the **realized** delta in the new column. High-baseline rows
+   (≥ 0.93) should show a smaller realized than intended because
+   the clamp truncated.
+4. Approval and paper-order creation remain manual. Phase B6.3 did
+   not change either.
+5. To revert, disable active mode via env (
+   `MACMARKET_MOMENTUM_RANKING_MODE=shadow` or `off`). The guard
+   itself has no environment surface — it is always-on in active
+   mode and a pass-through everywhere else.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

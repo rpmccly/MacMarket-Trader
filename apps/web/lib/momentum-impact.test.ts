@@ -491,3 +491,157 @@ describe("Phase B6.2 applied-delta fallback chain", () => {
     expect(Number.isFinite(row.baselineScore)).toBe(true);
   });
 });
+
+describe("Phase B6.3 realized-delta + consistency-corrected wiring", () => {
+  function activeContribution(
+    overrides: Partial<MomentumRankingContribution> = {},
+  ): MomentumRankingContribution {
+    return contribution({
+      mode: "active",
+      applied: true,
+      total_contribution: 20,
+      shadow_contribution: 20,
+      raw_total_contribution: 20,
+      applied_score_delta: 0.07,
+      active_delta_scale: 0.35,
+      ...overrides,
+    });
+  }
+
+  it("realizedScoreDelta prefers candidate.momentum_realized_score_delta when finite", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.realizedScoreDelta).toBeCloseTo(0.07, 5);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+    expect(row.baselineScore).toBeCloseTo(0.812, 5);
+    expect(row.currentScore).toBeCloseTo(0.882, 5);
+  });
+
+  it("realizedScoreDelta tracks the clamp-truncated value when intended > headroom", () => {
+    // Baseline 0.97 + intended +0.07 → clamp to 1.000, realized +0.03.
+    const c = candidate({
+      score: 1.0,
+      score_before_momentum: 0.97,
+      score_after_momentum: 1.0,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.03,
+      momentum_contribution: activeContribution(),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5); // intended
+    expect(row.realizedScoreDelta).toBeCloseTo(0.03, 5); // realized after clamp
+    expect(row.currentScore).toBeCloseTo(1.0, 5);
+    expect(row.baselineScore).toBeCloseTo(0.97, 5);
+  });
+
+  it("realizedScoreDelta falls back to current - baseline when candidate field is absent", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882,
+      momentum_contribution: activeContribution(),
+    });
+    delete (c as Partial<typeof c>).momentum_realized_score_delta;
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.realizedScoreDelta).toBeCloseTo(0.07, 5);
+  });
+
+  it("realizedScoreDelta is 0 in shadow mode regardless of score arithmetic", () => {
+    const c = candidate({
+      score: 0.7,
+      momentum_contribution: contribution({ mode: "shadow", applied: false, shadow_contribution: 18 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.realizedScoreDelta).toBe(0);
+  });
+
+  it("consistencyCorrected reflects the momentum_score_consistency_corrected reason code", () => {
+    const c = candidate({
+      score: 1.0,
+      score_before_momentum: 0.812,
+      score_after_momentum: 1.0,
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.188,
+      momentum_contribution: activeContribution({
+        reason_codes: [
+          "thinkorswim_parity_pending",
+          "momentum_score_consistency_corrected",
+        ],
+      }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.consistencyCorrected).toBe(true);
+    // The applied (intended) delta should remain the scaled value, never
+    // the legacy implied current-baseline diff (0.188).
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+  });
+
+  it("consistencyCorrected is false when the reason code is absent", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      momentum_contribution: activeContribution(),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.consistencyCorrected).toBe(false);
+  });
+
+  it("currentScore prefers score_after_momentum when present", () => {
+    // Even if candidate.score drifted (stale wire payload), use the
+    // explicit score_after_momentum so the row matches the backend
+    // consistency guard's output.
+    const c = candidate({
+      score: 1.0, // legacy / stale
+      score_before_momentum: 0.812,
+      score_after_momentum: 0.882, // single source of truth
+      momentum_score_delta: 0.07,
+      momentum_realized_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.currentScore).toBeCloseTo(0.882, 5);
+  });
+
+  it("legacy-bug shape — current=1.000 but applied_score_delta=0.07 — still renders intended 0.070", () => {
+    // Pin the exact deployed-bug signature: even if a stale wire row
+    // arrives with current=1.000 (the legacy unscaled delta), the
+    // operator UI must render the intended scaled +0.07 because
+    // contribution.applied_score_delta is the single source of truth.
+    const c = candidate({
+      symbol: "SPY",
+      score: 1.0,
+      score_before_momentum: 0.812,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+  });
+
+  it("never returns NaN/Infinity in realized or applied delta under bad payloads", () => {
+    const c = candidate({
+      score: Number.NaN,
+      score_before_momentum: Number.NaN,
+      score_after_momentum: Number.NaN,
+      momentum_score_delta: Number.NaN,
+      momentum_realized_score_delta: Number.POSITIVE_INFINITY,
+      momentum_contribution: activeContribution({
+        applied_score_delta: Number.NaN,
+        raw_total_contribution: Number.NaN,
+        active_delta_scale: Number.NaN,
+      }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(Number.isFinite(row.appliedScoreDelta)).toBe(true);
+    expect(Number.isFinite(row.realizedScoreDelta)).toBe(true);
+    expect(Number.isFinite(row.currentScore)).toBe(true);
+    expect(Number.isFinite(row.baselineScore)).toBe(true);
+  });
+});

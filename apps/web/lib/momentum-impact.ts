@@ -44,6 +44,16 @@ export type MomentumImpactRow = {
   // back to ``candidate.score - appliedScoreDelta`` in active mode so
   // older payloads still surface a reasonable baseline.
   baselineScore: number;
+  // Phase B6.3 — realized score delta after the [0, 1] clamp. Equal to
+  // ``appliedScoreDelta`` (intended) when the clamp does not truncate;
+  // smaller when it does (e.g. baseline 0.97 + intended +0.07 →
+  // realized +0.03). Lets the impact review explain "intended vs
+  // realized" without recomputing from the raw payload.
+  realizedScoreDelta: number;
+  // Phase B6.3 — true if the consistency guard had to correct a stale
+  // observed score (legacy unscaled delta). Operator-visible only; never
+  // changes approval, sizing, or routing.
+  consistencyCorrected: boolean;
 };
 
 export type MomentumImpactSummary = {
@@ -192,7 +202,18 @@ export function buildMomentumImpactRows(
     const enabled = !!contribution && contribution.enabled !== false;
     const { contribution: contributionScoreUnits, shadow: shadowContributionScoreUnits } =
       effectiveContributionScoreUnits(contribution, mode);
-    const currentScore = clampUnit(sanitizeNumber(candidate.score, 0));
+    // Phase B6.3 — prefer ``score_after_momentum`` when the backend has
+    // published it. ``candidate.score`` is rounded to 3 decimals on the
+    // wire and the backend consistency guard already forced them equal,
+    // so this is just a robustness preference: a stale payload whose
+    // ``score`` field drifted from the per-Phase-B6.1 scaled math will
+    // still render the correct row when the post-momentum field is
+    // present.
+    const rawCurrentScore = sanitizeNumber(
+      candidate.score_after_momentum ?? candidate.score,
+      sanitizeNumber(candidate.score, 0),
+    );
+    const currentScore = clampUnit(rawCurrentScore);
     const estimatedActiveScore = estimateActiveScore(candidate);
     const scoreDelta = estimatedActiveScore - currentScore;
     const reasonCodes = (contribution?.reason_codes ?? []).slice();
@@ -242,6 +263,26 @@ export function buildMomentumImpactRows(
           ? clampUnit(baselineFromCandidate)
           : clampUnit(currentScore - appliedScoreDelta)
         : currentScore;
+    // Phase B6.3 — realized delta is what actually happened to the
+    // score after the [0,1] clamp. Prefer the backend-supplied field;
+    // fall back to (currentScore - baselineScore) for older payloads.
+    // Shadow rows always read 0 because shadow never moves the queue.
+    const realizedFromCandidate = sanitizeNumber(
+      candidate.momentum_realized_score_delta,
+      Number.NaN,
+    );
+    const realizedScoreDelta =
+      mode === "active"
+        ? Number.isFinite(realizedFromCandidate)
+          ? realizedFromCandidate
+          : currentScore - baselineScore
+        : 0;
+    // Phase B6.3 — operator-visible note that the consistency guard had
+    // to overwrite a stale observed score. The backend appends the
+    // reason code; the frontend just surfaces the boolean.
+    const consistencyCorrected =
+      mode === "active" &&
+      (contribution?.reason_codes?.includes("momentum_score_consistency_corrected") ?? false);
 
     out.push({
       symbol: candidate.symbol,
@@ -271,6 +312,8 @@ export function buildMomentumImpactRows(
       rawTotalContribution: rawForRow,
       appliedScoreDelta,
       baselineScore,
+      realizedScoreDelta,
+      consistencyCorrected,
     });
   });
   return out;

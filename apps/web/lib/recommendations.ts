@@ -61,6 +61,11 @@ export type QueueCandidate = {
   score_after_momentum?: number | null;
   momentum_score_delta?: number | null;
   momentum_rank_mode?: "off" | "shadow" | "active" | string | null;
+  // Phase B6.3 — realized score delta after the [0,1] clamp engages.
+  // Equal to ``momentum_score_delta`` (intended) when the clamp does not
+  // truncate; smaller when it does. Lets the impact review surface
+  // "intended +0.07, realized +0.03" for high-baseline rows.
+  momentum_realized_score_delta?: number | null;
   expected_rr: number;
   confidence: number;
   reason_text: string;
