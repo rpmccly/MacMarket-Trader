@@ -20,7 +20,7 @@ import type { MomentumRankingMode, QueueCandidate } from "@/lib/recommendations"
 export const MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE =
   "This trial journal records Momentum ranking evidence only. It does not approve, reject, size, or route trades.";
 
-export const MOMENTUM_TRIAL_JOURNAL_VERSION = "phase_b7.v1";
+export const MOMENTUM_TRIAL_JOURNAL_VERSION = "phase_b7_1.v1";
 
 export type MomentumTrialCandidateClassification =
   | "active_positive"
@@ -33,14 +33,69 @@ export type MomentumTrialCandidateClassification =
   | "blocked_active"
   | "contribution_missing";
 
-export type MomentumTrialWarningFlag =
+// Phase B7.1 — the union enum is preserved for backward compatibility,
+// but each flag is now classified as either a trade warning (something
+// that suggests the trade itself looks dangerous) or an operational
+// caveat (something about data-quality, parity, or guardrails — not a
+// trade-direction signal).
+export type MomentumTrialTradeWarningFlag =
   | "no_trade_warning"
   | "reversal_warning"
-  | "bear_total_label_contradiction"
+  | "bear_total_label_contradiction";
+
+export type MomentumTrialOperationalCaveatFlag =
   | "score_consistency_corrected"
   | "parity_pending"
+  | "derived_higher_timeframe"
   | "direction_unknown"
   | "active_mode_blocked_by_safety_guard";
+
+export type MomentumTrialWarningFlag =
+  | MomentumTrialTradeWarningFlag
+  | MomentumTrialOperationalCaveatFlag;
+
+export const MOMENTUM_TRIAL_TRADE_WARNING_FLAGS: ReadonlyArray<MomentumTrialTradeWarningFlag> = [
+  "no_trade_warning",
+  "reversal_warning",
+  "bear_total_label_contradiction",
+];
+
+export const MOMENTUM_TRIAL_OPERATIONAL_CAVEAT_FLAGS: ReadonlyArray<MomentumTrialOperationalCaveatFlag> = [
+  "score_consistency_corrected",
+  "parity_pending",
+  "derived_higher_timeframe",
+  "direction_unknown",
+  "active_mode_blocked_by_safety_guard",
+];
+
+export function isTradeWarningFlag(
+  flag: MomentumTrialWarningFlag,
+): flag is MomentumTrialTradeWarningFlag {
+  return (MOMENTUM_TRIAL_TRADE_WARNING_FLAGS as ReadonlyArray<string>).includes(flag);
+}
+
+export function isOperationalCaveatFlag(
+  flag: MomentumTrialWarningFlag,
+): flag is MomentumTrialOperationalCaveatFlag {
+  return (MOMENTUM_TRIAL_OPERATIONAL_CAVEAT_FLAGS as ReadonlyArray<string>).includes(flag);
+}
+
+export function partitionWarningFlags(
+  flags: ReadonlyArray<MomentumTrialWarningFlag>,
+): {
+  tradeWarnings: MomentumTrialTradeWarningFlag[];
+  operationalCaveats: MomentumTrialOperationalCaveatFlag[];
+} {
+  const tradeWarnings: MomentumTrialTradeWarningFlag[] = [];
+  const operationalCaveats: MomentumTrialOperationalCaveatFlag[] = [];
+  for (const flag of flags) {
+    if (isTradeWarningFlag(flag)) tradeWarnings.push(flag);
+    else if (isOperationalCaveatFlag(flag)) operationalCaveats.push(flag);
+  }
+  return { tradeWarnings, operationalCaveats };
+}
+
+export type MomentumTrialUniverseKind = "evaluated" | "captured";
 
 export type MomentumTrialCandidateSnapshot = {
   rank: number;
@@ -64,7 +119,12 @@ export type MomentumTrialCandidateSnapshot = {
   momo_score: number | null;
   reason_codes: string[];
   reason_labels: string[];
+  // Phase B7.1 — full union of flags (back-compat with B7), plus
+  // partitioned views so the UI can render trade warnings separately
+  // from operational caveats.
   warning_flags: MomentumTrialWarningFlag[];
+  trade_warning_flags: MomentumTrialTradeWarningFlag[];
+  operational_caveat_flags: MomentumTrialOperationalCaveatFlag[];
   score_consistency_status: "ok" | "corrected" | "inconsistent" | "unknown";
   risk_calendar_decision: string | null;
   risk_calendar_level: string | null;
@@ -79,7 +139,13 @@ export type MomentumTrialSummary = {
   off_mode_count: number;
   parity_pending_count: number;
   direction_unknown_count: number;
+  derived_higher_timeframe_count: number;
+  // Phase B7.1 — `warning_count` is now the trade-warning count only
+  // (no-trade, reversal, bearish contradiction). Operational caveats
+  // are exposed separately. `trade_warning_count` is a clearer alias.
   warning_count: number;
+  trade_warning_count: number;
+  operational_caveat_count: number;
   positive_contribution_count: number;
   negative_contribution_count: number;
   zero_contribution_count: number;
@@ -104,14 +170,25 @@ export type MomentumTrialOperatorNote = {
 export type MomentumTrialSnapshot = {
   schema_version: typeof MOMENTUM_TRIAL_JOURNAL_VERSION;
   generated_at: string;
+  // Phase B7.1 — when ``universe_kind`` is ``"evaluated"`` the symbol
+  // list reflects the caller-supplied evaluated universe (e.g. the
+  // parsed manual-symbol input on the Recommendations page). When it
+  // is ``"captured"`` the symbol list was inferred from the candidate
+  // rows actually captured in the snapshot — useful when no explicit
+  // universe was passed in.
   universe_symbols: string[];
+  universe_kind: MomentumTrialUniverseKind;
   summary: MomentumTrialSummary;
   // Top candidates by current (active mode) or estimated active score.
   top_candidates: MomentumTrialCandidateSnapshot[];
-  // Candidates carrying at least one warning flag.
+  // Phase B7.1 — partitioned candidate views. ``warning_candidates``
+  // remains a union (back-compat with Phase B7) and contains every
+  // candidate that has at least one flag of either kind.
   warning_candidates: MomentumTrialCandidateSnapshot[];
+  trade_warning_candidates: MomentumTrialCandidateSnapshot[];
+  operational_caveat_candidates: MomentumTrialCandidateSnapshot[];
   // All candidates captured. Retained for export completeness; the UI
-  // displays a small slice via `top_candidates` and `warning_candidates`.
+  // displays a small slice via `top_candidates` and the warning views.
   candidates: MomentumTrialCandidateSnapshot[];
   operator_note: MomentumTrialOperatorNote | null;
 };
@@ -258,11 +335,15 @@ function classifyImpactRow(row: MomentumImpactRow): MomentumTrialCandidateClassi
 
 function warningFlagsForRow(row: MomentumImpactRow): MomentumTrialWarningFlag[] {
   const flags: MomentumTrialWarningFlag[] = [];
+  // Trade warnings first (kept in original order for back-compat).
   if (row.noTradeWarning) flags.push("no_trade_warning");
   if (row.reversalWarning) flags.push("reversal_warning");
   if (detectBearTotalContradiction(row)) flags.push("bear_total_label_contradiction");
+  // Operational caveats — Phase B7.1: parity / data-quality flags that
+  // describe the operating environment, not the trade itself.
   if (row.consistencyCorrected) flags.push("score_consistency_corrected");
   if (row.parityPending) flags.push("parity_pending");
+  if (row.derivedHigherTimeframe) flags.push("derived_higher_timeframe");
   if (row.directionUnknown) flags.push("direction_unknown");
   if (row.reasonCodes.includes("active_mode_blocked_by_safety_guard")) {
     flags.push("active_mode_blocked_by_safety_guard");
@@ -286,6 +367,8 @@ function buildCandidateSnapshot(
 ): MomentumTrialCandidateSnapshot {
   const reasonLabels = getMomentumContributionReasonLabels(row.reasonCodes);
   const decision = candidate.risk_calendar?.decision ?? null;
+  const warningFlags = warningFlagsForRow(row);
+  const { tradeWarnings, operationalCaveats } = partitionWarningFlags(warningFlags);
   return {
     rank: sanitizeFinite(row.rank, 0),
     symbol: typeof row.symbol === "string" ? row.symbol : "",
@@ -308,7 +391,9 @@ function buildCandidateSnapshot(
       : null,
     reason_codes: row.reasonCodes.slice(),
     reason_labels: reasonLabels,
-    warning_flags: warningFlagsForRow(row),
+    warning_flags: warningFlags,
+    trade_warning_flags: tradeWarnings,
+    operational_caveat_flags: operationalCaveats,
     score_consistency_status: scoreConsistencyStatusOf(candidate),
     risk_calendar_decision: typeof decision?.decision_state === "string" ? decision.decision_state : null,
     risk_calendar_level: typeof decision?.risk_level === "string" ? decision.risk_level : null,
@@ -318,15 +403,30 @@ function buildCandidateSnapshot(
 }
 
 /**
- * Operator-facing predicate. True when the candidate carries at least one
- * journal-relevant warning (no-trade, reversal, contradiction, consistency
- * correction, parity pending, direction unknown, blocked-active).
+ * Operator-facing accessor. Returns the full union of warning flags
+ * (trade warnings + operational caveats) for back-compat with Phase B7
+ * callers. New callers should prefer `momentumTrialTradeWarnings` or
+ * `momentumTrialOperationalCaveats` when they need the distinction.
  */
 export function momentumTrialWarnings(
   candidate: MomentumTrialCandidateSnapshot | null | undefined,
 ): MomentumTrialWarningFlag[] {
   if (!candidate) return [];
   return candidate.warning_flags.slice();
+}
+
+export function momentumTrialTradeWarnings(
+  candidate: MomentumTrialCandidateSnapshot | null | undefined,
+): MomentumTrialTradeWarningFlag[] {
+  if (!candidate) return [];
+  return candidate.trade_warning_flags.slice();
+}
+
+export function momentumTrialOperationalCaveats(
+  candidate: MomentumTrialCandidateSnapshot | null | undefined,
+): MomentumTrialOperationalCaveatFlag[] {
+  if (!candidate) return [];
+  return candidate.operational_caveat_flags.slice();
 }
 
 /**
@@ -464,10 +564,14 @@ export function buildMomentumTrialSnapshot(
         ? options.generatedAt
         : nowIso(),
   );
-  const universeSymbols =
-    options.universeSymbols && options.universeSymbols.length > 0
-      ? dedupeStrings(options.universeSymbols as ReadonlyArray<string>)
-      : inferUniverseSymbols(rows);
+  const hasEvaluatedUniverse =
+    Array.isArray(options.universeSymbols) && options.universeSymbols.length > 0;
+  const universeSymbols = hasEvaluatedUniverse
+    ? dedupeStrings(options.universeSymbols as ReadonlyArray<string>)
+    : inferUniverseSymbols(rows);
+  const universeKind: MomentumTrialUniverseKind = hasEvaluatedUniverse
+    ? "evaluated"
+    : "captured";
 
   const requestedMode = options.requestedMode
     ? normalizeMomentumRankingMode(options.requestedMode)
@@ -480,6 +584,21 @@ export function buildMomentumTrialSnapshot(
         ? "shadow"
         : "off";
 
+  // Phase B7.1 — recount warnings and operational caveats directly from
+  // the partitioned candidate snapshots so the summary mirrors what the
+  // UI tables render. The legacy ``impactSummary.warnings_count`` was a
+  // union count; ``trade_warning_count`` is strictly trade-direction.
+  let tradeWarningCount = 0;
+  let operationalCaveatCount = 0;
+  let derivedHigherTimeframeCount = 0;
+  for (const snap of candidateSnapshots) {
+    if (snap.trade_warning_flags.length > 0) tradeWarningCount += 1;
+    if (snap.operational_caveat_flags.length > 0) operationalCaveatCount += 1;
+    if (snap.operational_caveat_flags.includes("derived_higher_timeframe")) {
+      derivedHigherTimeframeCount += 1;
+    }
+  }
+
   const summary: MomentumTrialSummary = {
     candidate_count: candidateSnapshots.length,
     active_mode_count: tally.active,
@@ -487,7 +606,10 @@ export function buildMomentumTrialSnapshot(
     off_mode_count: tally.off,
     parity_pending_count: impactSummary.parity_pending_count,
     direction_unknown_count: impactSummary.direction_unknown_count,
-    warning_count: impactSummary.warnings_count,
+    derived_higher_timeframe_count: derivedHigherTimeframeCount,
+    warning_count: tradeWarningCount,
+    trade_warning_count: tradeWarningCount,
+    operational_caveat_count: operationalCaveatCount,
     positive_contribution_count: impactSummary.positive_contribution_count,
     negative_contribution_count: impactSummary.negative_contribution_count,
     zero_contribution_count: impactSummary.zero_contribution_count,
@@ -506,12 +628,16 @@ export function buildMomentumTrialSnapshot(
 
   const topLimit = Math.max(1, Math.min(50, options.topCandidateLimit ?? 8));
   const warningLimit = Math.max(1, Math.min(50, options.warningCandidateLimit ?? 8));
-  const topCandidates = topMomentumTrialMovers(
-    { ...emptyShellSnapshot(), candidates: candidateSnapshots, summary },
-    topLimit,
-  );
-  const warningCandidates = topMomentumTrialWarnings(
-    { ...emptyShellSnapshot(), candidates: candidateSnapshots, summary },
+  const shell: MomentumTrialSnapshot = {
+    ...emptyShellSnapshot(),
+    candidates: candidateSnapshots,
+    summary,
+  };
+  const topCandidates = topMomentumTrialMovers(shell, topLimit);
+  const warningCandidates = topMomentumTrialWarnings(shell, warningLimit);
+  const tradeWarningCandidates = topMomentumTrialTradeWarnings(shell, warningLimit);
+  const operationalCaveatCandidates = topMomentumTrialOperationalCaveats(
+    shell,
     warningLimit,
   );
 
@@ -524,9 +650,12 @@ export function buildMomentumTrialSnapshot(
     schema_version: MOMENTUM_TRIAL_JOURNAL_VERSION,
     generated_at: generatedAt,
     universe_symbols: universeSymbols,
+    universe_kind: universeKind,
     summary,
     top_candidates: topCandidates,
     warning_candidates: warningCandidates,
+    trade_warning_candidates: tradeWarningCandidates,
+    operational_caveat_candidates: operationalCaveatCandidates,
     candidates: candidateSnapshots,
     operator_note: operatorNote,
   };
@@ -537,6 +666,7 @@ function emptyShellSnapshot(): MomentumTrialSnapshot {
     schema_version: MOMENTUM_TRIAL_JOURNAL_VERSION,
     generated_at: nowIso(),
     universe_symbols: [],
+    universe_kind: "captured",
     summary: {
       candidate_count: 0,
       active_mode_count: 0,
@@ -544,7 +674,10 @@ function emptyShellSnapshot(): MomentumTrialSnapshot {
       off_mode_count: 0,
       parity_pending_count: 0,
       direction_unknown_count: 0,
+      derived_higher_timeframe_count: 0,
       warning_count: 0,
+      trade_warning_count: 0,
+      operational_caveat_count: 0,
       positive_contribution_count: 0,
       negative_contribution_count: 0,
       zero_contribution_count: 0,
@@ -562,6 +695,8 @@ function emptyShellSnapshot(): MomentumTrialSnapshot {
     },
     top_candidates: [],
     warning_candidates: [],
+    trade_warning_candidates: [],
+    operational_caveat_candidates: [],
     candidates: [],
     operator_note: null,
   };
@@ -608,6 +743,7 @@ function compareByWarningSeverity(
     if (flags.includes("bear_total_label_contradiction")) score += 15;
     if (flags.includes("score_consistency_corrected")) score += 10;
     if (flags.includes("active_mode_blocked_by_safety_guard")) score += 8;
+    if (flags.includes("derived_higher_timeframe")) score += 5;
     if (flags.includes("parity_pending")) score += 4;
     if (flags.includes("direction_unknown")) score += 2;
     return score;
@@ -618,6 +754,10 @@ function compareByWarningSeverity(
   return a.symbol.localeCompare(b.symbol);
 }
 
+/**
+ * Back-compat union view: ordered by severity, includes any candidate
+ * carrying at least one trade-warning OR operational-caveat flag.
+ */
 export function topMomentumTrialWarnings(
   snapshot: MomentumTrialSnapshot | null | undefined,
   limit = 8,
@@ -625,6 +765,41 @@ export function topMomentumTrialWarnings(
   if (!snapshot) return [];
   const cap = Math.max(1, Math.min(50, sanitizeFinite(limit, 8) || 8));
   const withFlags = snapshot.candidates.filter((c) => c.warning_flags.length > 0);
+  withFlags.sort(compareByWarningSeverity);
+  return withFlags.slice(0, cap);
+}
+
+/**
+ * Phase B7.1 — strict trade-warning view. Only candidates with a
+ * no-trade, reversal, or bearish-contradiction flag are returned. A
+ * candidate carrying only parity-pending or derived-HTF caveats does
+ * NOT appear here.
+ */
+export function topMomentumTrialTradeWarnings(
+  snapshot: MomentumTrialSnapshot | null | undefined,
+  limit = 8,
+): MomentumTrialCandidateSnapshot[] {
+  if (!snapshot) return [];
+  const cap = Math.max(1, Math.min(50, sanitizeFinite(limit, 8) || 8));
+  const withFlags = snapshot.candidates.filter((c) => c.trade_warning_flags.length > 0);
+  withFlags.sort(compareByWarningSeverity);
+  return withFlags.slice(0, cap);
+}
+
+/**
+ * Phase B7.1 — operational-caveat view. Returns candidates whose only
+ * (or whose largest signal) is data-quality / parity / guardrail
+ * related, not a trade-direction warning.
+ */
+export function topMomentumTrialOperationalCaveats(
+  snapshot: MomentumTrialSnapshot | null | undefined,
+  limit = 8,
+): MomentumTrialCandidateSnapshot[] {
+  if (!snapshot) return [];
+  const cap = Math.max(1, Math.min(50, sanitizeFinite(limit, 8) || 8));
+  const withFlags = snapshot.candidates.filter(
+    (c) => c.operational_caveat_flags.length > 0,
+  );
   withFlags.sort(compareByWarningSeverity);
   return withFlags.slice(0, cap);
 }
@@ -720,6 +895,19 @@ function fmtRaw(value: number | null | undefined): string {
   return value > 0 ? `+${value.toFixed(2)}` : value.toFixed(2);
 }
 
+/**
+ * Phase B7.1 — the universe heading reads "Evaluated universe" when an
+ * explicit symbol list was passed by the caller, and "Captured symbols"
+ * when the snapshot only carries the symbols it inferred from the
+ * captured candidate rows. The summary line in Markdown mirrors the UI
+ * heading.
+ */
+export function momentumTrialUniverseLabel(
+  kind: MomentumTrialUniverseKind | null | undefined,
+): string {
+  return kind === "evaluated" ? "Evaluated universe" : "Captured symbols";
+}
+
 export function buildMomentumTrialMarkdown(
   snapshot: MomentumTrialSnapshot,
 ): string {
@@ -729,7 +917,7 @@ export function buildMomentumTrialMarkdown(
   lines.push(`- Generated at: \`${snapshot.generated_at}\``);
   lines.push(`- Schema version: \`${snapshot.schema_version}\``);
   lines.push(
-    `- Universe: ${
+    `- ${momentumTrialUniverseLabel(snapshot.universe_kind)}: ${
       snapshot.universe_symbols.length > 0
         ? snapshot.universe_symbols.map((s) => `\`${s}\``).join(", ")
         : "_(empty)_"
@@ -749,8 +937,10 @@ export function buildMomentumTrialMarkdown(
   lines.push(
     `- Contribution counts — positive: ${snapshot.summary.positive_contribution_count} · negative: ${snapshot.summary.negative_contribution_count} · zero: ${snapshot.summary.zero_contribution_count}`,
   );
-  lines.push(`- Warning count: ${snapshot.summary.warning_count}`);
+  lines.push(`- Trade warnings: ${snapshot.summary.trade_warning_count}`);
+  lines.push(`- Operational caveats: ${snapshot.summary.operational_caveat_count}`);
   lines.push(`- Parity pending: ${snapshot.summary.parity_pending_count}`);
+  lines.push(`- Derived higher timeframe: ${snapshot.summary.derived_higher_timeframe_count}`);
   lines.push(`- Direction unknown: ${snapshot.summary.direction_unknown_count}`);
   lines.push(`- Score consistency corrected: ${snapshot.summary.score_consistency_corrected_count}`);
   lines.push(`- Contribution missing: ${snapshot.summary.contribution_missing_count}`);
@@ -764,35 +954,66 @@ export function buildMomentumTrialMarkdown(
     lines.push("## Top candidates");
     lines.push("");
     lines.push(
-      "| Rank | Symbol | Strategy | Mode | Baseline | Active/Current | Raw | Applied Δ | Realized Δ | Total | Warnings |",
+      "| Rank | Symbol | Strategy | Mode | Baseline | Active/Current | Raw | Applied Δ | Realized Δ | Total | Trade warnings | Operational caveats |",
     );
     lines.push(
-      "| ---: | :----- | :------- | :--- | -------: | -------------: | ---:| --------:| --------:| :---- | :------- |",
+      "| ---: | :----- | :------- | :--- | -------: | -------------: | ---:| --------:| --------:| :---- | :------------- | :------------------ |",
     );
     for (const c of snapshot.top_candidates) {
       const totalCell =
         c.total_score == null
           ? "—"
           : `${c.total_score}${c.total_label ? ` (${c.total_label})` : ""}`;
-      const warningCell =
-        c.warning_flags.length === 0 ? "—" : c.warning_flags.join(", ");
+      const tradeCell =
+        c.trade_warning_flags.length === 0 ? "—" : c.trade_warning_flags.join(", ");
+      const caveatCell =
+        c.operational_caveat_flags.length === 0
+          ? "—"
+          : c.operational_caveat_flags.join(", ");
       lines.push(
-        `| ${c.rank} | ${c.symbol} | ${c.strategy} | ${c.mode} | ${fmtScore(c.baseline_score)} | ${fmtScore(c.active_score)} | ${fmtRaw(c.raw_contribution)} | ${fmtSigned(c.applied_delta)} | ${fmtSigned(c.realized_delta)} | ${totalCell} | ${warningCell} |`,
+        `| ${c.rank} | ${c.symbol} | ${c.strategy} | ${c.mode} | ${fmtScore(c.baseline_score)} | ${fmtScore(c.active_score)} | ${fmtRaw(c.raw_contribution)} | ${fmtSigned(c.applied_delta)} | ${fmtSigned(c.realized_delta)} | ${totalCell} | ${tradeCell} | ${caveatCell} |`,
       );
     }
   }
 
-  if (snapshot.warning_candidates.length > 0) {
-    lines.push("");
-    lines.push("## Warnings");
-    lines.push("");
+  // Phase B7.1 — always render the trade-warnings section header so
+  // operators can see the snapshot explicitly answered "no trade
+  // warnings captured" rather than guessing whether the section was
+  // omitted by accident.
+  lines.push("");
+  lines.push("## Trade warnings");
+  lines.push("");
+  if (snapshot.trade_warning_candidates.length === 0) {
+    lines.push("_No trade warnings captured._");
+  } else {
     lines.push("| Rank | Symbol | Strategy | Mode | Flags | Reasons |");
     lines.push("| ---: | :----- | :------- | :--- | :---- | :------ |");
-    for (const c of snapshot.warning_candidates) {
+    for (const c of snapshot.trade_warning_candidates) {
       const reasonCell =
         c.reason_labels.length === 0 ? "—" : c.reason_labels.join("; ");
       lines.push(
-        `| ${c.rank} | ${c.symbol} | ${c.strategy} | ${c.mode} | ${c.warning_flags.join(", ")} | ${reasonCell} |`,
+        `| ${c.rank} | ${c.symbol} | ${c.strategy} | ${c.mode} | ${c.trade_warning_flags.join(", ")} | ${reasonCell} |`,
+      );
+    }
+  }
+
+  lines.push("");
+  lines.push("## Operational caveats");
+  lines.push("");
+  if (snapshot.operational_caveat_candidates.length === 0) {
+    lines.push("_No operational caveats captured._");
+  } else {
+    lines.push(
+      "_Operational caveats describe data-quality, parity, and guardrail context — they are not trade-direction warnings._",
+    );
+    lines.push("");
+    lines.push("| Rank | Symbol | Strategy | Mode | Flags | Reasons |");
+    lines.push("| ---: | :----- | :------- | :--- | :---- | :------ |");
+    for (const c of snapshot.operational_caveat_candidates) {
+      const reasonCell =
+        c.reason_labels.length === 0 ? "—" : c.reason_labels.join("; ");
+      lines.push(
+        `| ${c.rank} | ${c.symbol} | ${c.strategy} | ${c.mode} | ${c.operational_caveat_flags.join(", ")} | ${reasonCell} |`,
       );
     }
   }

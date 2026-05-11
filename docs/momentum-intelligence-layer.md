@@ -1877,6 +1877,190 @@ helper module or the component module.
   families remain a separate, explicitly-gated phase. Phase B7 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase B7.1 — trial journal polish
+
+Phase B7.1 is a **frontend-only polish** of the Phase B7 trial journal.
+It does not change Momentum ranking math, queue sorting, recommendation
+approval, paper-order behavior, or backend scoring. It does not add any
+backend route, DB column, migration, LLM call, or strategy family. The
+helper / component / tests / docs are the entire surface.
+
+### What changed
+
+1. **Deterministic guardrail note renders exactly once.** Previously the
+   sentence "_This trial journal records Momentum ranking evidence only.
+   It does not approve, reject, size, or route trades._" was rendered
+   twice — once at the bottom of `MomentumTrialJournalView` and again at
+   the bottom of the outer `MomentumTrialJournal` container. The view
+   no longer renders the note; the container is the canonical render
+   site. Container-level tests assert exactly one occurrence in the
+   empty state and exactly one occurrence with a captured snapshot.
+2. **Trade warnings vs operational caveats are separated.** Phase B7
+   surfaced a single "Warnings" count and table that mixed real
+   trade-direction signals (no-trade, reversal, bearish total-label
+   contradiction) with operational data-quality flags (parity pending,
+   derived higher timeframe, score-consistency corrected, blocked
+   active). Phase B7.1 splits them:
+   - `MomentumTrialTradeWarningFlag` = `"no_trade_warning" |
+     "reversal_warning" | "bear_total_label_contradiction"`.
+   - `MomentumTrialOperationalCaveatFlag` = `"score_consistency_corrected" |
+     "parity_pending" | "derived_higher_timeframe" | "direction_unknown" |
+     "active_mode_blocked_by_safety_guard"`.
+   - The union enum `MomentumTrialWarningFlag` is preserved for
+     back-compat.
+   - `partitionWarningFlags`, `isTradeWarningFlag`,
+     `isOperationalCaveatFlag` are exported helpers.
+3. **Snapshot summary exposes the new counts.** `trade_warning_count`,
+   `operational_caveat_count`, and `derived_higher_timeframe_count` join
+   the existing `parity_pending_count`, `direction_unknown_count`, and
+   `score_consistency_corrected_count`. The legacy `warning_count` is
+   re-aimed at the trade-warning count only and is also exposed via the
+   clearer `trade_warning_count` alias.
+4. **Snapshot carries partitioned candidate lists.**
+   `trade_warning_candidates` returns rows with at least one
+   trade-warning flag; `operational_caveat_candidates` returns rows with
+   at least one operational caveat. The union `warning_candidates` is
+   preserved for back-compat.
+5. **Top-candidates table now has separate "Trade warnings" and
+   "Operational caveats / reasons" cells.** Trade warnings render with
+   the `bad` tone; operational caveats render with the `warn` tone;
+   reason labels render neutrally.
+6. **The single "Warnings" section is replaced by two sections.**
+   Both sections always emit, so operators see the snapshot explicitly
+   answered each question:
+   - **Trade warnings** — empty state reads "No trade warnings
+     captured." in both Markdown and the UI.
+   - **Operational caveats** — empty state reads "No operational caveats
+     captured." Above the table, an explainer renders: "Operational
+     caveats describe data-quality, parity, and guardrail context. They
+     are not trade-direction warnings."
+7. **Universe/captured-symbol labeling is honest.** The snapshot now
+   carries `universe_kind: "evaluated" | "captured"`:
+   - `"evaluated"` when the caller passes `universeSymbols` (e.g. the
+     Recommendations page passes its parsed manual-symbol input). The
+     UI heading and Markdown bullet read **"Evaluated universe: …"**.
+   - `"captured"` when no universe is passed and the snapshot only
+     knows the symbols it captured from the candidate rows. The UI
+     heading and Markdown bullet read **"Captured symbols: …"**.
+   The helper `momentumTrialUniverseLabel(kind)` returns the right
+   label for both UI and exports.
+8. **Recommendations page passes the evaluated universe.**
+   `apps/web/app/(console)/recommendations/page.tsx` now mounts the
+   journal as `<MomentumTrialJournal candidates={queue}
+   universeSymbols={parsedSymbols.symbols} />`. No new fetch and no
+   change to queue submission, approval, promotion, paper-order, or
+   options flow.
+9. **Schema version bumped.** `MOMENTUM_TRIAL_JOURNAL_VERSION` moves
+   from `"phase_b7.v1"` to `"phase_b7_1.v1"`. Any operator's cached
+   localStorage snapshot from Phase B7 is invalidated and the operator
+   simply re-captures — there is no migration path because the
+   journal is local/export-only.
+
+### Severity ordering
+
+`compareByWarningSeverity` keeps trade warnings strictly above
+operational caveats: `no_trade > reversal > bear-contradiction >
+score-consistency-corrected > blocked-active > derived-HTF >
+parity-pending > direction-unknown`. This drives both
+`topMomentumTrialTradeWarnings` and `topMomentumTrialOperationalCaveats`.
+
+### Markdown export sections (Phase B7.1)
+
+Always emitted, in order:
+
+1. `## Summary` — counts include `Trade warnings`, `Operational
+   caveats`, `Parity pending`, `Derived higher timeframe`, `Direction
+   unknown`, `Score consistency corrected`, `Contribution missing`,
+   `Blocked active (safety guard)`, and `Net estimated score delta`.
+2. `## Top candidates` — split "Trade warnings" + "Operational
+   caveats / reasons" columns.
+3. `## Trade warnings` — table of rows with trade-warning flags, or
+   `_No trade warnings captured._`.
+4. `## Operational caveats` — explainer + table of rows with caveat
+   flags, or `_No operational caveats captured._`.
+5. `## Operator note` — only when an operator note is present.
+6. Trailing line: the deterministic guardrail copy.
+
+### JSON export (Phase B7.1)
+
+The exported `MomentumTrialExportPayload.snapshot` now carries
+`universe_kind`, `trade_warning_candidates`,
+`operational_caveat_candidates`, and the new summary counts
+(`trade_warning_count`, `operational_caveat_count`,
+`derived_higher_timeframe_count`). Existing fields are unchanged.
+
+### What Phase B7.1 does NOT do
+
+- **No ranking math change.** `build_momentum_ranking_contribution`,
+  `DeterministicRankingEngine`, Phase B1 / B6 / B6.x wiring, and the
+  active-delta formula are byte-identical.
+- **No queue sorting change.**
+- **No approval, promote, save, paper-order, settle, replay, or
+  options-preview behavior change.**
+- **No backend mutation.** No new endpoint, no DB row, no migration.
+- **No LLM call.**
+- **No strategy families.** Phase C remains gated and separate.
+- **No active-mode env behavior change.**
+
+### Tests (Phase B7.1)
+
+- `apps/web/lib/momentum-trial-journal.test.ts` — adds the
+  "Phase B7.1 — trade warnings vs operational caveats" suite. Coverage:
+  parity-pending alone does not increment `trade_warning_count` but
+  does increment `operational_caveat_count` + `parity_pending_count`;
+  derived higher timeframe increments `operational_caveat_count` +
+  `derived_higher_timeframe_count`; no-trade and reversal warnings
+  increment `trade_warning_count`; bearish total-label contradiction
+  increments `trade_warning_count`; score-consistency-corrected and
+  active-mode safety-guard blocks increment operational caveat counts
+  only; `universe_kind` reads `"evaluated"` when `universeSymbols` is
+  passed and `"captured"` otherwise; `partitionWarningFlags`,
+  `isTradeWarningFlag`, and `isOperationalCaveatFlag` classify the full
+  union; `topMomentumTrialTradeWarnings` excludes parity-only rows while
+  `topMomentumTrialOperationalCaveats` returns them; the
+  `momentumTrialTradeWarnings` / `momentumTrialOperationalCaveats`
+  accessors mirror the partition; the JSON export carries the new
+  counts and `universe_kind`. The Markdown suite also asserts: the
+  "Trade warnings" + "Operational caveats" sections always emit; the
+  empty-state copy is correct; reversal-only rows are routed to the
+  Trade warnings section; parity-only rows are routed to the
+  Operational caveats section; the universe-kind heading switches
+  correctly; the new summary counts appear in the body; and the
+  deterministic guardrail copy appears exactly once.
+- `apps/web/components/recommendations/momentum-trial-journal.test.tsx`
+  — adds "Phase B7.1 deterministic-note + universe" suite asserting the
+  guardrail copy appears exactly once in both empty and captured
+  states, and that `universeSymbols` flows end-to-end. View-level tests
+  now assert: new summary card labels render (`Trade warnings`,
+  `Operational caveats`, `Positive / negative / zero contribution`);
+  Trade warnings + Operational caveats tables render with the right
+  testids; the "No trade warnings captured." message shows when only
+  parity caveats exist; the "No operational caveats captured." message
+  shows when only trade warnings exist; compact mode hides both tables;
+  the universe block toggles between `Captured symbols` and
+  `Evaluated universe` based on `universe_kind`; and the view does NOT
+  render the deterministic note (the container owns that copy).
+- `apps/web/lib/momentum-integration.test.ts` — strengthens the B7
+  guards: the Recommendations page now passes both `candidates={queue}`
+  and `universeSymbols={parsedSymbols.symbols}`; both surfaces carry
+  the trade-warning vs operational-caveat exports and copy; the view
+  no longer renders the standalone deterministic-note testid; the
+  helper/component remain isolated from order, paper-position,
+  paper-trade, options-paper, and replay-preview routes; and no
+  forbidden trade-direction / order-routing literals appear in either
+  source file.
+
+### Still pending (carried forward from Phase B7)
+
+- **Thinkorswim fixture parity.** The summary now reports
+  `parity_pending_count`, `derived_higher_timeframe_count`, and
+  `score_consistency_corrected_count` separately, but flipping
+  `parity_required_for_active` to `True` still depends on dropping
+  measured fixtures into `tests/fixtures/thinkorswim_momentum/`.
+- **Phase C strategy families.** Dedicated momentum-aware strategy
+  families remain a separate, explicitly-gated phase. Phase B7.1 does
+  not introduce, implement, or schedule any strategy-family code.
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

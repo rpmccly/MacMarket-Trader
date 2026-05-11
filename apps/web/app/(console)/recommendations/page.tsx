@@ -1935,13 +1935,20 @@ export default function RecommendationsPage() {
 
       {/*
         Phase B7 — Active Momentum Trial Journal / Comparison Report.
+        Phase B7.1 — pass the parsed manual symbol input as the
+        evaluated universe so the journal can label "Evaluated universe"
+        (the symbols this run was asked to evaluate) instead of
+        "Captured symbols" (only those that ended up in the queue).
         Operator evidence capture only. Uses already-loaded queue rows;
         does not refetch, does not change queue sorting, approval,
         promote, save, paper-order, settle, replay, or options preview
         flows. Snapshot is local/export-only (localStorage + JSON/Markdown
         download); no backend persistence and no DB migration.
       */}
-      <MomentumTrialJournal candidates={queue} />
+      <MomentumTrialJournal
+        candidates={queue}
+        universeSymbols={parsedSymbols.symbols}
+      />
     </section>
   );
 }

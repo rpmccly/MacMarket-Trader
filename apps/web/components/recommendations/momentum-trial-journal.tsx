@@ -8,6 +8,7 @@ import {
   buildMomentumTrialMarkdown,
   buildMomentumTrialSnapshot,
   MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE,
+  momentumTrialUniverseLabel,
   sanitizeMomentumTrialNote,
   validateMomentumTrialSnapshot,
   type MomentumTrialCandidateSnapshot,
@@ -277,15 +278,27 @@ export function MomentumTrialJournalView({
           </span>
         </div>
         <div style={SUMMARY_CARD_STYLE}>
-          <span style={SUMMARY_LABEL_STYLE}>+ / − / 0 contribution</span>
+          <span style={SUMMARY_LABEL_STYLE}>Positive / negative / zero contribution</span>
           <span style={SUMMARY_VALUE_STYLE}>
             {summary.positive_contribution_count} / {summary.negative_contribution_count} / {summary.zero_contribution_count}
           </span>
         </div>
         <div style={SUMMARY_CARD_STYLE}>
-          <span style={SUMMARY_LABEL_STYLE}>Warnings</span>
-          <span style={SUMMARY_VALUE_STYLE} data-testid="momentum-trial-journal-summary-warnings">
-            {summary.warning_count}
+          <span style={SUMMARY_LABEL_STYLE}>Trade warnings</span>
+          <span
+            style={SUMMARY_VALUE_STYLE}
+            data-testid="momentum-trial-journal-summary-trade-warnings"
+          >
+            {summary.trade_warning_count}
+          </span>
+        </div>
+        <div style={SUMMARY_CARD_STYLE}>
+          <span style={SUMMARY_LABEL_STYLE}>Operational caveats</span>
+          <span
+            style={SUMMARY_VALUE_STYLE}
+            data-testid="momentum-trial-journal-summary-operational-caveats"
+          >
+            {summary.operational_caveat_count}
           </span>
         </div>
         <div style={SUMMARY_CARD_STYLE}>
@@ -311,9 +324,10 @@ export function MomentumTrialJournalView({
       {snapshot.universe_symbols.length > 0 ? (
         <div
           data-testid="momentum-trial-journal-universe"
+          data-universe-kind={snapshot.universe_kind}
           style={{ fontSize: "0.78rem", color: "var(--op-muted, #7a8999)" }}
         >
-          Universe: {snapshot.universe_symbols.join(", ")}
+          {momentumTrialUniverseLabel(snapshot.universe_kind)}: {snapshot.universe_symbols.join(", ")}
         </div>
       ) : null}
 
@@ -334,7 +348,8 @@ export function MomentumTrialJournalView({
                 <th style={{ textAlign: "right" }}>Raw</th>
                 <th style={{ textAlign: "right" }}>Applied Δ</th>
                 <th style={{ textAlign: "left" }}>Total</th>
-                <th style={{ textAlign: "left" }}>Warnings / reasons</th>
+                <th style={{ textAlign: "left" }}>Trade warnings</th>
+                <th style={{ textAlign: "left" }}>Operational caveats / reasons</th>
               </tr>
             </thead>
             <tbody>
@@ -375,11 +390,24 @@ export function MomentumTrialJournalView({
                   </td>
                   <td>
                     <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
-                      {c.warning_flags.length === 0 && c.reason_labels.length === 0 ? (
+                      {c.trade_warning_flags.length === 0 ? (
+                        <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
+                      ) : (
+                        c.trade_warning_flags.map((flag) => (
+                          <StatusBadge key={flag} tone="bad">
+                            {flag.replaceAll("_", " ")}
+                          </StatusBadge>
+                        ))
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                      {c.operational_caveat_flags.length === 0 && c.reason_labels.length === 0 ? (
                         <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
                       ) : (
                         <>
-                          {c.warning_flags.map((flag) => (
+                          {c.operational_caveat_flags.map((flag) => (
                             <StatusBadge key={flag} tone="warn">
                               {flag.replaceAll("_", " ")}
                             </StatusBadge>
@@ -401,67 +429,132 @@ export function MomentumTrialJournalView({
       </div>
 
       {!compact ? (
-        <div data-testid="momentum-trial-journal-warnings-table" style={{ overflowX: "auto", minWidth: 0 }}>
-          <h4 style={{ margin: "4px 0 6px 0", fontSize: "0.92rem" }}>Warnings</h4>
-          {snapshot.warning_candidates.length === 0 ? (
-            <p style={NOTE_STYLE} data-testid="momentum-trial-journal-warnings-empty">
-              No flagged candidates in this snapshot.
-            </p>
-          ) : (
-            <table className="op-table" style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left" }}>Rank</th>
-                  <th style={{ textAlign: "left" }}>Symbol</th>
-                  <th style={{ textAlign: "left" }}>Strategy</th>
-                  <th style={{ textAlign: "left" }}>Mode</th>
-                  <th style={{ textAlign: "left" }}>Flags</th>
-                  <th style={{ textAlign: "left" }}>Reasons</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snapshot.warning_candidates.map((c) => (
-                  <tr
-                    key={`warn-${c.symbol}-${c.strategy}-${c.rank}`}
-                    data-testid="momentum-trial-journal-warning-row"
-                    data-symbol={c.symbol}
-                  >
-                    <td>{c.rank}</td>
-                    <td style={{ fontWeight: 600 }}>{c.symbol}</td>
-                    <td>{c.strategy}</td>
-                    <td>{momentumRankingModeLabel(c.mode)}</td>
-                    <td>
-                      <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
-                        {c.warning_flags.length === 0 ? (
-                          <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
-                        ) : (
-                          c.warning_flags.map((flag) => (
-                            <StatusBadge key={flag} tone="warn">
+        <>
+          <div data-testid="momentum-trial-journal-trade-warnings-table" style={{ overflowX: "auto", minWidth: 0 }}>
+            <h4 style={{ margin: "4px 0 6px 0", fontSize: "0.92rem" }}>Trade warnings</h4>
+            {snapshot.trade_warning_candidates.length === 0 ? (
+              <p style={NOTE_STYLE} data-testid="momentum-trial-journal-trade-warnings-empty">
+                No trade warnings captured.
+              </p>
+            ) : (
+              <table className="op-table" style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>Rank</th>
+                    <th style={{ textAlign: "left" }}>Symbol</th>
+                    <th style={{ textAlign: "left" }}>Strategy</th>
+                    <th style={{ textAlign: "left" }}>Mode</th>
+                    <th style={{ textAlign: "left" }}>Flags</th>
+                    <th style={{ textAlign: "left" }}>Reasons</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snapshot.trade_warning_candidates.map((c) => (
+                    <tr
+                      key={`trade-${c.symbol}-${c.strategy}-${c.rank}`}
+                      data-testid="momentum-trial-journal-trade-warning-row"
+                      data-symbol={c.symbol}
+                    >
+                      <td>{c.rank}</td>
+                      <td style={{ fontWeight: 600 }}>{c.symbol}</td>
+                      <td>{c.strategy}</td>
+                      <td>{momentumRankingModeLabel(c.mode)}</td>
+                      <td>
+                        <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                          {c.trade_warning_flags.map((flag) => (
+                            <StatusBadge key={flag} tone="bad">
                               {flag.replaceAll("_", " ")}
                             </StatusBadge>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                    <td>
-                      <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
-                        {c.reason_labels.length === 0 ? (
-                          <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
-                        ) : (
-                          c.reason_labels.map((label) => (
-                            <StatusBadge key={label} tone="neutral">
-                              {label}
-                            </StatusBadge>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+                          ))}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                          {c.reason_labels.length === 0 ? (
+                            <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
+                          ) : (
+                            c.reason_labels.map((label) => (
+                              <StatusBadge key={label} tone="neutral">
+                                {label}
+                              </StatusBadge>
+                            ))
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div data-testid="momentum-trial-journal-operational-caveats-table" style={{ overflowX: "auto", minWidth: 0 }}>
+            <h4 style={{ margin: "4px 0 6px 0", fontSize: "0.92rem" }}>Operational caveats</h4>
+            {snapshot.operational_caveat_candidates.length === 0 ? (
+              <p style={NOTE_STYLE} data-testid="momentum-trial-journal-operational-caveats-empty">
+                No operational caveats captured.
+              </p>
+            ) : (
+              <>
+                <p
+                  style={{ ...NOTE_STYLE, marginTop: 0 }}
+                  data-testid="momentum-trial-journal-operational-caveats-explainer"
+                >
+                  Operational caveats describe data-quality, parity, and guardrail context.
+                  They are not trade-direction warnings.
+                </p>
+                <table className="op-table" style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>Rank</th>
+                      <th style={{ textAlign: "left" }}>Symbol</th>
+                      <th style={{ textAlign: "left" }}>Strategy</th>
+                      <th style={{ textAlign: "left" }}>Mode</th>
+                      <th style={{ textAlign: "left" }}>Flags</th>
+                      <th style={{ textAlign: "left" }}>Reasons</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.operational_caveat_candidates.map((c) => (
+                      <tr
+                        key={`caveat-${c.symbol}-${c.strategy}-${c.rank}`}
+                        data-testid="momentum-trial-journal-operational-caveat-row"
+                        data-symbol={c.symbol}
+                      >
+                        <td>{c.rank}</td>
+                        <td style={{ fontWeight: 600 }}>{c.symbol}</td>
+                        <td>{c.strategy}</td>
+                        <td>{momentumRankingModeLabel(c.mode)}</td>
+                        <td>
+                          <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                            {c.operational_caveat_flags.map((flag) => (
+                              <StatusBadge key={flag} tone="warn">
+                                {flag.replaceAll("_", " ")}
+                              </StatusBadge>
+                            ))}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="op-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                            {c.reason_labels.length === 0 ? (
+                              <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>—</span>
+                            ) : (
+                              c.reason_labels.map((label) => (
+                                <StatusBadge key={label} tone="neutral">
+                                  {label}
+                                </StatusBadge>
+                              ))
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
+        </>
       ) : null}
 
       {snapshot.operator_note ? (
@@ -482,10 +575,6 @@ export function MomentumTrialJournalView({
           {snapshot.operator_note.text}
         </div>
       ) : null}
-
-      <p style={NOTE_STYLE} data-testid="momentum-trial-journal-deterministic-note">
-        {MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE}
-      </p>
     </div>
   );
 }

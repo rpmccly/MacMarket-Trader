@@ -230,32 +230,139 @@ describe("MomentumTrialJournalView (presentational)", () => {
     expect(html).toContain("Top candidates");
   });
 
-  it("renders warnings table when warning candidates exist", () => {
+  it("uses Phase B7.1 summary card labels", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE);
+    const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
+    expect(html).toContain("Trade warnings");
+    expect(html).toContain("Operational caveats");
+    expect(html).toContain("Positive / negative / zero contribution");
+    expect(html).toContain("momentum-trial-journal-summary-trade-warnings");
+    expect(html).toContain("momentum-trial-journal-summary-operational-caveats");
+  });
+
+  it("renders the Trade warnings section with no-trade / reversal rows", () => {
     const snapshot = buildMomentumTrialSnapshot(WARNING_QUEUE);
     const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
-    expect(html).toContain("Warnings");
+    expect(html).toContain("momentum-trial-journal-trade-warnings-table");
+    expect(html).toContain("Trade warnings");
     expect(html).toContain("reversal warning");
     expect(html).toContain("no trade warning");
   });
 
-  it("renders empty warnings message when no flagged candidates", () => {
-    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE);
+  it("renders the Operational caveats section with parity-pending rows when present", () => {
+    const snapshot = buildMomentumTrialSnapshot(WARNING_QUEUE);
     const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
-    expect(html).toContain("No flagged candidates in this snapshot.");
+    expect(html).toContain("momentum-trial-journal-operational-caveats-table");
+    expect(html).toContain("Operational caveats");
+    expect(html).toContain("parity pending");
   });
 
-  it("hides warnings table in compact mode", () => {
+  it("shows 'No trade warnings captured.' when only parity caveats exist", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reason_codes: ["thinkorswim_parity_pending"],
+        }),
+      }),
+    ]);
+    const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
+    expect(html).toContain("No trade warnings captured.");
+    expect(html).toContain("momentum-trial-journal-operational-caveats-table");
+    // The operational caveats table itself should render the parity row.
+    expect(html).toContain("parity pending");
+  });
+
+  it("shows 'No operational caveats captured.' when only trade warnings exist", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "BBB",
+        momentum_contribution: contribution({
+          no_trade_warning: true,
+          reason_codes: ["momentum_no_trade_warning"],
+        }),
+      }),
+    ]);
+    const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
+    expect(html).toContain("No operational caveats captured.");
+    expect(html).toContain("no trade warning");
+  });
+
+  it("hides both tables in compact mode", () => {
     const snapshot = buildMomentumTrialSnapshot(WARNING_QUEUE);
     const html = renderToStaticMarkup(
       <MomentumTrialJournalView snapshot={snapshot} compact />,
     );
-    expect(html).not.toContain("momentum-trial-journal-warnings-table");
+    expect(html).not.toContain("momentum-trial-journal-trade-warnings-table");
+    expect(html).not.toContain("momentum-trial-journal-operational-caveats-table");
   });
 
-  it("renders the deterministic guardrail copy", () => {
+  it("renders the universe block as 'Captured symbols' when universe_kind is captured", () => {
     const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE);
     const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
-    expect(html).toContain(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE);
+    expect(html).toContain("Captured symbols");
+    expect(html).not.toContain("Evaluated universe");
+    expect(html).toContain('data-universe-kind="captured"');
+  });
+
+  it("renders the universe block as 'Evaluated universe' when universeSymbols was passed", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE, {
+      universeSymbols: ["XLK", "IWM", "QQQ", "DIA", "SPY"],
+    });
+    const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
+    expect(html).toContain("Evaluated universe");
+    expect(html).toContain("DIA");
+    expect(html).toContain('data-universe-kind="evaluated"');
+  });
+
+  it("does NOT render the deterministic guardrail copy (container owns it)", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE);
+    const html = renderToStaticMarkup(<MomentumTrialJournalView snapshot={snapshot} />);
+    // Phase B7.1: the note is rendered exactly once by the outer
+    // container so it is not duplicated when the view is nested.
+    expect(html).not.toContain(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE);
+  });
+});
+
+describe("MomentumTrialJournal — Phase B7.1 deterministic-note + universe", () => {
+  it("renders the deterministic guardrail copy exactly once in empty state", () => {
+    const html = renderToStaticMarkup(
+      <MomentumTrialJournal candidates={ACTIVE_QUEUE} persistLatest={false} />,
+    );
+    const occurrences = html.split(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE).length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("renders the deterministic guardrail copy exactly once when a snapshot is captured", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE, {
+      operatorNote: "XLK leading; IWM follow.",
+    });
+    const html = renderToStaticMarkup(
+      <MomentumTrialJournal
+        candidates={ACTIVE_QUEUE}
+        initialSnapshot={snapshot}
+        persistLatest={false}
+      />,
+    );
+    const occurrences = html.split(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE).length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("respects the universeSymbols prop end-to-end (captured → snapshot → render)", () => {
+    const universe = ["XLK", "IWM", "QQQ", "SPY", "DIA", "XLE", "XLV"];
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_QUEUE, {
+      universeSymbols: universe,
+    });
+    const html = renderToStaticMarkup(
+      <MomentumTrialJournal
+        candidates={ACTIVE_QUEUE}
+        universeSymbols={universe}
+        initialSnapshot={snapshot}
+        persistLatest={false}
+      />,
+    );
+    expect(html).toContain("Evaluated universe");
+    for (const sym of universe) expect(html).toContain(sym);
   });
 });
 

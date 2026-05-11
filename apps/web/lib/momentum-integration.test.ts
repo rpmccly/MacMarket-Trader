@@ -337,11 +337,15 @@ describe("Momentum Intelligence Phase B7 trial-journal guards", () => {
     }
   }
 
-  it("Recommendations page imports the trial journal and passes the existing queue", () => {
+  it("Recommendations page imports the trial journal and passes queue + universeSymbols", () => {
     const source = read("app/(console)/recommendations/page.tsx");
     expect(source).toContain("@/components/recommendations/momentum-trial-journal");
     expect(source).toContain("MomentumTrialJournal");
-    expect(source).toContain("<MomentumTrialJournal candidates={queue} />");
+    // Phase B7.1 — the page must now hand the parsed manual-symbol
+    // input through as the evaluated universe so the journal can label
+    // "Evaluated universe" rather than "Captured symbols".
+    expect(source).toContain("candidates={queue}");
+    expect(source).toContain("universeSymbols={parsedSymbols.symbols}");
   });
 
   it("trial-journal helpers and component are not imported into order, paper-position, paper-trade, options-paper, or replay-preview routes", () => {
@@ -429,6 +433,40 @@ describe("Momentum Intelligence Phase B7 trial-journal guards", () => {
     expect(lib).toContain(
       "This trial journal records Momentum ranking evidence only. It does not approve, reject, size, or route trades.",
     );
+  });
+
+  it("Phase B7.1 — trade warning vs operational caveat copy exists in both surfaces", () => {
+    const lib = read("lib/momentum-trial-journal.ts");
+    const view = read("components/recommendations/momentum-trial-journal.tsx");
+    // Helper exports the partition + the universe label helper.
+    expect(lib).toContain("MOMENTUM_TRIAL_TRADE_WARNING_FLAGS");
+    expect(lib).toContain("MOMENTUM_TRIAL_OPERATIONAL_CAVEAT_FLAGS");
+    expect(lib).toContain("momentumTrialUniverseLabel");
+    expect(lib).toContain("trade_warning_count");
+    expect(lib).toContain("operational_caveat_count");
+    expect(lib).toContain("derived_higher_timeframe_count");
+    expect(lib).toContain("Evaluated universe");
+    expect(lib).toContain("Captured symbols");
+    expect(lib).toContain("## Trade warnings");
+    expect(lib).toContain("## Operational caveats");
+    expect(lib).toContain("No trade warnings captured.");
+    expect(lib).toContain("No operational caveats captured.");
+    // View renders the new section headings + empty states.
+    expect(view).toContain("Trade warnings");
+    expect(view).toContain("Operational caveats");
+    expect(view).toContain("No trade warnings captured.");
+    expect(view).toContain("No operational caveats captured.");
+    expect(view).toContain("momentum-trial-journal-trade-warnings-table");
+    expect(view).toContain("momentum-trial-journal-operational-caveats-table");
+  });
+
+  it("Phase B7.1 — view does not duplicate the deterministic note (container owns it)", () => {
+    const view = read("components/recommendations/momentum-trial-journal.tsx");
+    // The trailing per-snapshot note that used to live inside the view
+    // is gone; only the container-owned ``-container`` testid remains
+    // so the deterministic note renders exactly once.
+    expect(view).toContain("momentum-trial-journal-deterministic-note-container");
+    expect(view).not.toContain('"momentum-trial-journal-deterministic-note"');
   });
 });
 

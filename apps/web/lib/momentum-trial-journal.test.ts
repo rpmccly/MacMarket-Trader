@@ -6,13 +6,21 @@ import {
   buildMomentumTrialSnapshot,
   classifyMomentumTrialCandidate,
   formatMomentumTrialTimestamp,
+  isOperationalCaveatFlag,
+  isTradeWarningFlag,
   MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE,
   MOMENTUM_TRIAL_JOURNAL_VERSION,
+  momentumTrialOperationalCaveats,
+  momentumTrialTradeWarnings,
+  momentumTrialUniverseLabel,
   momentumTrialWarnings,
+  partitionWarningFlags,
   rankMovementBuckets,
   sanitizeMomentumTrialNote,
   summarizeMomentumTrialSnapshot,
   topMomentumTrialMovers,
+  topMomentumTrialOperationalCaveats,
+  topMomentumTrialTradeWarnings,
   topMomentumTrialWarnings,
   validateMomentumTrialSnapshot,
 } from "@/lib/momentum-trial-journal";
@@ -315,24 +323,72 @@ describe("buildMomentumTrialMarkdown", () => {
     expect(md).toContain(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE);
   });
 
-  it("omits warning table when no candidates carry flags", () => {
+  it("always emits Trade warnings + Operational caveats sections", () => {
     const snapshot = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE);
     const md = buildMomentumTrialMarkdown(snapshot);
-    expect(md).not.toContain("## Warnings");
+    // Phase B7.1: the single ambiguous "## Warnings" header is gone.
+    // The two replacement sections are always emitted so operators can
+    // see the snapshot explicitly answered each question.
+    expect(md).not.toMatch(/^## Warnings$/m);
+    expect(md).toContain("## Trade warnings");
+    expect(md).toContain("## Operational caveats");
+    expect(md).toContain("No trade warnings captured.");
+    expect(md).toContain("No operational caveats captured.");
   });
 
-  it("includes warning rows when present", () => {
+  it("routes reversal warnings to the Trade warnings section", () => {
     const snapshot = buildMomentumTrialSnapshot([
       candidate({
         momentum_contribution: contribution({
           reversal_warning: true,
-          reason_codes: ["momentum_reversal_warning", "thinkorswim_parity_pending"],
+          reason_codes: ["momentum_reversal_warning"],
         }),
       }),
     ]);
     const md = buildMomentumTrialMarkdown(snapshot);
-    expect(md).toContain("## Warnings");
+    expect(md).toContain("## Trade warnings");
     expect(md).toContain("reversal_warning");
+    expect(md).toContain("## Operational caveats");
+    expect(md).toContain("No operational caveats captured.");
+  });
+
+  it("routes parity-pending-only rows to Operational caveats, not Trade warnings", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        momentum_contribution: contribution({
+          reason_codes: ["thinkorswim_parity_pending"],
+        }),
+      }),
+    ]);
+    const md = buildMomentumTrialMarkdown(snapshot);
+    expect(md).toContain("## Trade warnings");
+    expect(md).toContain("No trade warnings captured.");
+    expect(md).toContain("## Operational caveats");
+    expect(md).toContain("parity_pending");
+  });
+
+  it("emits the new universe-kind label", () => {
+    const evaluated = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE, {
+      universeSymbols: ["XLK", "IWM", "QQQ", "SPY", "DIA"],
+    });
+    const captured = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE);
+    expect(buildMomentumTrialMarkdown(evaluated)).toContain("- Evaluated universe:");
+    expect(buildMomentumTrialMarkdown(captured)).toContain("- Captured symbols:");
+  });
+
+  it("emits the new summary counts", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE);
+    const md = buildMomentumTrialMarkdown(snapshot);
+    expect(md).toContain("- Trade warnings: ");
+    expect(md).toContain("- Operational caveats: ");
+    expect(md).toContain("- Derived higher timeframe: ");
+  });
+
+  it("renders the deterministic guardrail copy exactly once", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE);
+    const md = buildMomentumTrialMarkdown(snapshot);
+    const occurrences = md.split(MOMENTUM_TRIAL_JOURNAL_DETERMINISTIC_NOTE).length - 1;
+    expect(occurrences).toBe(1);
   });
 });
 
@@ -471,6 +527,253 @@ describe("summarizeMomentumTrialSnapshot", () => {
     const summary = summarizeMomentumTrialSnapshot(null);
     expect(summary.candidate_count).toBe(0);
     expect(summary.active_delta_scale).toBe(0.35);
+  });
+});
+
+describe("Phase B7.1 — trade warnings vs operational caveats", () => {
+  it("parity_pending alone increments operational_caveat_count, not trade_warning_count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reason_codes: ["thinkorswim_parity_pending"],
+        }),
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(0);
+    expect(snapshot.summary.warning_count).toBe(0);
+    expect(snapshot.summary.operational_caveat_count).toBe(1);
+    expect(snapshot.summary.parity_pending_count).toBe(1);
+  });
+
+  it("derived_higher_timeframe increments operational_caveat_count + its own count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reason_codes: ["derived_higher_timeframe"],
+        }),
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(0);
+    expect(snapshot.summary.operational_caveat_count).toBe(1);
+    expect(snapshot.summary.derived_higher_timeframe_count).toBe(1);
+  });
+
+  it("no_trade_warning increments trade_warning_count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          no_trade_warning: true,
+          reason_codes: ["momentum_no_trade_warning"],
+        }),
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(1);
+    expect(snapshot.summary.warning_count).toBe(1);
+    expect(snapshot.summary.operational_caveat_count).toBe(0);
+  });
+
+  it("reversal_warning increments trade_warning_count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reversal_warning: true,
+          reason_codes: ["momentum_reversal_warning"],
+        }),
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(1);
+    expect(snapshot.summary.operational_caveat_count).toBe(0);
+  });
+
+  it("bearish total-label contradiction increments trade_warning_count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          total_contribution: 12,
+          shadow_contribution: 12,
+          applied_score_delta: 0.05,
+          raw_total_contribution: 12,
+          total_label: "Bear",
+          inferred_direction: "long",
+        }),
+        momentum_score_delta: 0.05,
+      }),
+    ]);
+    expect(snapshot.candidates[0].trade_warning_flags).toContain(
+      "bear_total_label_contradiction",
+    );
+    expect(snapshot.summary.trade_warning_count).toBe(1);
+  });
+
+  it("score_consistency_corrected increments operational_caveat_count, not trade_warning_count", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        score_consistency_status: "corrected",
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(0);
+    expect(snapshot.summary.operational_caveat_count).toBe(1);
+    expect(snapshot.summary.score_consistency_corrected_count).toBe(1);
+  });
+
+  it("active_mode_blocked_by_safety_guard is an operational caveat, not a trade warning", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "XLE",
+        momentum_contribution: contribution({
+          mode: "shadow",
+          applied: false,
+          reason_codes: ["active_mode_blocked_by_safety_guard"],
+        }),
+      }),
+    ]);
+    expect(snapshot.summary.trade_warning_count).toBe(0);
+    expect(snapshot.summary.operational_caveat_count).toBe(1);
+    expect(snapshot.summary.blocked_active_count).toBe(1);
+  });
+
+  it("universe_kind reads 'evaluated' when universeSymbols provided", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE, {
+      universeSymbols: ["XLK", "IWM", "QQQ", "SPY", "DIA"],
+    });
+    expect(snapshot.universe_kind).toBe("evaluated");
+    expect(snapshot.universe_symbols).toEqual(["XLK", "IWM", "QQQ", "SPY", "DIA"]);
+    expect(momentumTrialUniverseLabel(snapshot.universe_kind)).toBe("Evaluated universe");
+  });
+
+  it("universe_kind reads 'captured' when no universeSymbols provided", () => {
+    const snapshot = buildMomentumTrialSnapshot(ACTIVE_DEPLOYED_QUEUE);
+    expect(snapshot.universe_kind).toBe("captured");
+    expect(momentumTrialUniverseLabel(snapshot.universe_kind)).toBe("Captured symbols");
+  });
+
+  it("partitions warning flags into trade warnings and operational caveats", () => {
+    const partition = partitionWarningFlags([
+      "no_trade_warning",
+      "parity_pending",
+      "reversal_warning",
+      "derived_higher_timeframe",
+      "bear_total_label_contradiction",
+      "direction_unknown",
+      "score_consistency_corrected",
+      "active_mode_blocked_by_safety_guard",
+    ]);
+    expect(partition.tradeWarnings).toEqual([
+      "no_trade_warning",
+      "reversal_warning",
+      "bear_total_label_contradiction",
+    ]);
+    expect(partition.operationalCaveats).toEqual([
+      "parity_pending",
+      "derived_higher_timeframe",
+      "direction_unknown",
+      "score_consistency_corrected",
+      "active_mode_blocked_by_safety_guard",
+    ]);
+  });
+
+  it("isTradeWarningFlag / isOperationalCaveatFlag classify every flag in the union", () => {
+    expect(isTradeWarningFlag("no_trade_warning")).toBe(true);
+    expect(isTradeWarningFlag("parity_pending")).toBe(false);
+    expect(isOperationalCaveatFlag("parity_pending")).toBe(true);
+    expect(isOperationalCaveatFlag("derived_higher_timeframe")).toBe(true);
+    expect(isOperationalCaveatFlag("no_trade_warning")).toBe(false);
+  });
+
+  it("topMomentumTrialTradeWarnings excludes parity-only rows", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reason_codes: ["thinkorswim_parity_pending"],
+        }),
+      }),
+      candidate({
+        symbol: "BBB",
+        momentum_contribution: contribution({
+          no_trade_warning: true,
+          reason_codes: ["momentum_no_trade_warning"],
+        }),
+      }),
+    ]);
+    expect(topMomentumTrialTradeWarnings(snapshot).map((c) => c.symbol)).toEqual(["BBB"]);
+    expect(snapshot.trade_warning_candidates.map((c) => c.symbol)).toEqual(["BBB"]);
+  });
+
+  it("topMomentumTrialOperationalCaveats returns parity-only rows", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        symbol: "AAA",
+        momentum_contribution: contribution({
+          reason_codes: ["thinkorswim_parity_pending"],
+        }),
+      }),
+      candidate({
+        symbol: "BBB",
+        momentum_contribution: contribution({
+          no_trade_warning: true,
+          reason_codes: ["momentum_no_trade_warning"],
+        }),
+      }),
+    ]);
+    expect(topMomentumTrialOperationalCaveats(snapshot).map((c) => c.symbol)).toEqual(["AAA"]);
+    expect(snapshot.operational_caveat_candidates.map((c) => c.symbol)).toEqual(["AAA"]);
+  });
+
+  it("momentumTrialTradeWarnings + momentumTrialOperationalCaveats accessors mirror partition", () => {
+    const snapshot = buildMomentumTrialSnapshot([
+      candidate({
+        momentum_contribution: contribution({
+          no_trade_warning: true,
+          reason_codes: ["momentum_no_trade_warning", "thinkorswim_parity_pending"],
+        }),
+      }),
+    ]);
+    const c = snapshot.candidates[0];
+    expect(momentumTrialTradeWarnings(c)).toEqual(["no_trade_warning"]);
+    expect(momentumTrialOperationalCaveats(c)).toEqual(["parity_pending"]);
+    // Back-compat union accessor still returns the full list.
+    expect(momentumTrialWarnings(c).sort()).toEqual(
+      ["no_trade_warning", "parity_pending"].sort(),
+    );
+  });
+
+  it("JSON export carries the new counts and the universe_kind", () => {
+    const snapshot = buildMomentumTrialSnapshot(
+      [
+        candidate({
+          symbol: "AAA",
+          momentum_contribution: contribution({
+            no_trade_warning: true,
+            reason_codes: ["momentum_no_trade_warning"],
+          }),
+        }),
+        candidate({
+          symbol: "BBB",
+          momentum_contribution: contribution({
+            reason_codes: ["thinkorswim_parity_pending", "derived_higher_timeframe"],
+          }),
+        }),
+      ],
+      { universeSymbols: ["AAA", "BBB", "CCC"] },
+    );
+    const json = buildMomentumTrialJson(snapshot);
+    const parsed = JSON.parse(json) as {
+      snapshot: ReturnType<typeof buildMomentumTrialSnapshot>;
+    };
+    expect(parsed.snapshot.summary.trade_warning_count).toBe(1);
+    expect(parsed.snapshot.summary.operational_caveat_count).toBe(1);
+    expect(parsed.snapshot.summary.parity_pending_count).toBe(1);
+    expect(parsed.snapshot.summary.derived_higher_timeframe_count).toBe(1);
+    expect(parsed.snapshot.universe_kind).toBe("evaluated");
+    expect(parsed.snapshot.trade_warning_candidates.length).toBe(1);
+    expect(parsed.snapshot.operational_caveat_candidates.length).toBe(1);
   });
 });
 
