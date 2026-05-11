@@ -383,3 +383,111 @@ describe("formatting helpers and deterministic note", () => {
     }
   });
 });
+
+describe("Phase B6.2 applied-delta fallback chain", () => {
+  function activeContribution(
+    overrides: Partial<MomentumRankingContribution> = {},
+  ): MomentumRankingContribution {
+    return contribution({
+      mode: "active",
+      applied: true,
+      total_contribution: 20,
+      shadow_contribution: 20,
+      raw_total_contribution: 20,
+      applied_score_delta: 0.07,
+      active_delta_scale: 0.35,
+      ...overrides,
+    });
+  }
+
+  it("active row prefers candidate.momentum_score_delta over contribution fields", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_score_delta: 0.065,
+      score_before_momentum: 0.817,
+      momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.065, 5);
+    expect(row.baselineScore).toBeCloseTo(0.817, 5);
+  });
+
+  it("active row falls back to contribution.applied_score_delta when candidate delta is missing", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_contribution: activeContribution({ applied_score_delta: 0.07 }),
+    });
+    delete (c as Partial<typeof c>).momentum_score_delta;
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+  });
+
+  it("active row falls back to raw/100*scale when both candidate and contribution deltas are absent", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_contribution: activeContribution({
+        applied_score_delta: undefined,
+        raw_total_contribution: 20,
+        active_delta_scale: 0.35,
+      }),
+    });
+    delete (c as Partial<typeof c>).momentum_score_delta;
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).toBeCloseTo(0.07, 5);
+    expect(row.appliedScoreDelta).not.toBe(0);
+  });
+
+  it("active row never shows 0 when contribution is applied (regression: deployed bug)", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_contribution: activeContribution({
+        applied_score_delta: undefined,
+      }),
+    });
+    delete (c as Partial<typeof c>).momentum_score_delta;
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.appliedScoreDelta).not.toBe(0);
+  });
+
+  it("baselineScore prefers candidate.score_before_momentum when present", () => {
+    const c = candidate({
+      score: 0.882,
+      score_before_momentum: 0.812,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.baselineScore).toBeCloseTo(0.812, 5);
+  });
+
+  it("baselineScore falls back to current_score - appliedScoreDelta when candidate field is missing", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_score_delta: 0.07,
+      momentum_contribution: activeContribution(),
+    });
+    delete (c as Partial<typeof c>).score_before_momentum;
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.baselineScore).toBeCloseTo(0.812, 5);
+  });
+
+  it("baselineScore equals currentScore in shadow mode", () => {
+    const c = candidate({
+      score: 0.812,
+      momentum_contribution: contribution({ mode: "shadow", shadow_contribution: 20 }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(row.baselineScore).toBeCloseTo(row.currentScore, 5);
+  });
+
+  it("active row applied delta and baseline stay finite under malformed payload", () => {
+    const c = candidate({
+      score: 0.882,
+      momentum_score_delta: Number.NaN,
+      momentum_contribution: activeContribution({ applied_score_delta: Number.POSITIVE_INFINITY }),
+    });
+    const [row] = buildMomentumImpactRows([c]);
+    expect(Number.isFinite(row.appliedScoreDelta)).toBe(true);
+    expect(Number.isFinite(row.baselineScore)).toBe(true);
+  });
+});

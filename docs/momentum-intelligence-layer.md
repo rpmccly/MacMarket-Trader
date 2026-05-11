@@ -1210,6 +1210,169 @@ alongside.
   — 2 new tests for the per-row "Applied delta @ scale" column and
   the scale-helper note.
 
+## Phase B6.2 — Active-mode score wiring fix
+
+Phase B6.2 closes two consistency bugs observed after Phase B6.1 went
+live in the deployed paper environment with
+`MACMARKET_MOMENTUM_RANKING_MODE=active`,
+`MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`, and
+`MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE=0.35`. It is a strictly
+behavior-preserving wiring fix: raw contribution caps, defaults,
+parity gates, approval/order behavior, indicator math, and Phase C
+remain unchanged.
+
+### Observed deployed bugs
+
+With a bullish active contribution (raw +20, scale 0.35, intended
+applied delta +0.07):
+
+1. **Queue scores saturated to 1.000.** Active rows in the
+   Recommendations queue rendered `Score 1.000` even when the
+   pre-momentum baseline was ~0.812 and the expected post-momentum
+   score was ~0.882. The selected-recommendation card on the same
+   page correctly displayed "Applied +20.00 raw, Score delta +0.07",
+   so the contribution payload was already correct — the queue was
+   using a different number.
+2. **Momentum Shadow Impact Review showed `Applied delta @ scale:
+   0.000`** on the same active rows. The review's per-row display
+   diverged from the contribution payload and from the
+   recommendation card.
+
+### Root cause
+
+Two separate wiring drifts, both downstream of the (correct) Phase
+B6.1 contribution math:
+
+- **Backend (queue path).** The ranking engine recomputed the
+  applied delta inline from `raw_total_contribution / 100 * scale`
+  before clamping. With raw `+20` and scale `1.0` (which is what
+  some deployment paths defaulted to before B6.1 settings were
+  reloaded), this drove every bullish row to 1.000. Even at scale
+  `0.35`, the inline math diverged subtly from the published
+  `applied_score_delta` field on the contribution payload because
+  the two code paths could be edited independently.
+- **Frontend (impact review path).** The `QueueCandidate` TypeScript
+  type was missing the Phase B6 fields the backend already emits
+  (`score_before_momentum`, `score_after_momentum`,
+  `momentum_score_delta`, `momentum_rank_mode`). `buildMomentumImpactRows`
+  therefore had nothing to read in active mode and fell through to
+  `contribution.applied_score_delta`, which on older cached payloads
+  was either `null` or `0`, rendering `0.000`.
+
+### Fix — single source of truth on the backend
+
+`src/macmarket_trader/recommendation/momentum_ranking.py` now exports
+`apply_momentum_score_delta(base_score, contribution) -> tuple[float, float]`.
+Every caller that needs to know "given this base score and this
+contribution, what is the final score and applied delta?" routes
+through this helper:
+
+- Off, shadow, or blocked-active → returns `(clamp01(base), 0.0)`.
+- Active + applied with a payload-supplied `applied_score_delta`
+  → returns `(clamp01(base + delta), delta)`. The published delta is
+  the **intended** scaled value, not the clamp-truncated one, so the
+  operator-visible "Score delta +0.07" always matches the contribution
+  payload even when the clamp triggers at the 0.0 / 1.0 boundary.
+- Active + applied with a missing `applied_score_delta` (backward
+  compatibility for pre-B6.1 payloads in replays) → falls back to
+  `raw_total_contribution / 100 * active_delta_scale`, then validates
+  scale ∈ [0, 1] and is finite, falling back to
+  `DEFAULT_ACTIVE_DELTA_SCALE` otherwise.
+
+`ranking_engine.py` now calls `apply_momentum_score_delta` instead
+of doing the math inline, so the engine, the contribution payload,
+and the operator card cannot drift apart again. `RankedCandidate`
+continues to expose `score_before_momentum`, `score_after_momentum`,
+`momentum_score_delta`, and `momentum_rank_mode` — the change is the
+math underneath them, not the field surface.
+
+### Fix — frontend type completion and fallback chain
+
+`apps/web/lib/recommendations.ts` extends `QueueCandidate` with the
+Phase B6 fields the backend already emits (all optional + nullable
+so older replay payloads still parse). `apps/web/lib/momentum-impact.ts`
+gains a `baselineScore` on every impact row and implements an explicit
+three-step fallback chain for the applied delta in active mode:
+
+1. `candidate.momentum_score_delta` (preferred — set by the engine
+   via `apply_momentum_score_delta`).
+2. `contribution.applied_score_delta` (correct for current backend
+   payloads, kept for resilience).
+3. `raw_total_contribution / 100 * active_delta_scale` (final
+   fallback for legacy replay payloads).
+
+The baseline value is whichever of `candidate.score_before_momentum`
+or `currentScore - appliedScoreDelta` is finite, so even a payload
+without the new field still renders a sensible baseline column.
+
+`apps/web/components/recommendations/momentum-impact-review.tsx`
+gains a `Baseline` table column and active-mode framing copy that
+explains "Current score already includes the applied Momentum delta;
+the Baseline column shows the pre-Momentum score. Applied delta
+shows the scaled Momentum score impact." Shadow rows continue to
+show `Baseline == currentScore` because shadow mode does not apply
+a delta.
+
+### What did not change
+
+- **Raw contribution caps** remain ±20 with the same Phase B1 inputs
+  and weights.
+- **Default mode** is still `off` everywhere except deployments that
+  explicitly set `MACMARKET_MOMENTUM_RANKING_MODE=active` and
+  `MACMARKET_ALLOW_MOMENTUM_ACTIVE_RANKING=true`.
+- **Approval and order behavior** remain manual. Phase B6.2 changes
+  no approval gate, no broker routing, no `BROKER_PROVIDER`/
+  `LIVE_TRADING_ALLOWED` semantics.
+- **Indicator math, parity gates, Thinkorswim fixtures** are
+  untouched. `parity_required_for_active` defaults stay as they were,
+  and the `thinkorswim_parity_pending` reason code still surfaces.
+- **Strategy registry** is unchanged. No Phase C work landed.
+- **Active delta scale env var, parsing, and defaults** are
+  Phase B6.1's responsibility and were not modified.
+
+### Tests (Phase B6.2)
+
+- `tests/test_momentum_b62_score_wiring.py` — 20 new pytest tests:
+  parametrized end-to-end engine integration at realistic baselines
+  (0.812 / 0.898 / 0.970 / 0.0 / 1.0) with the `_score_symbol`
+  patched to fix the baseline; helper-level unit tests for shadow,
+  blocked-active, missing `applied_score_delta` (backward-compat
+  fallback to `raw / 100 * default_scale`), NaN/inf sanitization,
+  and the explicit `momentum_score_delta = applied_score_delta`
+  invariant even when the final score clamps; regression pin that
+  the queue never applies unscaled raw to a queue score; pin that
+  Phase B6 before/after fields surface on every active row; and
+  guard that the queue payload still contains no approval, order, or
+  routing fields.
+- `apps/web/lib/momentum-impact.test.ts` — 8 new tests in a "Phase
+  B6.2 applied-delta fallback chain" block: candidate
+  `momentum_score_delta` preferred, contribution
+  `applied_score_delta` fallback, raw/100*scale fallback, never-zero
+  regression for active rows that are actually applied, baseline from
+  candidate `score_before_momentum`, baseline computed locally when
+  the field is absent, baseline equal to current score in shadow
+  mode, and NaN/inf sanitization on every fallback path.
+- `apps/web/components/recommendations/momentum-impact-review.test.tsx`
+  — 2 new render tests pinning the new `Baseline` column header, the
+  baseline value next to the active score (e.g., `0.812` next to
+  `0.882`), the rendered scaled delta (`0.070`, never `0.000`), the
+  active-mode framing copy explaining current vs. baseline, and the
+  fallback chain at the component level when
+  `candidate.momentum_score_delta` is absent.
+
+### Operator checklist (Phase B6.2)
+
+1. After deploying Phase B6.2, confirm the Recommendations queue no
+   longer saturates to 1.000 for bullish Momentum candidates with
+   baseline ≲ 0.93. A `+20` raw at scale `0.35` should produce
+   approximately `baseline + 0.07`, clamped at 1.0 when needed.
+2. Open the Momentum Shadow Impact Review and verify that active
+   rows show a non-zero `Applied delta @ scale`, the new `Baseline`
+   column, and framing copy that matches the queue score.
+3. Approval and paper-order creation remain manual.
+4. To revert behavior, disable active mode via env (
+   `MACMARKET_MOMENTUM_RANKING_MODE=shadow` or `off`).
+
 ## Future phases
 
 - **Thinkorswim fixture validation**: drop CSVs into

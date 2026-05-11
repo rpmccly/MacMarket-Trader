@@ -10,6 +10,7 @@ from macmarket_trader.domain.enums import MarketMode
 from macmarket_trader.domain.schemas import Bar, MomentumRankingContribution
 from macmarket_trader.recommendation.momentum_ranking import (
     MomentumRankingConfig,
+    apply_momentum_score_delta,
     build_momentum_ranking_contribution,
     momentum_ranking_config_from_settings,
 )
@@ -242,25 +243,15 @@ class DeterministicRankingEngine:
                     )
                     contribution_dict = contribution.model_dump(mode="json")
                     if active_config.mode == "active" and contribution.applied:
-                        # Translate the bounded score-unit contribution into
-                        # the engine's [0,1] score scale, then re-clamp the
-                        # final score so we never exit the engine's domain.
-                        # Phase B6.1 — multiply by ``active_delta_scale``
-                        # so the operator can dampen active-mode influence
-                        # without changing Phase B1's raw contribution math.
-                        # The contribution object already carries the
-                        # scaled ``applied_score_delta``; prefer that when
-                        # available to keep one source of truth.
-                        if contribution.applied_score_delta is not None:
-                            delta = contribution.applied_score_delta
-                        else:
-                            delta = (
-                                contribution.total_contribution
-                                / max(active_config.ranking_score_scale, 1.0)
-                                * active_config.active_delta_scale
-                            )
-                        new_total = max(0.0, min(1.0, total + delta))
-                        momentum_score_delta = new_total - total
+                        # Phase B6.2 — route every score change through the
+                        # single ``apply_momentum_score_delta`` helper so
+                        # the engine, the contribution payload, and the
+                        # frontend all see the same scaled delta. The
+                        # helper handles the [0,1] clamp and the Phase
+                        # B6.1 scale internally; this engine call site
+                        # never reaches for un-scaled raw math anymore.
+                        new_total, applied_delta = apply_momentum_score_delta(total, contribution)
+                        momentum_score_delta = applied_delta
                         total = new_total
                 else:
                     # off-mode: still emit a stable shape so clients/tests

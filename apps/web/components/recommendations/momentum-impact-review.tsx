@@ -60,7 +60,12 @@ function modeFraming(mode: MomentumRankingMode, blockedActive: boolean): string 
   }
   switch (mode) {
     case "active":
-      return "Momentum contribution is currently applied to ranking. Approval and paper orders remain manual. Active mode changes ranking order only; it does not approve, reject, size, or route trades.";
+      return (
+        "Momentum contribution is currently applied to ranking. " +
+        "Current score already includes the applied Momentum delta; the Baseline column shows the pre-Momentum score. " +
+        "Applied delta shows the scaled Momentum score impact. " +
+        "Approval and paper orders remain manual. Active mode changes ranking order only; it does not approve, reject, size, or route trades."
+      );
     case "shadow":
       return "Shadow mode is enabled. Final scores are unchanged. The estimated active score shows what would happen if active mode were enabled.";
     case "off":
@@ -244,6 +249,7 @@ export function MomentumImpactReview({
                   <th style={{ textAlign: "left" }}>Rank</th>
                   <th style={{ textAlign: "left" }}>Symbol / strategy</th>
                   <th style={{ textAlign: "left" }}>Mode</th>
+                  <th style={{ textAlign: "right" }}>Baseline</th>
                   <th style={{ textAlign: "right" }}>Current score</th>
                   <th style={{ textAlign: "right" }}>Raw contribution (score units)</th>
                   <th style={{ textAlign: "right" }}>Applied delta @ scale</th>
@@ -284,6 +290,9 @@ export function MomentumImpactReview({
                         </StatusBadge>
                       </td>
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {formatUnitScore(row.baselineScore)}
+                      </td>
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatUnitScore(row.currentScore)}
                       </td>
                       <td style={{ textAlign: "right" }}>
@@ -293,18 +302,17 @@ export function MomentumImpactReview({
                       </td>
                       <td style={{ textAlign: "right" }}>
                         {(() => {
-                          // Phase B6.1 — in active mode the contribution
-                          // payload already carries ``appliedScoreDelta``;
-                          // in shadow mode we estimate it locally so
-                          // operators see what active would have produced.
-                          const rawForScale = row.shadowContributionScoreUnits;
-                          const scaled =
-                            row.mode === "active"
-                              ? row.appliedScoreDelta
-                              : (rawForScale / 100) * row.activeDeltaScale;
+                          // Phase B6.2 — single source of truth for the
+                          // applied score delta. ``row.appliedScoreDelta``
+                          // is already populated via the fallback chain
+                          // (candidate.momentum_score_delta →
+                          // contribution.applied_score_delta → raw/100
+                          // ×scale). For shadow rows it's the estimated
+                          // scaled delta. Active rows never show 0.000
+                          // when contribution is applied.
                           return (
                             <StatusBadge tone={tone}>
-                              {formatUnitScore(scaled)}
+                              {formatUnitScore(row.appliedScoreDelta)}
                             </StatusBadge>
                           );
                         })()}

@@ -287,4 +287,65 @@ describe("MomentumImpactReview", () => {
     expect(html).toContain("Applied delta @ scale");
     expect(html).toContain("0.070");
   });
+
+  // ── Phase B6.2 regressions ──────────────────────────────────────────
+
+  it("renders the Phase B6.2 baseline column and active framing copy", () => {
+    const html = renderToStaticMarkup(
+      <MomentumImpactReview
+        candidates={[
+          candidate({
+            symbol: "SPY",
+            score: 0.882,
+            score_before_momentum: 0.812,
+            momentum_score_delta: 0.07,
+            momentum_rank_mode: "active",
+            momentum_contribution: contribution({
+              mode: "active",
+              applied: true,
+              total_contribution: 20,
+              shadow_contribution: 20,
+              raw_total_contribution: 20,
+              applied_score_delta: 0.07,
+              active_delta_scale: 0.35,
+            }),
+          }),
+        ]}
+      />,
+    );
+    // Baseline column header + baseline value.
+    expect(html).toContain(">Baseline<");
+    expect(html).toContain("0.812");
+    // Current score (= active score) still shown.
+    expect(html).toContain("0.882");
+    // Applied delta column shows the scaled +0.07, never 0.000.
+    expect(html).toContain("0.070");
+    expect(html).not.toMatch(/Applied delta @ scale<\/th>[^]*?>0\.000</);
+    // Active-mode framing copy explains baseline vs current.
+    expect(html).toContain("Current score already includes the applied Momentum delta");
+    expect(html).toContain("Applied delta shows the scaled Momentum score impact");
+  });
+
+  it("active rows fall back to contribution.applied_score_delta when candidate field is absent", () => {
+    const c = candidate({
+      symbol: "SPY",
+      score: 0.882,
+      momentum_contribution: contribution({
+        mode: "active",
+        applied: true,
+        total_contribution: 20,
+        shadow_contribution: 20,
+        raw_total_contribution: 20,
+        applied_score_delta: 0.07,
+        active_delta_scale: 0.35,
+      }),
+    });
+    delete (c as Partial<typeof c>).momentum_score_delta;
+    delete (c as Partial<typeof c>).score_before_momentum;
+    const html = renderToStaticMarkup(<MomentumImpactReview candidates={[c]} />);
+    // Applied delta still 0.070 via contribution fallback.
+    expect(html).toContain("0.070");
+    // Baseline computed locally: 0.882 - 0.07 = 0.812.
+    expect(html).toContain("0.812");
+  });
 });

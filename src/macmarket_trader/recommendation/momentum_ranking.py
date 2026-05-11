@@ -871,8 +871,65 @@ def build_momentum_ranking_status(
     )
 
 
+# ── Phase B6.2 score-delta helper ──────────────────────────────────────────
+
+
+def _clamp_unit(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def apply_momentum_score_delta(
+    base_score: float, contribution: MomentumRankingContribution
+) -> tuple[float, float]:
+    """Return ``(score_after, applied_delta)`` for the bounded Momentum delta.
+
+    Phase B6.2 centralizes the active-mode score wiring so the engine and
+    any caller route through the same scaled formula:
+
+        applied_delta      = contribution.applied_score_delta
+        score_after        = clamp01(base_score + applied_delta)
+
+    Falls back to ``raw / 100 × scale`` only when the contribution payload
+    pre-dates Phase B6.1 and ``applied_score_delta`` is missing. Never
+    uses the un-scaled ``total_contribution / 100`` math — that was the
+    Phase B6 wiring that caused queue saturation under high baselines.
+
+    Returns ``(base_score, 0.0)`` whenever the contribution is None,
+    disabled, off mode, or shadow mode — i.e. the queue score must not
+    change.
+    """
+    if contribution is None or contribution.enabled is False:
+        return _clamp_unit(base_score), 0.0
+    if contribution.mode != "active" or not contribution.applied:
+        return _clamp_unit(base_score), 0.0
+
+    applied_delta = contribution.applied_score_delta
+    if applied_delta is None or not math.isfinite(float(applied_delta)):
+        # Backward-compatibility fallback for payloads predating Phase B6.1.
+        raw = contribution.raw_total_contribution
+        if raw is None:
+            raw = contribution.total_contribution
+        scale = contribution.active_delta_scale
+        if scale is None or not math.isfinite(float(scale)) or float(scale) < 0.0 or float(scale) > 1.0:
+            scale = DEFAULT_ACTIVE_DELTA_SCALE
+        applied_delta = float(raw) / 100.0 * float(scale)
+    if not math.isfinite(float(applied_delta)):
+        applied_delta = 0.0
+
+    score_after = _clamp_unit(base_score + float(applied_delta))
+    return score_after, float(applied_delta)
+
+
 __all__ = [
+    "DEFAULT_ACTIVE_DELTA_SCALE",
     "MomentumRankingConfig",
+    "apply_momentum_score_delta",
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",

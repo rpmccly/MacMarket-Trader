@@ -39,6 +39,11 @@ export type MomentumImpactRow = {
   activeDeltaScale: number;
   rawTotalContribution: number;
   appliedScoreDelta: number;
+  // Phase B6.2 — baseline score before the Momentum delta was applied.
+  // Sourced from ``candidate.score_before_momentum`` when present; falls
+  // back to ``candidate.score - appliedScoreDelta`` in active mode so
+  // older payloads still surface a reasonable baseline.
+  baselineScore: number;
 };
 
 export type MomentumImpactSummary = {
@@ -200,6 +205,44 @@ export function buildMomentumImpactRows(
       rankAfterByKey.get(`${candidate.symbol}::${candidate.strategy}::${idx}`) ?? rankBefore;
     const estimatedRankDelta = rankAfter === 0 ? 0 : rankBefore - rankAfter; // positive = moved up
 
+    // Phase B6.2 — single fallback chain for the applied score delta.
+    // Active rows must surface the actual scaled delta even when one of
+    // the payload fields is missing on the wire.
+    const scaleForRow = resolveActiveDeltaScale(contribution?.active_delta_scale);
+    const rawForRow = sanitizeNumber(
+      contribution?.raw_total_contribution ?? contribution?.shadow_contribution,
+      0,
+    );
+    let appliedScoreDelta: number;
+    if (mode === "active") {
+      const candidateDelta = candidate.momentum_score_delta;
+      const contributionDelta = contribution?.applied_score_delta;
+      if (candidateDelta != null && Number.isFinite(candidateDelta) && candidateDelta !== 0) {
+        appliedScoreDelta = sanitizeNumber(candidateDelta, 0);
+      } else if (
+        contributionDelta != null &&
+        Number.isFinite(contributionDelta) &&
+        contributionDelta !== 0
+      ) {
+        appliedScoreDelta = sanitizeNumber(contributionDelta, 0);
+      } else {
+        appliedScoreDelta = (rawForRow / RANKING_SCORE_SCALE) * scaleForRow;
+      }
+    } else {
+      appliedScoreDelta = sanitizeNumber(contribution?.applied_score_delta, 0);
+    }
+    // Phase B6.2 — baseline score before Momentum was applied. Prefer the
+    // candidate-level field that Phase B6 added on the backend; fall
+    // back to ``current_score - appliedScoreDelta`` for older payloads
+    // so the impact review can still show a sensible baseline column.
+    const baselineFromCandidate = sanitizeNumber(candidate.score_before_momentum, Number.NaN);
+    const baselineScore =
+      mode === "active"
+        ? Number.isFinite(baselineFromCandidate)
+          ? clampUnit(baselineFromCandidate)
+          : clampUnit(currentScore - appliedScoreDelta)
+        : currentScore;
+
     out.push({
       symbol: candidate.symbol,
       strategy: candidate.strategy,
@@ -224,12 +267,10 @@ export function buildMomentumImpactRows(
       estimatedRankBefore: rankBefore,
       estimatedRankAfter: rankAfter,
       estimatedRankDelta,
-      activeDeltaScale: resolveActiveDeltaScale(contribution?.active_delta_scale),
-      rawTotalContribution: sanitizeNumber(
-        contribution?.raw_total_contribution ?? contribution?.shadow_contribution,
-        0,
-      ),
-      appliedScoreDelta: sanitizeNumber(contribution?.applied_score_delta, 0),
+      activeDeltaScale: scaleForRow,
+      rawTotalContribution: rawForRow,
+      appliedScoreDelta,
+      baselineScore,
     });
   });
   return out;

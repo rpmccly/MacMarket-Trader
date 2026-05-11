@@ -7,7 +7,9 @@ sizing, or routing trades. See ``docs/momentum-intelligence-layer.md``.
 """
 
 from macmarket_trader.recommendation.momentum_ranking import (
+    DEFAULT_ACTIVE_DELTA_SCALE,
     MomentumRankingConfig,
+    apply_momentum_score_delta,
     build_momentum_ranking_contribution,
     build_momentum_ranking_status,
     momentum_ranking_config_from_settings,
@@ -16,7 +18,9 @@ from macmarket_trader.recommendation.momentum_ranking import (
 )
 
 __all__ = [
+    "DEFAULT_ACTIVE_DELTA_SCALE",
     "MomentumRankingConfig",
+    "apply_momentum_score_delta",
     "build_momentum_ranking_contribution",
     "build_momentum_ranking_status",
     "momentum_ranking_config_from_settings",

@@ -54,6 +54,13 @@ export type QueueCandidate = {
   score: number;
   score_breakdown?: Record<string, number>;
   momentum_contribution?: MomentumRankingContribution | null;
+  // Phase B6 / B6.2 — before/after visibility for the active-mode Momentum
+  // delta. Always optional/nullable so older API payloads stay valid; the
+  // backend (Phase B6) ships these on every queue row.
+  score_before_momentum?: number | null;
+  score_after_momentum?: number | null;
+  momentum_score_delta?: number | null;
+  momentum_rank_mode?: "off" | "shadow" | "active" | string | null;
   expected_rr: number;
   confidence: number;
   reason_text: string;
