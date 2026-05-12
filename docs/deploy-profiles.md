@@ -45,11 +45,34 @@ values fail the deploy with a clear error before any tests run.
 .\deploy-macmarket-trader.bat -TestProfile none -ForceNoTests
 ```
 
+The `-Profile` alias is equivalent to `-TestProfile`:
+
+```powershell
+.\deploy-macmarket-trader.bat -Profile fast
+```
+
 The DST override remains the first positional argument:
 
 ```powershell
 .\deploy-macmarket-trader.bat "C:\Dashboard\MacMarket-Trader" -TestProfile fast
 ```
+
+## Dry-run mode
+
+`-DryRun` parses arguments, resolves SRC and DST, validates the source
+path, prints the banner + test plan, and exits 0 **without** mirroring,
+installing, testing, building, or restarting. It is the safe way to
+validate that argument forwarding and source-path resolution work
+correctly on a given machine before a real deploy:
+
+```powershell
+.\deploy-macmarket-trader.bat -DryRun
+.\deploy-macmarket-trader.bat -TestProfile fast -DryRun
+.\deploy-macmarket-trader.bat -TestProfile full -DryRun
+```
+
+`-DryRun` also skips the trailing `pause` in the wrapper so the dry-run
+is safe to invoke from automation / unit tests.
 
 ## Fast profile test set
 
@@ -161,3 +184,88 @@ tests run, e.g.:
 If the deploy is running without Administrator privileges, a
 clear `[WARN] Not running as Administrator…` banner is logged so the
 operator knows port / process cleanup may be partial.
+
+## Troubleshooting
+
+### `SRC:` prints the parent folder when args are passed
+
+**Symptom.** Running
+
+```powershell
+.\deploy-macmarket-trader.bat -TestProfile fast
+```
+
+prints
+
+```
+SRC: C:\Users\ryanm\OneDrive\Documents\GitHub
+[ERROR] Source path does not look like the MacMarket repo: ...
+```
+
+instead of `SRC: C:\Users\ryanm\OneDrive\Documents\GitHub\MacMarket-Trader`.
+Running with no args resolves SRC correctly.
+
+**Root cause.** Plain `shift` in batch rotates `%0` in addition to
+`%1+`. After several `shift` calls in the argument parser, `%~dp0` no
+longer points at the script's own directory — it falls back to the
+current working directory. A later `for %%I in ("%~dp0..") do set
+"SRC=%%~fI"` then resolves to the parent of the cwd instead of the
+parent of the script.
+
+**Fix.** The wrapper resolves `REPO_ROOT` from `%~dp0` up-front and
+`pushd`s into the repo root before invoking the canonical script. The
+canonical script captures `SCRIPT_DIR=%~dp0` and `SRC` **before** any
+arg parsing happens. Validate with:
+
+```powershell
+.\deploy-macmarket-trader.bat -TestProfile fast -DryRun
+.\deploy-macmarket-trader.bat -TestProfile full -DryRun
+.\deploy-macmarket-trader.bat -DryRun
+```
+
+Each of these must print
+
+```
+SRC: C:\Users\ryanm\OneDrive\Documents\GitHub\MacMarket-Trader
+```
+
+and exit 0 without mirroring / installing / building / restarting.
+
+### `... was unexpected at this time.`
+
+**Symptom.** The deploy mirrors files, installs backend dependencies,
+applies schema updates, then fails with the literal message
+
+```
+... was unexpected at this time.
+```
+
+**Root cause.** Inside a parenthesized `IF` / `IF...ELSE` block, the
+batch parser pre-scans the body for the matching `)`. Strings that
+contain a literal `)` (for example `SKIPPED (emergency)` or `echo
+... -TestProfile none (emergency).`) close the block prematurely, so
+the subsequent block ends up unbalanced. Note: `"..."` quoting does
+**not** protect parens here — quoted parens inside an `IF` body still
+miscount.
+
+**Fix.** All occurrences of `(emergency)` inside parenthesized blocks
+were replaced with `[emergency]` (square brackets are not special to
+the cmd parser). The argument parser was also refactored from a
+parenthesized-`IF` chain to a goto-based labeled parser so that no
+future value-containing-parens issue can re-introduce the same parse
+error.
+
+### Source-path validation diagnostics
+
+If `SRC` does not look like the MacMarket repo, the canonical script
+now prints `SCRIPT_DIR`, `CWD`, the active `TEST_PROFILE`, and the
+`DRY_RUN` flag alongside the failing `SRC` value. The four required
+markers checked are:
+
+- `README.md`
+- `pyproject.toml`
+- `apps\web`
+- `src\macmarket_trader`
+
+If any one is missing the script exits non-zero with the diagnostic
+banner, regardless of the test profile.

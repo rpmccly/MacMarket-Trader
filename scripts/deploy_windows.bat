@@ -5,12 +5,25 @@ REM =========================================================
 REM  MacMarket-Trader - deploy_windows.bat
 REM
 REM  Canonical deploy entrypoint. See docs\deploy-profiles.md
-REM  for the supported test profiles. Default is "full" — the
+REM  for the supported test profiles. Default is "full" - the
 REM  full backend pytest + full frontend Vitest + tsc safety
 REM  net used for every production release. Other profiles are
 REM  faster smoke paths for iterative work and must be selected
 REM  explicitly with -TestProfile <profile>.
 REM =========================================================
+
+REM ---------------------------------------------------------
+REM Step 1. Capture the script directory and source root
+REM BEFORE any shift / arg parsing happens. Plain `shift` in
+REM batch can rotate %0 in addition to %1+, which makes a
+REM later `%~dp0..` resolve against the current working
+REM directory or a positional arg value instead of the script
+REM location. Pinning SRC up-front from %~dp0 avoids that
+REM class of bug (see docs\deploy-profiles.md troubleshooting).
+REM ---------------------------------------------------------
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+for %%I in ("%SCRIPT_DIR%\..") do set "SRC=%%~fI"
 
 set "DST=C:\Dashboard\MacMarket-Trader"
 set "BACKEND_PORT=9510"
@@ -23,54 +36,69 @@ set "RUN_TESTS=1"
 set "RUN_E2E=0"
 set "STRICT_NODE=0"
 
-REM -------- Parse deploy arguments --------
-REM Supports:
-REM   <DST>                              (positional, must come first if used)
-REM   -TestProfile full|fast|frontend|backend|none
-REM   -ForceNoTests                      (required to actually run the "none" profile)
-REM
-REM The default profile is "full". Unknown -TestProfile values fail the
-REM deploy with a clear error before any tests run.
+REM -------- Argument defaults --------
+REM Default profile remains "full" (the historic safe path).
+REM -ForceNoTests and -DryRun are additive opt-in flags.
 set "TEST_PROFILE=full"
 set "FORCE_NO_TESTS=0"
+set "DRY_RUN=0"
 
+REM ---------------------------------------------------------
+REM Step 2. Goto-based argument parser.
+REM
+REM We deliberately avoid parenthesized IF blocks here because
+REM batch pre-parses the body of an IF block, and any value
+REM containing a literal `)` (for example a string like
+REM "(emergency)") can prematurely close the block and produce
+REM the classic "... was unexpected at this time." parse error.
+REM Each flag has its own :HANDLE_* label, and unknown args
+REM fall through to the positional DST override.
+REM ---------------------------------------------------------
 :PARSE_ARGS
 if "%~1"=="" goto :PARSE_ARGS_DONE
-if /I "%~1"=="-TestProfile" (
-  if "%~2"=="" (
-    echo [ERROR] -TestProfile requires a value: full^|fast^|frontend^|backend^|none
-    exit /b 64
-  )
-  set "TEST_PROFILE=%~2"
-  shift
-  shift
-  goto :PARSE_ARGS
-)
-if /I "%~1"=="-Profile" (
-  if "%~2"=="" (
-    echo [ERROR] -Profile requires a value: full^|fast^|frontend^|backend^|none
-    exit /b 64
-  )
-  set "TEST_PROFILE=%~2"
-  shift
-  shift
-  goto :PARSE_ARGS
-)
-if /I "%~1"=="-ForceNoTests" (
-  set "FORCE_NO_TESTS=1"
-  shift
-  goto :PARSE_ARGS
-)
-REM Positional DST override (first non-flag arg). Only honoured if DST
-REM has not been set by a flag yet.
+if /I "%~1"=="-TestProfile"  goto :HANDLE_TESTPROFILE
+if /I "%~1"=="-Profile"      goto :HANDLE_TESTPROFILE
+if /I "%~1"=="-ForceNoTests" goto :HANDLE_FORCENOTESTS
+if /I "%~1"=="-DryRun"       goto :HANDLE_DRYRUN
+if /I "%~1"=="-Help"         goto :HANDLE_HELP
+if /I "%~1"=="/?"            goto :HANDLE_HELP
+REM Fallthrough: treat as positional DST override (first non-flag arg).
 set "DST=%~1"
 shift
 goto :PARSE_ARGS
+
+:HANDLE_TESTPROFILE
+if "%~2"=="" goto :ERR_TESTPROFILE_MISSING
+set "TEST_PROFILE=%~2"
+shift
+shift
+goto :PARSE_ARGS
+
+:HANDLE_FORCENOTESTS
+set "FORCE_NO_TESTS=1"
+shift
+goto :PARSE_ARGS
+
+:HANDLE_DRYRUN
+set "DRY_RUN=1"
+shift
+goto :PARSE_ARGS
+
+:HANDLE_HELP
+echo Usage: deploy-macmarket-trader.bat [^<DST^>] [-TestProfile full^|fast^|frontend^|backend^|none] [-ForceNoTests] [-DryRun]
+echo.
+echo Default profile is "full" (full backend pytest + full Vitest + tsc).
+echo Use -DryRun to print the resolved deploy plan and exit without changes.
+exit /b 0
+
+:ERR_TESTPROFILE_MISSING
+echo [ERROR] -TestProfile requires a value: full, fast, frontend, backend, or none
+exit /b 64
+
 :PARSE_ARGS_DONE
 
-REM Normalize test profile to lower-case via a powershell call. Avoids
-REM batch-script case headaches when comparing later. Strict whitelist
-REM enforced below.
+REM Normalize test profile to lower-case via a powershell call. Strict
+REM whitelist enforced below.
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = '%TEST_PROFILE%'; if ($p) { $p.Trim().ToLowerInvariant() } else { 'full' }"`) do set "TEST_PROFILE=%%P"
 if not defined TEST_PROFILE set "TEST_PROFILE=full"
 
@@ -81,40 +109,43 @@ if /I "%TEST_PROFILE%"=="frontend" set "VALID_PROFILE=1"
 if /I "%TEST_PROFILE%"=="backend"  set "VALID_PROFILE=1"
 if /I "%TEST_PROFILE%"=="none"     set "VALID_PROFILE=1"
 
-if "%VALID_PROFILE%"=="0" (
-  echo [ERROR] Unknown test profile: %TEST_PROFILE%
-  echo [ERROR] Allowed: full ^| fast ^| frontend ^| backend ^| none
-  exit /b 64
-)
+if "%VALID_PROFILE%"=="0" goto :ERR_UNKNOWN_PROFILE
+if /I "%TEST_PROFILE%"=="none" goto :CHECK_NONE_GUARDS
+goto :AFTER_PROFILE_GUARDS
 
-if /I "%TEST_PROFILE%"=="none" (
-  if "%FORCE_NO_TESTS%"=="0" (
-    echo [ERROR] The "none" test profile requires -ForceNoTests to run.
-    echo [ERROR] No-test deploy is operator emergency mode. It skips validation and
-    echo [ERROR] should not be used for normal releases.
-    exit /b 64
-  )
-  REM Refuse the no-test path when live trading / broker live env hints
-  REM are present so an operator can never accidentally ship a
-  REM trade-routing change with skipped tests.
-  if /I "%MACMARKET_BROKER_LIVE%"=="1" (
-    echo [ERROR] Refusing -TestProfile none while MACMARKET_BROKER_LIVE=1 is set.
-    exit /b 64
-  )
-  if /I "%BROKER_PROVIDER%"=="alpaca" (
-    echo [ERROR] Refusing -TestProfile none while BROKER_PROVIDER=alpaca is set.
-    exit /b 64
-  )
-  echo.
-  echo =========================================================
-  echo  [WARN] No-test deploy is operator emergency mode. It skips validation
-  echo  [WARN] and should not be used for normal releases. Continuing because
-  echo  [WARN] -ForceNoTests was explicitly supplied.
-  echo =========================================================
-  echo.
-)
+:ERR_UNKNOWN_PROFILE
+echo [ERROR] Unknown test profile: %TEST_PROFILE%
+echo [ERROR] Allowed: full, fast, frontend, backend, or none
+exit /b 64
 
-for %%I in ("%~dp0..") do set "SRC=%%~fI"
+:CHECK_NONE_GUARDS
+if "%FORCE_NO_TESTS%"=="0"           goto :ERR_NONE_REQUIRES_FORCE
+if /I "%MACMARKET_BROKER_LIVE%"=="1" goto :ERR_NONE_BROKER_LIVE
+if /I "%BROKER_PROVIDER%"=="alpaca"  goto :ERR_NONE_ALPACA
+echo.
+echo =========================================================
+echo  [WARN] No-test deploy is operator emergency mode. It skips validation
+echo  [WARN] and should not be used for normal releases. Continuing because
+echo  [WARN] -ForceNoTests was explicitly supplied.
+echo =========================================================
+echo.
+goto :AFTER_PROFILE_GUARDS
+
+:ERR_NONE_REQUIRES_FORCE
+echo [ERROR] The "none" test profile requires -ForceNoTests to run.
+echo [ERROR] No-test deploy is operator emergency mode. It skips validation and
+echo [ERROR] should not be used for normal releases.
+exit /b 64
+
+:ERR_NONE_BROKER_LIVE
+echo [ERROR] Refusing -TestProfile none while MACMARKET_BROKER_LIVE=1 is set.
+exit /b 64
+
+:ERR_NONE_ALPACA
+echo [ERROR] Refusing -TestProfile none while BROKER_PROVIDER=alpaca is set.
+exit /b 64
+
+:AFTER_PROFILE_GUARDS
 
 set "LOG_DIR=%DST%\logs"
 set "DATA_DIR=%DST%\data"
@@ -130,25 +161,21 @@ set "RC=0"
 set "KILLPAT_API=*%DST%\.venv\Scripts\python.exe*-m uvicorn*macmarket_trader.api.main:app*"
 set "KILLPAT_WEB=*%DST%\apps\web*next*start*"
 
+REM ---------------------------------------------------------
 REM Per-profile test-plan summary printed before any tests run.
+REM Single-line IF set statements only - never wrap parens
+REM around values that might themselves contain parens.
+REM ---------------------------------------------------------
 set "PROFILE_BACKEND_DESC=full backend pytest"
 set "PROFILE_FRONTEND_DESC=full Vitest + tsc"
-if /I "%TEST_PROFILE%"=="fast" (
-  set "PROFILE_BACKEND_DESC=charts + Momentum active guards + Phase C static + deploy temp"
-  set "PROFILE_FRONTEND_DESC=tsc + chart-history-range + Momentum integration + Phase C2 evidence smoke"
-)
-if /I "%TEST_PROFILE%"=="frontend" (
-  set "PROFILE_BACKEND_DESC=skipped"
-  set "PROFILE_FRONTEND_DESC=tsc + full Vitest"
-)
-if /I "%TEST_PROFILE%"=="backend" (
-  set "PROFILE_BACKEND_DESC=full backend pytest"
-  set "PROFILE_FRONTEND_DESC=tsc only"
-)
-if /I "%TEST_PROFILE%"=="none" (
-  set "PROFILE_BACKEND_DESC=SKIPPED (emergency)"
-  set "PROFILE_FRONTEND_DESC=SKIPPED (emergency)"
-)
+if /I "%TEST_PROFILE%"=="fast"     set "PROFILE_BACKEND_DESC=charts + Momentum active guards + Phase C static + deploy temp"
+if /I "%TEST_PROFILE%"=="fast"     set "PROFILE_FRONTEND_DESC=tsc + chart-history-range + Momentum integration + Phase C2 evidence smoke"
+if /I "%TEST_PROFILE%"=="frontend" set "PROFILE_BACKEND_DESC=skipped"
+if /I "%TEST_PROFILE%"=="frontend" set "PROFILE_FRONTEND_DESC=tsc + full Vitest"
+if /I "%TEST_PROFILE%"=="backend"  set "PROFILE_BACKEND_DESC=full backend pytest"
+if /I "%TEST_PROFILE%"=="backend"  set "PROFILE_FRONTEND_DESC=tsc only"
+if /I "%TEST_PROFILE%"=="none"     set "PROFILE_BACKEND_DESC=SKIPPED [emergency]"
+if /I "%TEST_PROFILE%"=="none"     set "PROFILE_FRONTEND_DESC=SKIPPED [emergency]"
 
 echo.
 echo =========================================================
@@ -160,8 +187,22 @@ echo   Backend validation: %PROFILE_BACKEND_DESC%
 echo   Frontend validation: %PROFILE_FRONTEND_DESC%
 echo   RUN_TESTS: %RUN_TESTS%
 echo   RUN_E2E : %RUN_E2E%
+echo   DryRun  : %DRY_RUN%
 echo =========================================================
 echo.
+
+REM ---------------------------------------------------------
+REM Validate SRC. If validation fails we print diagnostic
+REM context (script dir, cwd, args) so the operator can find
+REM the wrapper bug, then exit non-zero.
+REM ---------------------------------------------------------
+call :VALIDATE_SRC
+if errorlevel 1 (
+  set "RC=1"
+  goto :END
+)
+
+if "%DRY_RUN%"=="1" goto :DRY_RUN_EXIT
 
 set "IS_ADMIN=0"
 net session >nul 2>&1
@@ -174,22 +215,6 @@ if errorlevel 1 (
 ) else (
   echo [INFO] Running with Administrator privileges.
   set "IS_ADMIN=1"
-)
-
-if not exist "%SRC%\README.md" (
-  echo [ERROR] Source path does not look like the MacMarket repo:
-  echo         %SRC%
-  set "RC=1"
-  goto :END
-)
-if not exist "%SRC%\pyproject.toml" (
-  echo [ERROR] Missing pyproject.toml in source path:
-  echo         %SRC%
-  set "RC=1"
-  goto :END
-)
-if not exist "%SRC%\apps\web\package.json" (
-  echo [WARN] apps\web\package.json not found in source. Frontend steps will be skipped.
 )
 
 if not exist "%DST%" mkdir "%DST%" >nul 2>&1
@@ -358,13 +383,7 @@ if "%RUN_BACKEND_TESTS%"=="1" (
     goto :FAIL_POP
   )
 ) else (
-  if /I "%TEST_PROFILE%"=="frontend" (
-    echo [INFO] Backend tests skipped: -TestProfile frontend.
-  ) else if /I "%TEST_PROFILE%"=="none" (
-    echo [WARN] Backend tests skipped: -TestProfile none (emergency).
-  ) else (
-    echo [INFO] Backend tests skipped. Set RUN_TESTS=1 to enable them.
-  )
+  call :LOG_BACKEND_SKIP_REASON
 )
 
 if exist "%WEB_DIR%\package.json" (
@@ -434,13 +453,7 @@ if exist "%WEB_DIR%\package.json" (
       goto :FAIL_POP_WEB
     )
   ) else (
-    if /I "%TEST_PROFILE%"=="backend" (
-      echo [INFO] Frontend Vitest skipped: -TestProfile backend.
-    ) else if /I "%TEST_PROFILE%"=="none" (
-      echo [WARN] Frontend Vitest skipped: -TestProfile none (emergency).
-    ) else (
-      echo [INFO] Frontend unit tests skipped. Set RUN_TESTS=1 to enable them.
-    )
+    call :LOG_FRONTEND_SKIP_REASON
   )
 
   if "%RUN_E2E%"=="1" (
@@ -511,12 +524,68 @@ if errorlevel 1 (
 
 goto :END
 
+:DRY_RUN_EXIT
+echo [INFO] -DryRun supplied. Resolved deploy plan printed above. Exiting
+echo [INFO] without mirroring, installing, testing, building, or restarting.
+exit /b 0
+
 :FAIL_POP_WEB
 popd
 
 :FAIL_POP
 popd
 goto :END
+
+REM ---------------------------------------------------------
+REM Subroutines (kept outside top-level parenthesized blocks
+REM so square-bracket [emergency] strings are unambiguous to
+REM the parser).
+REM ---------------------------------------------------------
+
+:VALIDATE_SRC
+set "SRC_OK=1"
+if not exist "%SRC%\README.md"             set "SRC_OK=0"
+if not exist "%SRC%\pyproject.toml"        set "SRC_OK=0"
+if not exist "%SRC%\apps\web"              set "SRC_OK=0"
+if not exist "%SRC%\src\macmarket_trader"  set "SRC_OK=0"
+if "%SRC_OK%"=="0" (
+  echo [ERROR] Source path does not look like the MacMarket repo:
+  echo         SRC          = %SRC%
+  echo         SCRIPT_DIR   = %SCRIPT_DIR%
+  echo         CWD          = %CD%
+  echo         TEST_PROFILE = %TEST_PROFILE%
+  echo         DRY_RUN      = %DRY_RUN%
+  echo [ERROR] Required entries: README.md, pyproject.toml, apps\web, src\macmarket_trader
+  exit /b 1
+)
+if not exist "%SRC%\apps\web\package.json" (
+  echo [WARN] apps\web\package.json not found in source. Frontend steps will be skipped.
+)
+exit /b 0
+
+:LOG_BACKEND_SKIP_REASON
+if /I "%TEST_PROFILE%"=="frontend" goto :LOG_BACKEND_SKIP_FE
+if /I "%TEST_PROFILE%"=="none"     goto :LOG_BACKEND_SKIP_NONE
+echo [INFO] Backend tests skipped. Set RUN_TESTS=1 to enable them.
+exit /b 0
+:LOG_BACKEND_SKIP_FE
+echo [INFO] Backend tests skipped: -TestProfile frontend.
+exit /b 0
+:LOG_BACKEND_SKIP_NONE
+echo [WARN] Backend tests skipped: -TestProfile none [emergency].
+exit /b 0
+
+:LOG_FRONTEND_SKIP_REASON
+if /I "%TEST_PROFILE%"=="backend" goto :LOG_FRONTEND_SKIP_BE
+if /I "%TEST_PROFILE%"=="none"    goto :LOG_FRONTEND_SKIP_NONE
+echo [INFO] Frontend unit tests skipped. Set RUN_TESTS=1 to enable them.
+exit /b 0
+:LOG_FRONTEND_SKIP_BE
+echo [INFO] Frontend Vitest skipped: -TestProfile backend.
+exit /b 0
+:LOG_FRONTEND_SKIP_NONE
+echo [WARN] Frontend Vitest skipped: -TestProfile none [emergency].
+exit /b 0
 
 :CheckNode
 for /f %%V in ('node -v 2^>nul') do set "NODE_VER=%%V"

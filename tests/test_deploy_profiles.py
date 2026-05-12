@@ -22,12 +22,23 @@ the contract added by the deploy-profile work:
 - The script does not introduce broad / destructive Remove-Item or
   process-kill patterns.
 
-The tests are intentionally text-based: invoking the .bat from pytest
-would require an interactive Windows shell, which is not portable.
+The wrapper (``deploy-macmarket-trader.bat``) must resolve the repo
+root from ``%~dp0``, not from positional args or the current working
+directory, and must forward ``%*`` to the canonical script.
+
+The tests are intentionally text-based for the most part: invoking
+the .bat from pytest requires an interactive Windows shell, which is
+not portable. A small opportunistic subprocess test covers the
+``-DryRun`` mode on Windows.
 """
 from __future__ import annotations
 
+import os
+import platform
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +46,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_BAT = REPO_ROOT / "scripts" / "deploy_windows.bat"
+WRAPPER_BAT = REPO_ROOT / "deploy-macmarket-trader.bat"
 DEPLOY_PROFILES_DOC = REPO_ROOT / "docs" / "deploy-profiles.md"
 
 
@@ -264,3 +276,313 @@ def test_deploy_profile_changes_do_not_touch_ranking_or_order_modules() -> None:
         assert mod not in text, (
             f"deploy script must not reference ranking/approval/order code: {mod}"
         )
+
+
+# ── Wrapper: source-root resolution via %~dp0 ────────────────────────
+
+
+def test_wrapper_bat_exists() -> None:
+    assert WRAPPER_BAT.exists(), (
+        "top-level deploy-macmarket-trader.bat wrapper must exist"
+    )
+
+
+def test_wrapper_bat_resolves_repo_root_from_own_location() -> None:
+    """The wrapper must compute the repo root from %~dp0 (its own
+    location), never from %CD% or positional args. This is the bug fix
+    for: running `.\\deploy-macmarket-trader.bat -TestProfile fast`
+    printing SRC = parent of repo root."""
+    text = _read(WRAPPER_BAT)
+    assert 'REPO_ROOT=%~dp0' in text, (
+        "wrapper must derive REPO_ROOT from %~dp0"
+    )
+    assert 'pushd "%REPO_ROOT%"' in text, (
+        "wrapper must pushd to REPO_ROOT before invoking deploy script"
+    )
+    # Wrapper must not infer the source from the parent of the current
+    # working directory.
+    assert "%CD%\\.." not in text
+    assert "%cd%\\.." not in text.lower() or "%CD%\\.." not in text
+
+
+def test_wrapper_bat_forwards_args_to_canonical_script() -> None:
+    text = _read(WRAPPER_BAT)
+    assert re.search(
+        r'call\s+"%REPO_ROOT%\\scripts\\deploy_windows\.bat"\s+%\*',
+        text,
+    ), "wrapper must forward %* to scripts\\deploy_windows.bat"
+
+
+def test_wrapper_bat_propagates_exit_code() -> None:
+    text = _read(WRAPPER_BAT)
+    assert "WRAPPER_RC=%ERRORLEVEL%" in text
+    assert "exit /b %WRAPPER_RC%" in text
+
+
+# ── Deploy script: SRC resolution + validation ───────────────────────
+
+
+def test_deploy_bat_captures_script_dir_before_arg_parsing() -> None:
+    """``shift`` can rotate %0, making a later %~dp0 expand to the
+    current working directory instead of the script location. The
+    deploy script must capture SCRIPT_DIR / SRC at the top, before
+    any shift / arg parsing happens."""
+    text = _read(DEPLOY_BAT)
+    # SCRIPT_DIR must be set before any :PARSE_ARGS label.
+    idx_script_dir = text.find('set "SCRIPT_DIR=%~dp0"')
+    idx_parse_label = text.find(":PARSE_ARGS")
+    assert idx_script_dir != -1, "deploy script must set SCRIPT_DIR from %~dp0"
+    assert idx_parse_label != -1, "deploy script must have :PARSE_ARGS label"
+    assert idx_script_dir < idx_parse_label, (
+        "SCRIPT_DIR must be captured before any shift / arg parsing"
+    )
+    # SRC must be derived from SCRIPT_DIR up-front too.
+    assert re.search(
+        r'for\s+%%I\s+in\s+\("%SCRIPT_DIR%\\\.\."\)\s+do\s+set\s+"SRC=%%~fI"',
+        text,
+    ), "deploy script must derive SRC from %SCRIPT_DIR%\\.. before parsing"
+    # SRC derivation must come before :PARSE_ARGS as well.
+    idx_src = text.find('SRC=%%~fI')
+    assert idx_src != -1 and idx_src < idx_parse_label
+
+
+def test_deploy_bat_validates_required_repo_files() -> None:
+    """SRC validation must require all four canonical repo markers
+    (README.md, pyproject.toml, apps\\web, src\\macmarket_trader)."""
+    text = _read(DEPLOY_BAT)
+    assert 'if not exist "%SRC%\\README.md"' in text
+    assert 'if not exist "%SRC%\\pyproject.toml"' in text
+    assert 'if not exist "%SRC%\\apps\\web"' in text
+    assert 'if not exist "%SRC%\\src\\macmarket_trader"' in text
+    # If validation fails the script must surface the computed
+    # diagnostics so an operator can find the wrapper bug.
+    assert "SCRIPT_DIR" in text
+    assert "%CD%" in text
+
+
+# ── Deploy script: goto-based parser (no fragile parenthesized IF
+#    blocks around arg parsing) ──────────────────────────────────────
+
+
+def test_arg_parser_uses_goto_based_handlers() -> None:
+    text = _read(DEPLOY_BAT)
+    # Each flag should goto its own labeled handler.
+    for label in (
+        ":HANDLE_TESTPROFILE",
+        ":HANDLE_FORCENOTESTS",
+        ":HANDLE_DRYRUN",
+    ):
+        assert label in text, f"deploy script must define {label}"
+    # -TestProfile and -Profile alias both jump to the same handler.
+    assert re.search(
+        r'if /I "%~1"=="-TestProfile"\s+goto :HANDLE_TESTPROFILE',
+        text,
+    )
+    assert re.search(
+        r'if /I "%~1"=="-Profile"\s+goto :HANDLE_TESTPROFILE',
+        text,
+    )
+    # Missing -TestProfile value must error out with code 64.
+    assert "ERR_TESTPROFILE_MISSING" in text
+    assert "-TestProfile requires a value" in text
+
+
+def test_arg_parser_does_not_use_emergency_inside_paren_blocks() -> None:
+    """Regression: ``set "...=SKIPPED (emergency)"`` and ``echo
+    ... -TestProfile none (emergency).`` inside parenthesized IF
+    blocks caused the ``... was unexpected at this time.`` parse
+    error. The fix replaces them with square-bracket
+    ``[emergency]`` strings which the parser never miscounts."""
+    text = _read(DEPLOY_BAT)
+    assert "(emergency)" not in text or _emergency_only_in_comments(text), (
+        "deploy script must not contain literal '(emergency)' outside of comments"
+    )
+    # The replacement [emergency] markers are still present.
+    assert "[emergency]" in text
+
+
+def _emergency_only_in_comments(text: str) -> bool:
+    """``(emergency)`` is acceptable only when it appears inside a
+    ``REM`` documentation line — never inside executable code where
+    the parser could miscount block parens."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "(emergency)" in stripped:
+            if not stripped.upper().startswith("REM"):
+                return False
+    return True
+
+
+# ── Dry-run mode ─────────────────────────────────────────────────────
+
+
+def test_deploy_bat_supports_dry_run_flag() -> None:
+    text = _read(DEPLOY_BAT)
+    assert "-DryRun" in text
+    assert ":HANDLE_DRYRUN" in text
+    assert ":DRY_RUN_EXIT" in text
+    # DryRun must short-circuit before mirror / install / build / restart.
+    idx_dry_check = text.find('if "%DRY_RUN%"=="1" goto :DRY_RUN_EXIT')
+    idx_mirror = text.find("Mirroring repo to deployment folder")
+    idx_pip_install = text.find("Installing backend dependencies")
+    idx_start_backend = text.find("Starting backend")
+    assert idx_dry_check != -1
+    for marker, idx in (
+        ("mirror", idx_mirror),
+        ("backend install", idx_pip_install),
+        ("backend start", idx_start_backend),
+    ):
+        assert idx > idx_dry_check, (
+            f"DRY_RUN short-circuit must precede the {marker} step"
+        )
+
+
+def test_wrapper_bat_skips_pause_on_dry_run() -> None:
+    """For -DryRun to be safe to call from automation / unit tests,
+    the wrapper must not block on the trailing `pause`."""
+    text = _read(WRAPPER_BAT)
+    assert "WRAPPER_DRY_RUN" in text
+    assert 'if "%WRAPPER_DRY_RUN%"=="0" pause' in text
+
+
+# ── Opportunistic behavioral test for -DryRun ────────────────────────
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="DryRun behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_dry_run_resolves_correct_src_with_fast_profile(tmp_path: Path) -> None:
+    """Behavioral check for the SRC-parent-folder bug: running
+    ``deploy-macmarket-trader.bat -TestProfile fast -DryRun`` must
+    print ``SRC: <repo root>`` (not the parent of the repo) and exit 0
+    without mirroring / installing / building / restarting."""
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+            "fast",
+            "-DryRun",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, (
+        f"DryRun should exit 0; got {completed.returncode}.\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    out = completed.stdout
+    # SRC must resolve to the repo root, not its parent.
+    assert f"SRC: {REPO_ROOT}" in out, (
+        f"DryRun must print SRC equal to repo root; got:\n{out}"
+    )
+    assert "Test profile: fast" in out
+    # No mirror / install / build / restart should have run.
+    for forbidden in (
+        "Mirroring repo to deployment folder",
+        "Installing backend dependencies",
+        "Building frontend",
+        "Starting backend",
+    ):
+        assert forbidden not in out, (
+            f"DryRun must not execute step: {forbidden!r}\n{out}"
+        )
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="DryRun behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_dry_run_no_args_defaults_to_full(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        ["cmd.exe", "/c", str(WRAPPER_BAT), "-DryRun"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    out = completed.stdout
+    assert f"SRC: {REPO_ROOT}" in out
+    assert "Test profile: full" in out
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="DryRun behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_dry_run_profile_alias_works(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-Profile",
+            "fast",
+            "-DryRun",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "Test profile: fast" in completed.stdout
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="DryRun behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_rejects_unknown_profile(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+            "notaprofile",
+            "-DryRun",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 64, completed.stdout + completed.stderr
+    assert "Unknown test profile" in completed.stdout
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="DryRun behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_rejects_missing_testprofile_value(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 64, completed.stdout + completed.stderr
+    assert "-TestProfile requires a value" in completed.stdout
