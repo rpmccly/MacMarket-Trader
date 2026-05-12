@@ -280,3 +280,80 @@ def test_haco_chart_requires_auth() -> None:
     client = TestClient(app)
     response = client.post("/charts/haco", json={"symbol": "AAPL", "bars": _bars()})
     assert response.status_code == 401
+
+
+def test_haco_chart_defaults_history_range_to_1Y() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/haco",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "AAPL", "timeframe": "1D", "bars": _bars()},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "1Y"
+    assert payload["lookback_days"] == 366
+    assert payload["bars_returned"] == len(_bars())
+
+
+def test_haco_chart_accepts_supported_history_ranges() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    expected = {"1M": 31, "3M": 93, "6M": 186, "1Y": 366, "2Y": 732, "5Y": 1830}
+    for range_id, lookback_days in expected.items():
+        response = client.post(
+            "/charts/haco",
+            headers={"Authorization": "Bearer user-token"},
+            json={
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars": _bars(),
+                "history_range": range_id,
+            },
+        )
+        assert response.status_code == 200, range_id
+        payload = response.json()
+        assert payload["history_range"] == range_id
+        assert payload["lookback_days"] == lookback_days
+
+
+def test_haco_chart_falls_back_to_1Y_on_invalid_history_range() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/haco",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1D",
+            "bars": _bars(),
+            "history_range": "garbage",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "1Y"
+    assert payload["lookback_days"] == 366
+
+
+def test_haco_chart_metadata_includes_lookback_and_bars_returned() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/haco",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1D",
+            "bars": _bars(),
+            "history_range": "2Y",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "2Y"
+    assert payload["lookback_days"] == 732
+    assert payload["bars_returned"] >= len(payload["candles"])
+    # The chart route always echoes the resolved range as plain JSON.
+    assert isinstance(payload["bars_returned"], int)

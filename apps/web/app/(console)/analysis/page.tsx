@@ -12,6 +12,13 @@ import { ExpectedRangeVisualization } from "@/components/options/expected-range-
 import { MetricLabel } from "@/components/ui/metric-help";
 import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import { ChartHistoryRangeSelect } from "@/components/charts/chart-history-range-select";
+import {
+  defaultChartHistoryRange,
+  readChartHistoryRangeFromStorage,
+  writeChartHistoryRangeToStorage,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { isE2EAuthBypassEnabled } from "@/lib/e2e-auth";
@@ -271,6 +278,15 @@ export default function Page() {
   const [feedback, setFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message: string }>({ state: "idle", message: "" });
   const [workbenchState, setWorkbenchState] = useState<WorkbenchState>("auth_initializing");
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  // Shared chart history range — passed to every chart fetch on this
+  // page. Persists via ``macmarket.chart.historyRange`` so every
+  // chart surface inherits the operator's preference.
+  const [chartHistoryRange, setChartHistoryRange] = useState<ChartHistoryRangeId>(
+    defaultChartHistoryRange(),
+  );
+  useEffect(() => {
+    setChartHistoryRange(readChartHistoryRangeFromStorage());
+  }, []);
   const e2eBypass = isE2EAuthBypassEnabled();
   const authReady = e2eBypass || (isLoaded && isSignedIn);
   const guidedState = useMemo(() => parseGuidedFlowState(searchParams), [searchParams]);
@@ -318,7 +334,7 @@ export default function Page() {
         setSource(setupPayload.workflow_source || "workflow source pending");
       }
 
-      const payload = await fetchHacoChart({ symbol: nextSymbol, timeframe: nextTimeframe, include_heikin_ashi: nextStrategy === "HACO Context" });
+      const payload = await fetchHacoChart({ symbol: nextSymbol, timeframe: nextTimeframe, include_heikin_ashi: nextStrategy === "HACO Context", history_range: chartHistoryRange });
       setChartPayload(payload);
       const workflowSource = payload.fallback_mode ? `fallback (${payload.data_source})` : payload.data_source;
       setSource(workflowSource || "workflow source pending");
@@ -332,7 +348,7 @@ export default function Page() {
       setMomentumLoading(true);
       setMomentumError(null);
       try {
-        const momentum = await fetchMomentumChart({ symbol: nextSymbol, timeframe: nextTimeframe });
+        const momentum = await fetchMomentumChart({ symbol: nextSymbol, timeframe: nextTimeframe, history_range: chartHistoryRange });
         setMomentumPayload(momentum);
       } catch (momentumErr) {
         if (momentumErr instanceof Error && momentumErr.message === "AUTH_NOT_READY") {
@@ -780,6 +796,19 @@ export default function Page() {
         ? <EmptyState title="Auth initializing" hint="Waiting for authenticated session before loading protected market context." />
         : null}
       {workbenchState === "hard_failure" ? <ErrorState title="Analysis failed" hint="Retry analysis after checking provider health and auth state." /> : null}
+      <div className="op-row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <ChartHistoryRangeSelect
+          value={chartHistoryRange}
+          onChange={(next) => {
+            setChartHistoryRange(next);
+            writeChartHistoryRangeToStorage(next);
+            // Trigger a refetch with the new range against the currently
+            // applied symbol/timeframe/strategy.
+            void runAnalysis(appliedSymbol, appliedMarketMode, appliedTimeframe, appliedStrategy);
+          }}
+          testId="analysis-history-range-select"
+        />
+      </div>
       <WorkflowChart
         chartPayload={chartPayload}
         storageKey={STORAGE_KEY}

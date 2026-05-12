@@ -5,6 +5,7 @@ import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, StatusBadge }
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { buildIndicatorProvenance, strategyFitText } from "@/lib/analyze-helpers";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import { readChartHistoryRangeFromStorage } from "@/lib/chart-history-range";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 
 type ScoreboardEntry = {
@@ -60,7 +61,11 @@ export default function AnalyzePage() {
     setMomentumLoading(true);
     setMomentumError(null);
     try {
-      const momentum = await fetchMomentumChart({ symbol, timeframe: "1D" });
+      const momentum = await fetchMomentumChart({
+        symbol,
+        timeframe: "1D",
+        history_range: readChartHistoryRangeFromStorage(),
+      });
       setMomentumPayload(momentum);
     } catch (momentumErr) {
       const message = momentumErr instanceof Error ? momentumErr.message : "Momentum context unavailable.";

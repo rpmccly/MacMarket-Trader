@@ -2061,6 +2061,26 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Chart history-range controls (operator UX)
+
+Every chart surface in the app — the Momentum Intelligence workspace,
+the HACO workspace, the Recommendation detail chart context, and the
+Analysis Strategy Workbench — exposes an explicit **History range**
+selector (`1M` / `3M` / `6M` / `1Y` / `2Y` / `5Y`, default `1Y`). The
+selected range is sent to `POST /charts/momentum` and `POST /charts/haco`
+as `history_range` and echoed on the response alongside `lookback_days`
+and `bars_returned`. Selection is persisted via
+`macmarket.chart.historyRange` so every chart surface inherits the same
+operator preference.
+
+The selector is display / research context only. It does **not** affect
+ranking math, queue sorting, recommendation approval, paper-order
+behavior, replay behavior, options-preview behavior, Momentum indicator
+math, or Phase C True Momentum strategy preview / evidence behavior.
+
+See [`docs/chart-history-ranges.md`](chart-history-ranges.md) for the
+full specification.
+
 ## Phase C2.2 — live B8 outcome linkage + Ranked queue scroll polish
 
 Phase C2.2 fixes the deployed-state mismatch where the Phase C2

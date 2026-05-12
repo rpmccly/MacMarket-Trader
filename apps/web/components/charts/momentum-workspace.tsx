@@ -15,6 +15,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { Card, ErrorState, StatusBadge } from "@/components/operator-ui";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
+import { ChartHistoryRangeSelect } from "@/components/charts/chart-history-range-select";
+import {
+  defaultChartHistoryRange,
+  readChartHistoryRangeFromStorage,
+  writeChartHistoryRangeToStorage,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
 import {
   describeHigherTimeframeSource,
   describeParityStatus,
@@ -77,6 +84,9 @@ function PanelHeading({ title, hint }: { title: string; hint: string }) {
 export function MomentumWorkspace() {
   const [symbol, setSymbol] = useState("AAPL");
   const [timeframe, setTimeframe] = useState<Timeframe>("1D");
+  const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
+    defaultChartHistoryRange(),
+  );
   const [data, setData] = useState<MomentumChartPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,11 +97,22 @@ export function MomentumWorkspace() {
   const scoreRef = useRef<HTMLDivElement | null>(null);
   const thrustRef = useRef<HTMLDivElement | null>(null);
 
-  async function load() {
+  // Lazy-hydrate the persisted history range on mount so all chart
+  // surfaces share the same operator preference via
+  // ``macmarket.chart.historyRange``.
+  useEffect(() => {
+    setHistoryRange(readChartHistoryRangeFromStorage());
+  }, []);
+
+  async function load(overrideHistoryRange?: ChartHistoryRangeId) {
     setLoading(true);
     setError(null);
     try {
-      const payload = await fetchMomentumChart({ symbol, timeframe });
+      const payload = await fetchMomentumChart({
+        symbol,
+        timeframe,
+        history_range: overrideHistoryRange ?? historyRange,
+      });
       setData(payload);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load Momentum chart.";
@@ -101,8 +122,15 @@ export function MomentumWorkspace() {
     }
   }
 
+  function handleHistoryRangeChange(next: ChartHistoryRangeId) {
+    setHistoryRange(next);
+    writeChartHistoryRangeToStorage(next);
+    void load(next);
+  }
+
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -271,6 +299,12 @@ export function MomentumWorkspace() {
               ))}
             </select>
           </label>
+          <ChartHistoryRangeSelect
+            value={historyRange}
+            onChange={handleHistoryRangeChange}
+            disabled={loading}
+            testId="momentum-history-range-select"
+          />
           <button
             type="button"
             aria-label="Run Momentum analysis"

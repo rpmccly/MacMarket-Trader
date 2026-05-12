@@ -152,3 +152,107 @@ def test_momentum_chart_marker_indices_align_to_candles_and_use_context_only_tex
         for bad in forbidden_substrings:
             assert bad not in lowered, f"marker text {marker.text!r} contains action verb {bad!r}"
         assert marker.direction in {"bullish", "bearish", "warning"}
+
+
+def test_momentum_chart_defaults_history_range_to_1Y() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "AAPL", "timeframe": "1D", "bars": _daily_bars()},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "1Y"
+    assert payload["lookback_days"] == 366
+    assert payload["bars_returned"] == len(_daily_bars())
+
+
+def test_momentum_chart_accepts_supported_history_ranges() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    expected = {"1M": 31, "3M": 93, "6M": 186, "1Y": 366, "2Y": 732, "5Y": 1830}
+    for range_id, lookback_days in expected.items():
+        response = client.post(
+            "/charts/momentum",
+            headers={"Authorization": "Bearer user-token"},
+            json={
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars": _daily_bars(),
+                "history_range": range_id,
+            },
+        )
+        assert response.status_code == 200, range_id
+        payload = response.json()
+        assert payload["history_range"] == range_id
+        assert payload["lookback_days"] == lookback_days
+
+
+def test_momentum_chart_falls_back_to_1Y_on_invalid_history_range() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1D",
+            "bars": _daily_bars(),
+            "history_range": "garbage",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "1Y"
+    assert payload["lookback_days"] == 366
+
+
+def test_momentum_chart_metadata_includes_bars_returned_and_lookback_days() -> None:
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1D",
+            "bars": _daily_bars(),
+            "history_range": "5Y",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["history_range"] == "5Y"
+    assert payload["lookback_days"] == 1830
+    assert payload["bars_returned"] >= len(payload["candles"])
+    assert isinstance(payload["bars_returned"], int)
+
+
+def test_chart_history_range_helpers_pure_module() -> None:
+    """Pure helper tests that mirror the frontend lib + protect the
+    backend allowlist from drift."""
+    from macmarket_trader.domain.schemas import (
+        CHART_HISTORY_RANGE_LOOKBACK_DAYS,
+        DEFAULT_CHART_HISTORY_RANGE,
+        chart_history_range_bar_limit,
+        chart_history_range_to_lookback_days,
+    )
+
+    assert DEFAULT_CHART_HISTORY_RANGE == "1Y"
+    assert CHART_HISTORY_RANGE_LOOKBACK_DAYS["1M"] == 31
+    assert CHART_HISTORY_RANGE_LOOKBACK_DAYS["1Y"] == 366
+    assert CHART_HISTORY_RANGE_LOOKBACK_DAYS["5Y"] == 1830
+    # Unknown values fall back to 1Y.
+    assert chart_history_range_to_lookback_days("garbage") == 366
+    assert chart_history_range_to_lookback_days(None) == 366
+    # Bar-limit scales with the range for daily bars.
+    assert chart_history_range_bar_limit("1D", "1M") == max(31, 60)
+    assert chart_history_range_bar_limit("1D", "5Y") == 1830
+    assert chart_history_range_bar_limit("1D", "5Y") > chart_history_range_bar_limit(
+        "1D", "1Y"
+    )
+    # Intraday limits are bounded.
+    assert chart_history_range_bar_limit("1H", "5Y") <= 4000
+    assert chart_history_range_bar_limit("4H", "5Y") <= 2000

@@ -21,6 +21,13 @@ import { MomentumImpactReview } from "@/components/recommendations/momentum-impa
 import { MomentumTrialJournal } from "@/components/recommendations/momentum-trial-journal";
 import type { MomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
 import type { MomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
+import { ChartHistoryRangeSelect } from "@/components/charts/chart-history-range-select";
+import {
+  defaultChartHistoryRange,
+  readChartHistoryRangeFromStorage,
+  writeChartHistoryRangeToStorage,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
 import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
@@ -497,6 +504,21 @@ export default function RecommendationsPage() {
   const [b8Snapshot, setB8Snapshot] = useState<MomentumTrialSnapshot | null>(null);
   const [b8OutcomeReview, setB8OutcomeReview] =
     useState<MomentumTrialOutcomeReview | null>(null);
+
+  // Shared chart history range — passed to every chart-context fetch
+  // on this page (HACO context chart + Momentum context chart).
+  // Persists via ``macmarket.chart.historyRange`` so every chart
+  // surface in the app inherits the operator's preference.
+  const [chartHistoryRange, setChartHistoryRange] = useState<ChartHistoryRangeId>(
+    defaultChartHistoryRange(),
+  );
+  useEffect(() => {
+    setChartHistoryRange(readChartHistoryRangeFromStorage());
+  }, []);
+  const handleChartHistoryRangeChange = (next: ChartHistoryRangeId) => {
+    setChartHistoryRange(next);
+    writeChartHistoryRangeToStorage(next);
+  };
 
   const prefill = useMemo(() => parseRecommendationSearchParams(searchParams), [searchParams]);
   const guidedState = useMemo(() => parseGuidedFlowState(searchParams), [searchParams]);
@@ -1013,7 +1035,7 @@ export default function RecommendationsPage() {
         setChartPayload(null);
         return;
       }
-      const payload = await fetchHacoChart({ symbol: chartSymbol, timeframe, include_heikin_ashi: false });
+      const payload = await fetchHacoChart({ symbol: chartSymbol, timeframe, include_heikin_ashi: false, history_range: chartHistoryRange });
       if (cancelled) return;
       if (isOptionsPreviewMode && payload.fallback_mode) {
         setChartPayload(null);
@@ -1025,7 +1047,7 @@ export default function RecommendationsPage() {
     return () => {
       cancelled = true;
     };
-  }, [isOptionsPreviewMode, optionsPreview?.symbol, optionsPreview?.timeframe, previewSymbol, previewFallback, selectedQueue?.symbol, selectedQueue?.timeframe, selectedRecommendation?.symbol, selectedRecommendation?.id, selectedQueueKey, fallbackDerived]);
+  }, [isOptionsPreviewMode, optionsPreview?.symbol, optionsPreview?.timeframe, previewSymbol, previewFallback, selectedQueue?.symbol, selectedQueue?.timeframe, selectedRecommendation?.symbol, selectedRecommendation?.id, selectedQueueKey, fallbackDerived, chartHistoryRange]);
 
   useEffect(() => {
     // Phase A2/A3: Momentum Intelligence is deterministic context only —
@@ -1045,7 +1067,7 @@ export default function RecommendationsPage() {
       setSelectedMomentumLoading(true);
       setSelectedMomentumError(null);
       try {
-        const payload = await fetchMomentumChart({ symbol: momentumSymbol, timeframe });
+        const payload = await fetchMomentumChart({ symbol: momentumSymbol, timeframe, history_range: chartHistoryRange });
         if (cancelled) return;
         setSelectedMomentumPayload(payload);
       } catch (err) {
@@ -1073,6 +1095,7 @@ export default function RecommendationsPage() {
     selectedRecommendation?.symbol,
     selectedRecommendation?.id,
     selectedQueueKey,
+    chartHistoryRange,
   ]);
 
   const activeRecommendation = useMemo(() => {
@@ -1888,9 +1911,14 @@ export default function RecommendationsPage() {
       </div> : null}
 
       {showExecutionCtas ? <Card title="Chart context (source-matched)">
-        <div className="op-row" style={{ marginBottom: 8 }}>
+        <div className="op-row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <StatusBadge tone={fallbackDerived ? "warn" : "good"}>workflow source: {selectedSource}</StatusBadge>
           {fallbackDerived ? <StatusBadge tone="warn">Chart overlays disabled to avoid mixed provider/fallback context.</StatusBadge> : null}
+          <ChartHistoryRangeSelect
+            value={chartHistoryRange}
+            onChange={handleChartHistoryRangeChange}
+            testId="recommendations-history-range-select"
+          />
         </div>
         {fallbackDerived ? (
           <EmptyState title="Chart overlays disabled" hint="Selected queue/recommendation was generated from fallback bars, so provider-backed chart overlays stay disabled." />

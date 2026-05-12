@@ -24,6 +24,63 @@ def _validated_symbol(value: object, *, field_name: str = "symbol") -> str:
     return symbol
 
 
+# ── Chart history range -----------------------------------------------------
+#
+# Shared between the HACO and Momentum chart endpoints. Lets the operator
+# request a wider window of historical bars (1M / 3M / 6M / 1Y / 2Y / 5Y)
+# so the chart can pan farther back into loaded history. Mirrors the
+# frontend constants in ``apps/web/lib/chart-history-range.ts``.
+
+DEFAULT_CHART_HISTORY_RANGE = "1Y"
+
+CHART_HISTORY_RANGE_LOOKBACK_DAYS: dict[str, int] = {
+    "1M": 31,
+    "3M": 93,
+    "6M": 186,
+    "1Y": 366,
+    "2Y": 732,
+    "5Y": 1830,
+}
+
+
+def _normalize_chart_history_range(value: object) -> str:
+    """Coerce a chart history-range id to the canonical allowlisted form.
+
+    Unknown / malformed values fall back to ``DEFAULT_CHART_HISTORY_RANGE``
+    so the chart endpoint never errors on a malformed history_range — the
+    chart is research-only context and should always render *some* history.
+    """
+    if not value:
+        return DEFAULT_CHART_HISTORY_RANGE
+    candidate = str(value).strip().upper()
+    if candidate in CHART_HISTORY_RANGE_LOOKBACK_DAYS:
+        return candidate
+    return DEFAULT_CHART_HISTORY_RANGE
+
+
+def chart_history_range_to_lookback_days(value: object) -> int:
+    """Return the lookback day count for a normalized history-range id."""
+    return CHART_HISTORY_RANGE_LOOKBACK_DAYS[_normalize_chart_history_range(value)]
+
+
+def chart_history_range_bar_limit(timeframe: str, history_range: object) -> int:
+    """Return the provider bar-fetch limit for a (timeframe, range) pair.
+
+    1D bars consume one calendar day per bar (trading days only — the
+    provider returns ~70% of the calendar window). 1H / 4H bars
+    require more bars per calendar day; we cap intraday limits so the
+    provider call stays bounded.
+    """
+    days = chart_history_range_to_lookback_days(history_range)
+    tf = str(timeframe or "1D").strip().upper()
+    if tf == "1H":
+        return min(max(days * 7, 400), 4000)
+    if tf == "4H":
+        return min(max(days * 2, 200), 2000)
+    # 1D and any other future timeframe: one bar per trading day.
+    return max(days, 60)
+
+
 class Bar(BaseModel):
     date: date
     timestamp: datetime | None = None
@@ -131,6 +188,12 @@ class HacoChartRequest(BaseModel):
     timeframe: str = "1D"
     include_heikin_ashi: bool = True
     bars: list[Bar] = Field(default_factory=list, max_length=500)
+    # Chart history range — operator-selectable window of historical
+    # bars to request (1M / 3M / 6M / 1Y / 2Y / 5Y). Default 1Y.
+    # Invalid values fall back to 1Y; the chart route never errors on
+    # a malformed history_range value because this is research-only
+    # context and any rendered chart should still show *some* history.
+    history_range: str = "1Y"
 
     @field_validator("symbol")
     @classmethod
@@ -144,6 +207,11 @@ class HacoChartRequest(BaseModel):
         if timeframe not in {"1D", "1H", "4H"}:
             raise ValueError("timeframe must be one of: 1D, 1H, 4H")
         return timeframe
+
+    @field_validator("history_range")
+    @classmethod
+    def _normalize_history_range(cls, value: str) -> str:
+        return _normalize_chart_history_range(value)
 
 
 class HacoChartExplanation(BaseModel):
@@ -172,6 +240,12 @@ class HacoChartPayload(BaseModel):
     rth_bucket_count: int | None = None
     first_bar_timestamp: str | None = None
     last_bar_timestamp: str | None = None
+    # Chart history-range echo. Operators can pan farther back when the
+    # selected range is wider. These never affect ranking, scoring,
+    # approval, paper-order, or strategy-family behavior.
+    history_range: str | None = None
+    lookback_days: int | None = None
+    bars_returned: int | None = None
 
 
 class TradeSetup(BaseModel):
@@ -1316,6 +1390,11 @@ class MomentumChartRequest(BaseModel):
     bars: list[Bar] = Field(default_factory=list, max_length=500)
     higher_timeframe_bars: list[Bar] = Field(default_factory=list, max_length=500)
     include_markers: bool = True
+    # Chart history range — operator-selectable window of historical
+    # bars to request (1M / 3M / 6M / 1Y / 2Y / 5Y). Default 1Y.
+    # Invalid values fall back to 1Y so a malformed request still
+    # renders a usable chart context.
+    history_range: str = "1Y"
 
     @field_validator("symbol")
     @classmethod
@@ -1329,6 +1408,11 @@ class MomentumChartRequest(BaseModel):
         if timeframe not in {"1D", "1H", "4H"}:
             raise ValueError("timeframe must be one of: 1D, 1H, 4H")
         return timeframe
+
+    @field_validator("history_range")
+    @classmethod
+    def _normalize_history_range(cls, value: str) -> str:
+        return _normalize_chart_history_range(value)
 
 
 class MomentumRankingStatus(BaseModel):
@@ -1459,6 +1543,10 @@ class MomentumChartPayload(BaseModel):
     higher_timeframe_source: str = "derived_from_chart_bars"
     higher_timeframe: str | None = None
     parity_status: str = "pending_thinkorswim_fixture_validation"
+    # Chart history-range echo (same meaning as on HacoChartPayload).
+    history_range: str | None = None
+    lookback_days: int | None = None
+    bars_returned: int | None = None
     calculation_notes: list[str] = Field(default_factory=list)
 
 

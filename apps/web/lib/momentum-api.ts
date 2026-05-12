@@ -1,4 +1,8 @@
 import type { ChartTime } from "@/lib/haco-api";
+import {
+  validateChartHistoryRange,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
 
 export type { ChartTime } from "@/lib/haco-api";
 
@@ -23,6 +27,9 @@ export type MomentumChartRequest = {
   bars?: MomentumBarInput[];
   higher_timeframe_bars?: MomentumBarInput[];
   include_markers?: boolean;
+  /** Operator-selected chart history range (1M / 3M / 6M / 1Y / 2Y / 5Y).
+   *  Defaults to 1Y on the backend when omitted. */
+  history_range?: ChartHistoryRangeId | string | null;
 };
 
 export type MomentumLinePoint = {
@@ -132,15 +139,25 @@ export type MomentumChartPayload = {
   higher_timeframe?: string | null;
   parity_status: string;
   calculation_notes: string[];
+  /** Echoed by the chart route — the resolved history range and the
+   *  trailing bar count the operator can now pan into. */
+  history_range?: string | null;
+  lookback_days?: number | null;
+  bars_returned?: number | null;
 };
 
 export async function fetchMomentumChart(request: MomentumChartRequest): Promise<MomentumChartPayload> {
+  const { history_range, ...rest } = request;
+  const body = {
+    ...rest,
+    history_range: validateChartHistoryRange(history_range ?? undefined),
+  };
   const response = await fetch("/api/charts/momentum", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     cache: "no-store",
     credentials: "include",
   });

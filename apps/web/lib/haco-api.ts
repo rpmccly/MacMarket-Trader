@@ -1,3 +1,8 @@
+import {
+  validateChartHistoryRange,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
+
 export type ChartTime = string | number;
 
 export type HacoChartRequest = {
@@ -18,6 +23,9 @@ export type HacoChartRequest = {
     source_timeframe?: string | null;
     provider?: string | null;
   }>;
+  /** Operator-selected chart history range (1M / 3M / 6M / 1Y / 2Y / 5Y).
+   *  Defaults to 1Y on the backend when omitted. */
+  history_range?: ChartHistoryRangeId | string | null;
 };
 
 export type HacoChartPayload = {
@@ -44,15 +52,25 @@ export type HacoChartPayload = {
   rth_bucket_count?: number | null;
   first_bar_timestamp?: string | null;
   last_bar_timestamp?: string | null;
+  /** Echoed by the chart route — the resolved history range and the
+   *  trailing bar count the operator can now pan into. */
+  history_range?: string | null;
+  lookback_days?: number | null;
+  bars_returned?: number | null;
 };
 
 export async function fetchHacoChart(request: HacoChartRequest): Promise<HacoChartPayload> {
+  const { history_range, ...rest } = request;
+  const body = {
+    ...rest,
+    history_range: validateChartHistoryRange(history_range ?? undefined),
+  };
   const response = await fetch("/api/charts/haco", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     cache: "no-store",
     credentials: "include",
   });

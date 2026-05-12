@@ -48,7 +48,83 @@ describe("fetchMomentumChart", () => {
     expect(init?.cache).toBe("no-store");
     expect(init?.credentials).toBe("include");
     expect(typeof init?.body).toBe("string");
-    expect(JSON.parse(String(init?.body))).toEqual({ symbol: "AAPL", timeframe: "1D" });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      symbol: "AAPL",
+      timeframe: "1D",
+      history_range: "1Y",
+    });
+  });
+
+  it("forwards an operator-selected history_range through to the chart route", async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          symbol: "AAPL",
+          timeframe: "1D",
+          candles: [],
+          true_momentum_line: [],
+          true_momentum_ema_line: [],
+          hilo_slowd_line: [],
+          hilo_slowd_x_line: [],
+          hilo_thrust_strip: [],
+          score_strip: [],
+          markers: [],
+          latest_snapshot: null,
+          explanation: null,
+          data_source: "polygon",
+          fallback_mode: false,
+          higher_timeframe_source: "derived_from_chart_bars",
+          parity_status: "pending_thinkorswim_fixture_validation",
+          calculation_notes: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    await fetchMomentumChart({
+      symbol: "AAPL",
+      timeframe: "1D",
+      history_range: "5Y",
+    });
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      symbol: "AAPL",
+      timeframe: "1D",
+      history_range: "5Y",
+    });
+  });
+
+  it("normalizes an invalid history_range to the default before sending", async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          symbol: "AAPL",
+          timeframe: "1D",
+          candles: [],
+          true_momentum_line: [],
+          true_momentum_ema_line: [],
+          hilo_slowd_line: [],
+          hilo_slowd_x_line: [],
+          hilo_thrust_strip: [],
+          score_strip: [],
+          markers: [],
+          latest_snapshot: null,
+          explanation: null,
+          data_source: "polygon",
+          fallback_mode: false,
+          higher_timeframe_source: "derived_from_chart_bars",
+          parity_status: "pending_thinkorswim_fixture_validation",
+          calculation_notes: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    await fetchMomentumChart({
+      symbol: "AAPL",
+      timeframe: "1D",
+      history_range: "garbage" as never,
+    });
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(String(init?.body)).history_range).toBe("1Y");
   });
 
   it("maps HTTP 425 to AUTH_NOT_READY", async () => {

@@ -12,6 +12,8 @@ from macmarket_trader.domain.schemas import (
     HacoChartRequest,
     MomentumChartPayload,
     MomentumChartRequest,
+    chart_history_range_bar_limit,
+    chart_history_range_to_lookback_days,
 )
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import DailyBarRepository
@@ -41,7 +43,13 @@ def _bar_metadata(bars: list[Bar], *, source: str, timeframe: str, fallback_mode
     }
 
 
-def _resolve_bars(symbol: str, timeframe: str, request_bars: list[Bar]) -> tuple[list[Bar], str, bool, dict[str, object]]:
+def _resolve_bars(
+    symbol: str,
+    timeframe: str,
+    request_bars: list[Bar],
+    *,
+    history_range: str = "1Y",
+) -> tuple[list[Bar], str, bool, dict[str, object]]:
     if request_bars:
         return request_bars, "request_bars", False, _bar_metadata(
             request_bars,
@@ -50,8 +58,7 @@ def _resolve_bars(symbol: str, timeframe: str, request_bars: list[Bar]) -> tuple
             fallback_mode=False,
         )
 
-    _limit_by_tf = {"1H": 400, "4H": 200, "1D": 120}
-    limit = _limit_by_tf.get(timeframe.upper(), 120)
+    limit = chart_history_range_bar_limit(timeframe, history_range)
 
     provider_bars, provider_source, provider_fallback = market_data_service.historical_bars(
         symbol=symbol,
@@ -97,10 +104,30 @@ def _resolve_bars(symbol: str, timeframe: str, request_bars: list[Bar]) -> tuple
     ))
 
 
+def _attach_history_range_metadata(
+    payload, *, history_range: str, lookback_days: int, bars_returned: int
+):
+    """Stamp the operator-selected history range + lookback onto the
+    chart payload. Pure read-only echo — never mutates ranking,
+    scoring, approval, or paper-order behavior."""
+    try:
+        payload.history_range = history_range
+        payload.lookback_days = lookback_days
+        payload.bars_returned = bars_returned
+    except Exception:
+        # The chart route must never error on a metadata stamp. If the
+        # payload model is missing these fields the result still
+        # serializes — extra fields are tolerated on the response side.
+        pass
+    return payload
+
+
 @router.post("/haco", response_model=HacoChartPayload)
 def get_haco_chart(req: HacoChartRequest, _user=Depends(require_approved_user)) -> HacoChartPayload:
-    bars, data_source, fallback_mode, metadata = _resolve_bars(req.symbol, req.timeframe, req.bars)
-    return service.build_payload(
+    bars, data_source, fallback_mode, metadata = _resolve_bars(
+        req.symbol, req.timeframe, req.bars, history_range=req.history_range
+    )
+    payload = service.build_payload(
         symbol=req.symbol,
         timeframe=req.timeframe,
         bars=bars,
@@ -109,12 +136,20 @@ def get_haco_chart(req: HacoChartRequest, _user=Depends(require_approved_user)) 
         fallback_mode=fallback_mode,
         metadata=metadata,
     )
+    return _attach_history_range_metadata(
+        payload,
+        history_range=req.history_range,
+        lookback_days=chart_history_range_to_lookback_days(req.history_range),
+        bars_returned=len(bars),
+    )
 
 
 @router.post("/momentum", response_model=MomentumChartPayload)
 def get_momentum_chart(req: MomentumChartRequest, _user=Depends(require_approved_user)) -> MomentumChartPayload:
-    bars, data_source, fallback_mode, metadata = _resolve_bars(req.symbol, req.timeframe, req.bars)
-    return momentum_service.build_payload(
+    bars, data_source, fallback_mode, metadata = _resolve_bars(
+        req.symbol, req.timeframe, req.bars, history_range=req.history_range
+    )
+    payload = momentum_service.build_payload(
         symbol=req.symbol,
         timeframe=req.timeframe,
         bars=bars,
@@ -123,4 +158,10 @@ def get_momentum_chart(req: MomentumChartRequest, _user=Depends(require_approved
         data_source=data_source,
         fallback_mode=fallback_mode,
         metadata=metadata,
+    )
+    return _attach_history_range_metadata(
+        payload,
+        history_range=req.history_range,
+        lookback_days=chart_history_range_to_lookback_days(req.history_range),
+        bars_returned=len(bars),
     )

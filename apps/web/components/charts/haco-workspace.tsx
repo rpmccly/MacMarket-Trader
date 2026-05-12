@@ -5,9 +5,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Card, ErrorState, StatusBadge } from "@/components/operator-ui";
 import { IndicatorSelector } from "@/components/charts/indicator-selector";
+import { ChartHistoryRangeSelect } from "@/components/charts/chart-history-range-select";
 import { normalizeSelection, type IndicatorId } from "@/lib/indicator-framework";
 import { applyIndicatorsToChart, FIRST_CLASS_WORKFLOW_INDICATORS, HACO_CONTEXT_SUPPORTED_INDICATORS } from "@/lib/chart-indicators";
 import { fetchHacoChart, type HacoChartPayload } from "@/lib/haco-api";
+import {
+  defaultChartHistoryRange,
+  readChartHistoryRangeFromStorage,
+  writeChartHistoryRangeToStorage,
+  type ChartHistoryRangeId,
+} from "@/lib/chart-history-range";
 
 const STORAGE_KEY = "macmarket-indicators-haco";
 const HACO_WORKSPACE_SUPPORTED_INDICATORS: IndicatorId[] = [...FIRST_CLASS_WORKFLOW_INDICATORS, ...HACO_CONTEXT_SUPPORTED_INDICATORS];
@@ -21,6 +28,9 @@ function formatSessionPolicy(value: string | null | undefined): string | null {
 export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [symbol, setSymbol] = useState("AAPL");
   const [timeframe, setTimeframe] = useState("1D");
+  const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
+    defaultChartHistoryRange(),
+  );
   const [data, setData] = useState<HacoChartPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,17 +39,28 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   const hacoltRef = useRef<HTMLDivElement | null>(null);
   const [selectedIndicators, setSelectedIndicators] = useState<IndicatorId[]>([]);
 
-  async function load() {
+  async function load(overrideHistoryRange?: ChartHistoryRangeId) {
     setLoading(true);
     setError(null);
     try {
-      const payload = await fetchHacoChart({ symbol, timeframe, include_heikin_ashi: true });
+      const payload = await fetchHacoChart({
+        symbol,
+        timeframe,
+        include_heikin_ashi: true,
+        history_range: overrideHistoryRange ?? historyRange,
+      });
       setData(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load HACO workspace.");
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleHistoryRangeChange(next: ChartHistoryRangeId) {
+    setHistoryRange(next);
+    writeChartHistoryRangeToStorage(next);
+    void load(next);
   }
 
   useEffect(() => {
@@ -54,8 +75,10 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
       } catch {
         setSelectedIndicators(HACO_WORKSPACE_SUPPORTED_INDICATORS);
       }
+      setHistoryRange(readChartHistoryRangeFromStorage());
     }
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function onIndicatorChange(next: IndicatorId[]) {
@@ -139,6 +162,12 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
       <div className="op-row">
         <label>Symbol <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ marginLeft: 8 }} /></label>
         <label>Timeframe <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} style={{ marginLeft: 8 }}><option value="1D">1D</option><option value="4H">4H</option><option value="1H">1H</option></select></label>
+        <ChartHistoryRangeSelect
+          value={historyRange}
+          onChange={handleHistoryRangeChange}
+          disabled={loading}
+          testId="haco-history-range-select"
+        />
         <button onClick={() => void load()} disabled={loading}>{loading ? "Loading..." : "Run HACO analysis"}</button>
       </div>
 
