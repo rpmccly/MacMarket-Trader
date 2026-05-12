@@ -2061,6 +2061,39 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C3 — research cohort review
+
+Phase C3 layers a local research cohort archive on top of Phase C2.
+Operators archive each captured C2 evidence bundle, the C3 panel rolls
+up family-level previews and B8 outcome counts across sessions, and
+emits a deterministic Markdown / JSON report with a readiness label
+(`insufficient_evidence` / `parity_blocked` / `promising_research` /
+`mixed_research` / `needs_operator_review` /
+`not_recommended_for_activation`). The strongest positive label is
+`promising_research` — Phase C3 never emits "ready for live" or
+"activate now" wording.
+
+Still frontend-only and research-only. No backend write, no DB row,
+no migration, no LLM call, no queue candidates, no ranking math
+change, no approval / promote / save / paper-order / settle / replay /
+options-preview behavior change. Active Phase C remains reserved.
+
+Surfaces:
+
+- Pure helpers: `apps/web/lib/true-momentum-cohort-review.ts`.
+- Reusable component:
+  `apps/web/components/recommendations/true-momentum-cohort-review-panel.tsx`,
+  mounted inside the Phase C2 evidence panel — operators do not need
+  to export / import a C2 bundle manually.
+- LocalStorage key:
+  `macmarket.trueMomentumCohortReview.archive`. Records are deduped by
+  `${queue_signature}::${source_bundle_generated_at}` and stale /
+  corrupt entries are silently replaced with a clean empty archive.
+
+See [`docs/true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
+for the full Phase C3 charter (readiness table, archive behavior,
+export shape, operator workflow).
+
 ## Chart history-range controls (operator UX)
 
 Every chart surface in the app — the Momentum Intelligence workspace,

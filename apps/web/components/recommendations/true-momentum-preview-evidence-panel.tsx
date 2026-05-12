@@ -22,6 +22,7 @@ import {
 } from "@/lib/true-momentum-preview-evidence";
 import { trueMomentumPreviewReasonLabels } from "@/lib/true-momentum-strategy-preview";
 import type { TrueMomentumStrategyPreviewResult } from "@/lib/true-momentum-strategy-preview";
+import { TrueMomentumCohortReviewPanel } from "@/components/recommendations/true-momentum-cohort-review-panel";
 import {
   MOMENTUM_TRIAL_JOURNAL_STORAGE_KEY,
   validateMomentumTrialSnapshot,
@@ -1085,6 +1086,20 @@ export function TrueMomentumPreviewEvidencePanel({
               : "Clipboard unavailable — use Download Markdown instead."}
           </div>
         ) : null}
+
+        {/*
+          Phase C3 — research cohort review. Archives the latest C2
+          bundle locally and summarizes outcomes across sessions. The
+          C3 panel sits inside the C2 evidence panel so the operator
+          gets cohort-level rollups without leaving the Recommendations
+          flow. Research-only — no queue candidates, no approval, no
+          order routing, no paper-order behavior.
+        */}
+        <TrueMomentumCohortReviewPanel
+          currentBundle={livePreview}
+          persistLatest={persistLatest}
+          compact={compact}
+        />
 
         <p
           style={NOTE_STYLE}

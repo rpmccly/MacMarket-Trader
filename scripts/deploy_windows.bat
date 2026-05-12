@@ -3,6 +3,13 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM =========================================================
 REM  MacMarket-Trader - deploy_windows.bat
+REM
+REM  Canonical deploy entrypoint. See docs\deploy-profiles.md
+REM  for the supported test profiles. Default is "full" — the
+REM  full backend pytest + full frontend Vitest + tsc safety
+REM  net used for every production release. Other profiles are
+REM  faster smoke paths for iterative work and must be selected
+REM  explicitly with -TestProfile <profile>.
 REM =========================================================
 
 set "DST=C:\Dashboard\MacMarket-Trader"
@@ -16,7 +23,96 @@ set "RUN_TESTS=1"
 set "RUN_E2E=0"
 set "STRICT_NODE=0"
 
-if not "%~1"=="" set "DST=%~1"
+REM -------- Parse deploy arguments --------
+REM Supports:
+REM   <DST>                              (positional, must come first if used)
+REM   -TestProfile full|fast|frontend|backend|none
+REM   -ForceNoTests                      (required to actually run the "none" profile)
+REM
+REM The default profile is "full". Unknown -TestProfile values fail the
+REM deploy with a clear error before any tests run.
+set "TEST_PROFILE=full"
+set "FORCE_NO_TESTS=0"
+
+:PARSE_ARGS
+if "%~1"=="" goto :PARSE_ARGS_DONE
+if /I "%~1"=="-TestProfile" (
+  if "%~2"=="" (
+    echo [ERROR] -TestProfile requires a value: full^|fast^|frontend^|backend^|none
+    exit /b 64
+  )
+  set "TEST_PROFILE=%~2"
+  shift
+  shift
+  goto :PARSE_ARGS
+)
+if /I "%~1"=="-Profile" (
+  if "%~2"=="" (
+    echo [ERROR] -Profile requires a value: full^|fast^|frontend^|backend^|none
+    exit /b 64
+  )
+  set "TEST_PROFILE=%~2"
+  shift
+  shift
+  goto :PARSE_ARGS
+)
+if /I "%~1"=="-ForceNoTests" (
+  set "FORCE_NO_TESTS=1"
+  shift
+  goto :PARSE_ARGS
+)
+REM Positional DST override (first non-flag arg). Only honoured if DST
+REM has not been set by a flag yet.
+set "DST=%~1"
+shift
+goto :PARSE_ARGS
+:PARSE_ARGS_DONE
+
+REM Normalize test profile to lower-case via a powershell call. Avoids
+REM batch-script case headaches when comparing later. Strict whitelist
+REM enforced below.
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = '%TEST_PROFILE%'; if ($p) { $p.Trim().ToLowerInvariant() } else { 'full' }"`) do set "TEST_PROFILE=%%P"
+if not defined TEST_PROFILE set "TEST_PROFILE=full"
+
+set "VALID_PROFILE=0"
+if /I "%TEST_PROFILE%"=="full"     set "VALID_PROFILE=1"
+if /I "%TEST_PROFILE%"=="fast"     set "VALID_PROFILE=1"
+if /I "%TEST_PROFILE%"=="frontend" set "VALID_PROFILE=1"
+if /I "%TEST_PROFILE%"=="backend"  set "VALID_PROFILE=1"
+if /I "%TEST_PROFILE%"=="none"     set "VALID_PROFILE=1"
+
+if "%VALID_PROFILE%"=="0" (
+  echo [ERROR] Unknown test profile: %TEST_PROFILE%
+  echo [ERROR] Allowed: full ^| fast ^| frontend ^| backend ^| none
+  exit /b 64
+)
+
+if /I "%TEST_PROFILE%"=="none" (
+  if "%FORCE_NO_TESTS%"=="0" (
+    echo [ERROR] The "none" test profile requires -ForceNoTests to run.
+    echo [ERROR] No-test deploy is operator emergency mode. It skips validation and
+    echo [ERROR] should not be used for normal releases.
+    exit /b 64
+  )
+  REM Refuse the no-test path when live trading / broker live env hints
+  REM are present so an operator can never accidentally ship a
+  REM trade-routing change with skipped tests.
+  if /I "%MACMARKET_BROKER_LIVE%"=="1" (
+    echo [ERROR] Refusing -TestProfile none while MACMARKET_BROKER_LIVE=1 is set.
+    exit /b 64
+  )
+  if /I "%BROKER_PROVIDER%"=="alpaca" (
+    echo [ERROR] Refusing -TestProfile none while BROKER_PROVIDER=alpaca is set.
+    exit /b 64
+  )
+  echo.
+  echo =========================================================
+  echo  [WARN] No-test deploy is operator emergency mode. It skips validation
+  echo  [WARN] and should not be used for normal releases. Continuing because
+  echo  [WARN] -ForceNoTests was explicitly supplied.
+  echo =========================================================
+  echo.
+)
 
 for %%I in ("%~dp0..") do set "SRC=%%~fI"
 
@@ -34,11 +130,34 @@ set "RC=0"
 set "KILLPAT_API=*%DST%\.venv\Scripts\python.exe*-m uvicorn*macmarket_trader.api.main:app*"
 set "KILLPAT_WEB=*%DST%\apps\web*next*start*"
 
+REM Per-profile test-plan summary printed before any tests run.
+set "PROFILE_BACKEND_DESC=full backend pytest"
+set "PROFILE_FRONTEND_DESC=full Vitest + tsc"
+if /I "%TEST_PROFILE%"=="fast" (
+  set "PROFILE_BACKEND_DESC=charts + Momentum active guards + Phase C static + deploy temp"
+  set "PROFILE_FRONTEND_DESC=tsc + chart-history-range + Momentum integration + Phase C2 evidence smoke"
+)
+if /I "%TEST_PROFILE%"=="frontend" (
+  set "PROFILE_BACKEND_DESC=skipped"
+  set "PROFILE_FRONTEND_DESC=tsc + full Vitest"
+)
+if /I "%TEST_PROFILE%"=="backend" (
+  set "PROFILE_BACKEND_DESC=full backend pytest"
+  set "PROFILE_FRONTEND_DESC=tsc only"
+)
+if /I "%TEST_PROFILE%"=="none" (
+  set "PROFILE_BACKEND_DESC=SKIPPED (emergency)"
+  set "PROFILE_FRONTEND_DESC=SKIPPED (emergency)"
+)
+
 echo.
 echo =========================================================
 echo Deploying MacMarket-Trader
 echo   SRC: %SRC%
 echo   DST: %DST%
+echo   Test profile: %TEST_PROFILE%   (full remains the default safe path)
+echo   Backend validation: %PROFILE_BACKEND_DESC%
+echo   Frontend validation: %PROFILE_FRONTEND_DESC%
 echo   RUN_TESTS: %RUN_TESTS%
 echo   RUN_E2E : %RUN_E2E%
 echo =========================================================
@@ -178,7 +297,12 @@ if not exist "%DST%\macmarket_trader.db" (
   )
 )
 
-if "%RUN_TESTS%"=="1" (
+set "RUN_BACKEND_TESTS=1"
+if /I "%TEST_PROFILE%"=="frontend" set "RUN_BACKEND_TESTS=0"
+if /I "%TEST_PROFILE%"=="none"     set "RUN_BACKEND_TESTS=0"
+if "%RUN_TESTS%"=="0"              set "RUN_BACKEND_TESTS=0"
+
+if "%RUN_BACKEND_TESTS%"=="1" (
   echo [INFO] Preparing deploy-test temp area...
   REM Best-effort: clean stale macmarket-pytest-deploy entries older than 1 day.
   powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\deploy_test_temp.ps1" -Mode CleanStale -MaxAgeDays 1 >nul 2>&1
@@ -202,11 +326,27 @@ if "%RUN_TESTS%"=="1" (
     if not exist "!DEPLOY_PYTEST_BASETEMP!" mkdir "!DEPLOY_PYTEST_BASETEMP!" >nul 2>&1
   )
 
-  echo [INFO] Running backend tests...
+  echo [INFO] Running backend tests (profile: %TEST_PROFILE%)...
   echo [INFO]   basetemp: !DEPLOY_PYTEST_BASETEMP!
   echo [INFO]   pytest cache provider disabled for deploy run.
-  pytest -q -p no:cacheprovider --basetemp "!DEPLOY_PYTEST_BASETEMP!"
-  set "PYTEST_RC=!ERRORLEVEL!"
+
+  if /I "%TEST_PROFILE%"=="fast" (
+    echo [INFO]   target: charts + Momentum guards + Phase C static + deploy temp
+    pytest -q -p no:cacheprovider --basetemp "!DEPLOY_PYTEST_BASETEMP!" --tb=short ^
+      tests\test_charts_api.py ^
+      tests\test_momentum_charts_api.py ^
+      tests\test_momentum_b64_queue_response_guard.py ^
+      tests\test_momentum_b63_queue_consistency.py ^
+      tests\test_momentum_active_delta_scale.py ^
+      tests\test_true_momentum_strategy_families.py ^
+      tests\test_momentum_phase_closeout.py ^
+      tests\test_deploy_test_temp.py ^
+      tests\test_deploy_profiles.py
+    set "PYTEST_RC=!ERRORLEVEL!"
+  ) else (
+    pytest -q -p no:cacheprovider --basetemp "!DEPLOY_PYTEST_BASETEMP!"
+    set "PYTEST_RC=!ERRORLEVEL!"
+  )
 
   REM Best-effort cleanup after the run. Cleanup failures must not mask the
   REM test result, so we always honour PYTEST_RC for the deploy exit code.
@@ -218,7 +358,13 @@ if "%RUN_TESTS%"=="1" (
     goto :FAIL_POP
   )
 ) else (
-  echo [INFO] Backend tests skipped. Set RUN_TESTS=1 to enable them.
+  if /I "%TEST_PROFILE%"=="frontend" (
+    echo [INFO] Backend tests skipped: -TestProfile frontend.
+  ) else if /I "%TEST_PROFILE%"=="none" (
+    echo [WARN] Backend tests skipped: -TestProfile none (emergency).
+  ) else (
+    echo [INFO] Backend tests skipped. Set RUN_TESTS=1 to enable them.
+  )
 )
 
 if exist "%WEB_DIR%\package.json" (
@@ -250,16 +396,51 @@ if exist "%WEB_DIR%\package.json" (
     goto :FAIL_POP_WEB
   )
 
-  if "%RUN_TESTS%"=="1" (
-    echo [INFO] Running frontend unit tests...
-    call npm test
+  set "RUN_FRONTEND_TESTS=1"
+  set "RUN_FRONTEND_TSC=1"
+  if /I "%TEST_PROFILE%"=="backend"  set "RUN_FRONTEND_TESTS=0"
+  if /I "%TEST_PROFILE%"=="none"     set "RUN_FRONTEND_TESTS=0"
+  if /I "%TEST_PROFILE%"=="none"     set "RUN_FRONTEND_TSC=0"
+  if "%RUN_TESTS%"=="0"              set "RUN_FRONTEND_TESTS=0"
+
+  if "%RUN_FRONTEND_TSC%"=="1" (
+    echo [INFO] Running TypeScript check (tsc --noEmit)...
+    call npx --no-install tsc --noEmit
+    if errorlevel 1 (
+      echo [ERROR] TypeScript check failed.
+      set "RC=1"
+      goto :FAIL_POP_WEB
+    )
+  ) else (
+    echo [WARN] TypeScript check skipped: -TestProfile %TEST_PROFILE%.
+  )
+
+  if "%RUN_FRONTEND_TESTS%"=="1" (
+    if /I "%TEST_PROFILE%"=="fast" (
+      echo [INFO] Running fast frontend Vitest subset...
+      call npx --no-install vitest run ^
+        lib/chart-history-range.test.ts ^
+        components/charts/chart-history-range-select.test.tsx ^
+        lib/momentum-integration.test.ts ^
+        lib/true-momentum-preview-evidence.test.ts ^
+        components/recommendations/true-momentum-preview-evidence-panel.test.tsx
+    ) else (
+      echo [INFO] Running full frontend unit tests...
+      call npm test
+    )
     if errorlevel 1 (
       echo [ERROR] Frontend unit tests failed.
       set "RC=1"
       goto :FAIL_POP_WEB
     )
   ) else (
-    echo [INFO] Frontend unit tests skipped. Set RUN_TESTS=1 to enable them.
+    if /I "%TEST_PROFILE%"=="backend" (
+      echo [INFO] Frontend Vitest skipped: -TestProfile backend.
+    ) else if /I "%TEST_PROFILE%"=="none" (
+      echo [WARN] Frontend Vitest skipped: -TestProfile none (emergency).
+    ) else (
+      echo [INFO] Frontend unit tests skipped. Set RUN_TESTS=1 to enable them.
+    )
   )
 
   if "%RUN_E2E%"=="1" (

@@ -479,6 +479,111 @@ wrapper shows roughly 10 rows at a time before scrolling.
 - Real Thinkorswim fixture parity.
 - Operator authorization before any active Phase C.
 
+## Phase C3 — research cohort review
+
+Phase C3 adds a local research cohort archive on top of Phase C2.
+Operators archive each captured C2 evidence bundle, the C3 panel rolls
+up family-level previews and B8 outcome counts across sessions, and
+exports a deterministic Markdown / JSON report with a readiness label.
+
+Still **frontend-only and research-only**: no backend write, no DB
+row, no migration, no LLM call. No queue candidates. No ranking math
+change. No approval / promote / save / paper-order / settle / replay /
+options-preview behavior change.
+
+### What it does
+
+- `apps/web/lib/true-momentum-cohort-review.ts` — pure helpers:
+  `buildTrueMomentumCohortRecord`, `addTrueMomentumCohortRecord`,
+  `replaceTrueMomentumCohortRecord`, `removeTrueMomentumCohortRecord`,
+  `summarizeTrueMomentumCohortArchive`,
+  `summarizeTrueMomentumFamilyCohort`,
+  `buildTrueMomentumCohortReviewReport`,
+  `classifyTrueMomentumCohortReadiness`,
+  `buildTrueMomentumCohortMarkdown`,
+  `buildTrueMomentumCohortJson`,
+  `validateTrueMomentumCohortArchive`,
+  `sanitizeTrueMomentumCohortNote`,
+  `trueMomentumCohortReadinessLabel`,
+  `trueMomentumCohortReadinessTone`, plus the
+  `macmarket.trueMomentumCohortReview.archive` localStorage key and
+  `phase_c3.v1` archive / report schema versions.
+- `apps/web/components/recommendations/true-momentum-cohort-review-panel.tsx` —
+  reusable `<TrueMomentumCohortReviewPanel currentBundle persistLatest
+  compact initialArchive />` rendered inside the Phase C2 evidence
+  panel. Summary cards (archived sessions / total preview rows /
+  family counts / linked B8 reviews / parity-pending records),
+  per-outcome counts, family rollups, archived record table, plus
+  Add / Export Markdown / Export JSON / Clear / per-row Remove
+  buttons.
+- The Recommendations page does not need to be modified — C3 is
+  mounted by the C2 panel automatically once a bundle exists.
+
+### Readiness statuses
+
+| Status | Meaning |
+|---|---|
+| `insufficient_evidence` | Default. No records, < 3 records, or every outcome is still `unclear`. |
+| `parity_blocked` | Thinkorswim parity is pending across ≥ 50% of archived records. |
+| `promising_research` | ≥ 5 tagged outcomes and positive outcomes lead negatives by ≥ 2. |
+| `mixed_research` | Tagged outcomes exist but balance is neither strongly positive nor strongly negative. |
+| `needs_operator_review` | Negatives ≥ positives but not 2× negatives. |
+| `not_recommended_for_activation` | Negatives ≥ 2× positives across archived records. |
+
+Phase C3 **never** emits "ready for live" or "activate now" wording.
+The strongest positive label is `promising_research` — "research
+evidence supports further review", not "approved".
+
+### Archive behavior
+
+- LocalStorage key: `macmarket.trueMomentumCohortReview.archive`.
+- Records are deduped by `record_id` (default
+  `${queue_signature}::${source_bundle_generated_at}`).
+- Add / remove / replace helpers never mutate the input archive.
+- Stale / corrupt localStorage is ignored and replaced with a clean
+  empty archive on next write.
+- No backend persistence. No DB row. No migration. No LLM call.
+
+### Exports
+
+Markdown report sections (always emitted):
+
+1. Header (`# True Momentum Cohort Review (Phase C3)`) + generated
+   timestamp + schema version + archived session count + readiness
+   status + readiness caveats.
+2. `## Archive summary` — total preview rows, family-level counts,
+   parity-pending records, records-with-outcome-review.
+3. `## Outcome counts (across archived B8 reviews)` — per-tag counts
+   plus tagged-vs-total tally.
+4. `## Family summaries` — one line per planned True Momentum family.
+5. `## Archived records` — table of every archived session
+   (`Captured at`, universe count, preview rows, B8 snapshot status,
+   B8 outcome review status + worked/unclear counts, parity-pending
+   count, review tags).
+6. `## Pending prerequisites for any active Phase C`.
+7. Trailing deterministic guardrail line.
+
+JSON envelope:
+`{ schema_version: "phase_c3.v1", report, archive, deterministic_note }`.
+
+### Operator workflow
+
+1. Refresh the active Momentum queue.
+2. Capture a Phase B7 trial snapshot.
+3. Tag at least one B8 outcome.
+4. Capture a Phase C2 preview evidence bundle.
+5. Press **Add current evidence bundle to cohort archive** inside the
+   Phase C3 panel.
+6. Repeat across a representative cross-sector / cross-regime cohort.
+7. Export Cohort Markdown / Cohort JSON to archive the corpus
+   alongside the per-session B7 / B8 / C2 artifacts.
+
+### Still pending
+
+- Larger accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

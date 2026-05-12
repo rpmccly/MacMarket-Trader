@@ -1275,6 +1275,136 @@ describe("Momentum Intelligence Phase C2.2 — live B8 linkage + scroll polish g
   });
 });
 
+describe("Momentum Intelligence Phase C3 — cohort review guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase C3 lib + panel exist and carry the deterministic cohort copy", () => {
+    const lib = read("lib/true-momentum-cohort-review.ts");
+    const view = read(
+      "components/recommendations/true-momentum-cohort-review-panel.tsx",
+    );
+    expect(lib).toContain("Phase C3");
+    expect(lib).toContain("phase_c3.v1");
+    expect(lib).toContain("buildTrueMomentumCohortRecord");
+    expect(lib).toContain("addTrueMomentumCohortRecord");
+    expect(lib).toContain("removeTrueMomentumCohortRecord");
+    expect(lib).toContain("replaceTrueMomentumCohortRecord");
+    expect(lib).toContain("summarizeTrueMomentumCohortArchive");
+    expect(lib).toContain("classifyTrueMomentumCohortReadiness");
+    expect(lib).toContain("buildTrueMomentumCohortMarkdown");
+    expect(lib).toContain("buildTrueMomentumCohortJson");
+    expect(lib).toContain("validateTrueMomentumCohortArchive");
+    expect(lib).toContain("sanitizeTrueMomentumCohortNote");
+    expect(lib).toContain("macmarket.trueMomentumCohortReview.archive");
+    expect(lib).toContain(
+      "True Momentum cohort review is research-only. It does not generate queue candidates, approve, reject, size, or route trades.",
+    );
+    expect(view).toContain("TrueMomentumCohortReviewPanel");
+    expect(view).toContain("true-momentum-cohort-review");
+    expect(view).toContain("Add current evidence bundle to cohort archive");
+    expect(view).toContain("Export Cohort Markdown");
+    expect(view).toContain("Export Cohort JSON");
+    expect(view).toContain("Clear Archive");
+  });
+
+  it("C2 evidence panel mounts the C3 cohort panel and passes the current bundle", () => {
+    const source = read(
+      "components/recommendations/true-momentum-preview-evidence-panel.tsx",
+    );
+    expect(source).toContain(
+      "@/components/recommendations/true-momentum-cohort-review-panel",
+    );
+    expect(source).toContain("<TrueMomentumCohortReviewPanel");
+    expect(source).toContain("currentBundle={livePreview}");
+  });
+
+  it("Phase C3 surfaces are not imported into order / paper / replay / options-paper routes", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-cohort-review",
+      "@/components/recommendations/true-momentum-cohort-review-panel",
+      "TrueMomentumCohortReviewPanel",
+      "buildTrueMomentumCohortRecord",
+      "buildTrueMomentumCohortReviewReport",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C3 lib / panel do not leak into order / recommendation helper files", () => {
+    const guarded = [
+      "lib/orders-helpers.ts",
+      "lib/api-client.ts",
+      "lib/guided-workflow.ts",
+      "lib/lineage-format.ts",
+      "lib/recommendations.ts",
+      "lib/momentum-impact.ts",
+    ];
+    const patterns = [
+      "@/lib/true-momentum-cohort-review",
+      "@/components/recommendations/true-momentum-cohort-review-panel",
+      "TrueMomentumCohortReviewPanel",
+      "buildTrueMomentumCohortRecord",
+    ];
+    for (const candidate of guarded) {
+      const source = readSafe(candidate);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C3 surfaces avoid forbidden trade-action / queue-generation / approval / order-routing language", () => {
+    const surfaces = [
+      "lib/true-momentum-cohort-review.ts",
+      "components/recommendations/true-momentum-cohort-review-panel.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "promote to recommendation",
+      "ready for live",
+      "activate now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lowered = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lowered).not.toContain(phrase);
+      }
+      expect(lowered).not.toContain("generates queue candidates");
+    }
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

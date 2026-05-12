@@ -107,6 +107,17 @@ Under these values:
   The Ranked queue candidates panel is now wrapped in a scroll
   container that shows ~10 rows at a time, mirroring the Persisted
   recommendations panel.
+- **Phase C3 research cohort review (feature implemented).**
+  Operators archive each Phase C2 evidence bundle to a local
+  research cohort archive (`macmarket.trueMomentumCohortReview.archive`),
+  roll up family-level previews + B8 outcome counts across sessions,
+  and export a deterministic Markdown / JSON report with a readiness
+  label (`insufficient_evidence` / `parity_blocked` /
+  `promising_research` / `mixed_research` / `needs_operator_review` /
+  `not_recommended_for_activation`). Phase C3 never emits "ready for
+  live" or "activate now" wording — the strongest positive label is
+  `promising_research`. Mounted inside the C2 evidence panel so the
+  operator does not need to export / import bundles manually.
 
 ## Outstanding items
 
