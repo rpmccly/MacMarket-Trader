@@ -16,6 +16,7 @@ import {
   type MomentumTrialSnapshot,
 } from "@/lib/momentum-trial-journal";
 import { MomentumTrialOutcomeReviewPanel } from "@/components/recommendations/momentum-trial-outcome-review";
+import type { MomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
 import { momentumRankingModeLabel } from "@/lib/momentum-ranking";
 import type { QueueCandidate } from "@/lib/recommendations";
 
@@ -184,6 +185,19 @@ export type MomentumTrialJournalProps = {
    * `persistLatest={false}` so they do not depend on a browser environment.
    */
   persistLatest?: boolean;
+  /**
+   * Phase C2.2 — notify the parent whenever the captured B7 trial
+   * snapshot changes (capture / clear / hydration). Lets the
+   * Recommendations page lift snapshot state and pass it directly to
+   * the Phase C2 evidence panel so it always sees the live snapshot.
+   */
+  onSnapshotChange?: (snapshot: MomentumTrialSnapshot | null) => void;
+  /**
+   * Phase C2.2 — notify the parent whenever the Phase B8 outcome review
+   * inside this trial journal changes (tag toggle, note edit,
+   * conclusion edit, clear, hydration).
+   */
+  onOutcomeReviewChange?: (review: MomentumTrialOutcomeReview | null) => void;
 };
 
 export function MomentumTrialJournalView({
@@ -591,10 +605,19 @@ export function MomentumTrialJournal({
   compact = false,
   initialSnapshot = null,
   persistLatest = true,
+  onSnapshotChange,
+  onOutcomeReviewChange,
 }: MomentumTrialJournalProps) {
   const [noteDraft, setNoteDraft] = useState<string>("");
   const [snapshot, setSnapshot] = useState<MomentumTrialSnapshot | null>(initialSnapshot ?? null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+
+  // Phase C2.2 — notify the parent whenever the captured snapshot
+  // changes. The parent lifts this state so the Phase C2 evidence
+  // panel always sees the live snapshot.
+  useEffect(() => {
+    onSnapshotChange?.(snapshot);
+  }, [snapshot, onSnapshotChange]);
 
   // Lazy load latest snapshot from localStorage on mount.
   useEffect(() => {
@@ -625,7 +648,9 @@ export function MomentumTrialJournal({
     setSnapshot(null);
     if (persistLatest) writeLatestSnapshotToStorage(null);
     setCopyStatus("idle");
-  }, [persistLatest]);
+    // Clearing the snapshot also clears any associated outcome review.
+    onOutcomeReviewChange?.(null);
+  }, [persistLatest, onOutcomeReviewChange]);
 
   const downloadJsonHandler = useCallback(() => {
     if (!snapshot) return;
@@ -733,6 +758,7 @@ export function MomentumTrialJournal({
             <MomentumTrialOutcomeReviewPanel
               snapshot={snapshot}
               persistLatest={persistLatest}
+              onReviewChange={onOutcomeReviewChange}
             />
           </>
         ) : (

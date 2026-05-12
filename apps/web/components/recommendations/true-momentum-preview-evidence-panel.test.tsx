@@ -483,3 +483,117 @@ describe("Phase C2.1 — B8 link status display", () => {
     expect(occurrences).toBe(1);
   });
 });
+
+describe("Phase C2.2 — deployed B8 outcome linkage", () => {
+  it("renders B8 outcome review: linked with the Worked 1 / Unclear 13 counts", () => {
+    const queue = [];
+    for (let i = 0; i < 14; i += 1) {
+      queue.push(candidate({ rank: i + 1, symbol: `SYM${i + 1}` }));
+    }
+    const snapshot = buildMomentumTrialSnapshot(queue);
+    // Build a 14-row outcome review where row 0 is "worked" and the
+    // rest are "unclear". This mirrors the deployed Worked 1 /
+    // Unclear 13 case the operator reported.
+    const review = buildMomentumTrialOutcomeReview(snapshot, {
+      existingOutcomes: snapshot.candidates.map((c, idx) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: (idx === 0 ? "worked" : "unclear") as
+          | "worked"
+          | "unclear",
+        note: "",
+      })),
+    });
+    // Trim candidate_outcomes to exactly 14 rows so the panel's
+    // outcome summary mirrors the deployed Worked 1 / Unclear 13 case.
+    const trimmedReview = {
+      ...review,
+      candidate_outcomes: snapshot.candidates.map((c, idx) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: (idx === 0 ? "worked" : "unclear") as
+          | "worked"
+          | "unclear",
+        note: "",
+        reason_codes: [] as string[],
+        trade_warning_flags: [] as string[],
+        operational_caveat_flags: [] as string[],
+      })),
+    };
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={queue}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+        b8OutcomeReview={trimmedReview}
+      />,
+    );
+    expect(html).toContain("B8 outcome review: linked");
+    // The compact outcome counts line is rendered with the per-tag
+    // numbers — verify the deployed-case 1 worked / 13 unclear pair.
+    expect(html).toContain("worked: 1");
+    expect(html).toContain("unclear: 13");
+    expect(html).toContain("true-momentum-preview-evidence-summary-reviewed");
+    expect(html).toContain("true-momentum-preview-evidence-summary-unclear");
+  });
+
+  it("renders B8 outcome review: linked when the outcome review is a subset of the full snapshot", () => {
+    const queue = [];
+    for (let i = 0; i < 45; i += 1) {
+      queue.push(candidate({ rank: i + 1, symbol: `FULL${i + 1}` }));
+    }
+    const snapshot = buildMomentumTrialSnapshot(queue);
+    const defaults = buildMomentumTrialOutcomeReview(snapshot).candidate_outcomes;
+    const tagged = defaults.map((row, idx) =>
+      idx === 0 ? { ...row, tag: "worked" as const } : row,
+    );
+    const fullReview = buildMomentumTrialOutcomeReview(snapshot, {
+      existingOutcomes: tagged,
+    });
+    // Trim the outcome list to the first 14 rows (top + warning subset)
+    // to mirror what the panel persists in the wild.
+    const subsetReview = {
+      ...fullReview,
+      candidate_outcomes: fullReview.candidate_outcomes.slice(0, 14),
+    };
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={queue}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8Snapshot={snapshot}
+        b8OutcomeReview={subsetReview}
+      />,
+    );
+    expect(html).toContain("B8 outcome review: linked");
+    expect(html).not.toContain("B8 outcome review: mismatch");
+    expect(html).not.toContain("B8 outcome review: missing");
+  });
+
+  it("capture / export buttons stay enabled even when B8 outcome review is missing or mismatched", () => {
+    const otherQueue = [
+      candidate({ rank: 1, symbol: "XLE" }),
+      candidate({ rank: 2, symbol: "XLF" }),
+    ];
+    const otherSnapshot = buildMomentumTrialSnapshot(otherQueue);
+    const review = buildMomentumTrialOutcomeReview(otherSnapshot);
+    const html = renderToStaticMarkup(
+      <TrueMomentumPreviewEvidencePanel
+        candidates={MIXED_QUEUE}
+        previewResult={PREVIEW_RESULT}
+        persistLatest={false}
+        b8OutcomeReview={review}
+      />,
+    );
+    expect(html).toContain("B8 outcome review: mismatch");
+    expect(html).toContain("true-momentum-preview-evidence-capture");
+    expect(html).toContain("true-momentum-preview-evidence-download-markdown");
+    expect(html).toContain("true-momentum-preview-evidence-download-json");
+    expect(html).not.toMatch(
+      /<button[^>]*disabled[^>]*data-testid="true-momentum-preview-evidence-capture"/,
+    );
+  });
+});

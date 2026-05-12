@@ -168,6 +168,12 @@ export type MomentumTrialOutcomeReviewProps = {
    * Disable localStorage round-trip. Defaults to enabled.
    */
   persistLatest?: boolean;
+  /**
+   * Phase C2.2 — notify the parent whenever the live outcome review
+   * changes. Lets the Recommendations page lift this state up and
+   * pass it straight to the Phase C2 evidence panel.
+   */
+  onReviewChange?: (review: MomentumTrialOutcomeReview | null) => void;
 };
 
 export function MomentumTrialOutcomeReviewPanel({
@@ -176,6 +182,7 @@ export function MomentumTrialOutcomeReviewPanel({
   initialOutcomes = null,
   initialGlobalConclusion = "",
   persistLatest = true,
+  onReviewChange,
 }: MomentumTrialOutcomeReviewProps) {
   const defaults = useMemo(
     () => (snapshot ? candidateOutcomeDefaults(snapshot) : []),
@@ -262,6 +269,15 @@ export function MomentumTrialOutcomeReviewPanel({
       }),
     };
   }, [snapshot, outcomes, globalConclusion]);
+
+  // Phase C2.2 — notify the parent whenever the live review changes.
+  // The parent lifts this state to feed it straight to the Phase C2
+  // evidence panel, so a worked/missed tag in B8 is immediately visible
+  // as "linked" in C2 without waiting for a queue refresh.
+  useEffect(() => {
+    if (!onReviewChange) return;
+    onReviewChange(snapshot ? review : null);
+  }, [review, snapshot, onReviewChange]);
 
   const summary = review.summary;
 

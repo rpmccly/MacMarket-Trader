@@ -406,6 +406,79 @@ behavior change.
 - Real Thinkorswim fixture parity.
 - Operator authorization before any active Phase C.
 
+## Phase C2.2 — live B8 outcome linkage + Ranked queue scroll polish
+
+Phase C2.2 fixes the deployed-state mismatch between the Phase B8
+outcome review (rendered live on the same page) and the Phase C2
+evidence panel's "B8 outcome review: missing" badge, and adds the
+scroll container the operator expected on the Ranked queue panel.
+
+It is still **frontend-only and research-only**. No backend write, no
+DB row, no migration, no LLM call. No Phase C activation. No ranking,
+queue sorting, approval, paper-order, replay, or options-preview
+behavior change.
+
+### Live B8 linkage (state lifting)
+
+- `MomentumTrialJournal` now exposes two callbacks,
+  `onSnapshotChange(snapshot)` and `onOutcomeReviewChange(review)`,
+  and threads the outcome callback through to
+  `MomentumTrialOutcomeReviewPanel`.
+- The Recommendations page lifts the live B7 snapshot and B8 outcome
+  review state and passes them straight to
+  `<TrueMomentumStrategyPreviewPanel>`, which forwards them through
+  to `<TrueMomentumPreviewEvidencePanel>`.
+- The evidence panel keeps its existing `localStorage` rehydration as
+  a fallback for fresh page loads, but the lifted state now takes
+  precedence and updates the C2 link status the moment the operator
+  tags an outcome in B8.
+- Linkage uses the *embedded* B7 snapshot signature
+  (`review.snapshot.candidates`) — a 14-row outcome review against a
+  45-row queue still links as long as the embedded snapshot matches
+  the live queue.
+
+### Resolved deployed scenario
+
+- B8 snapshot signature matches the queue → `b8_snapshot_link_status: "linked"`.
+- B8 outcome review with `worked_count = 1` / `unclear_count = 13` →
+  `b8_outcome_review_link_status: "linked"` (the operator has tagged
+  at least one row beyond `unclear`).
+- The compact outcome counts line + `Reviewed candidates` /
+  `Unclear outcomes` summary cards render the same numbers the B8
+  panel shows.
+- The Markdown export's "Linked B8 Trial Evidence" section lists the
+  resolved status and per-tag counts; the JSON export carries every
+  link field.
+
+### What still does NOT link
+
+- A B8 outcome review whose embedded `review.snapshot` signature
+  differs from the live queue → `mismatch` with the existing warning
+  copy.
+- No B8 outcome review in lifted state or `localStorage` → `missing`
+  with the existing pointer copy.
+- The C2 evidence capture and Markdown / JSON export remain enabled
+  regardless of B8 state.
+
+### Ranked queue scroll polish
+
+The Ranked queue candidates table on the Recommendations page is now
+wrapped in the same scrollable container pattern as the Persisted
+recommendations panel (`maxHeight: 360`, `overflowY: "auto"`, a themed
+border, and `data-testid="ranked-queue-scroll-container"`). The
+wrapper shows roughly 10 rows at a time before scrolling.
+
+- Row selection behavior, the compare-checkbox column, and the
+  ranking order are unchanged.
+- No promote / approve / route / paper-order paths are touched.
+- Persisted recommendations keeps its existing scroll wrapper.
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

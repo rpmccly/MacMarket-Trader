@@ -614,6 +614,143 @@ describe("Phase C2.1 — exports include linked B8 metadata", () => {
   });
 });
 
+describe("Phase C2.2 — deployed-scenario B8 outcome linkage", () => {
+  it("worked: 1 / unclear: 13 → outcome status linked + Markdown shows the counts", () => {
+    // Build a 14-row snapshot and an outcome review where row 0 is
+    // "worked" and the remaining 13 are "unclear". This mirrors the
+    // deployed scenario the operator reported.
+    const queue: QueueCandidate[] = [];
+    for (let i = 0; i < 14; i += 1) {
+      queue.push(
+        candidate({
+          rank: i + 1,
+          symbol: `SYM${i + 1}`,
+        }),
+      );
+    }
+    const snapshot = buildMomentumTrialSnapshot(queue);
+    const previewResult = buildTrueMomentumStrategyPreview(queue, status());
+    // Construct the outcome review's ``candidate_outcomes`` directly
+    // with all 14 snapshot candidates so the per-tag summary matches
+    // the deployed 1 worked / 13 unclear case. (The default builder
+    // only seeds top + warning + caveat candidates.)
+    const baseReview = buildMomentumTrialOutcomeReview(snapshot);
+    const review = {
+      ...baseReview,
+      candidate_outcomes: snapshot.candidates.map((c, idx) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: (idx === 0 ? "worked" : "unclear") as
+          | "worked"
+          | "unclear",
+        note: "",
+        reason_codes: [] as string[],
+        trade_warning_flags: [] as string[],
+        operational_caveat_flags: [] as string[],
+      })),
+    };
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(previewResult, {
+      queueCandidates: queue,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    expect(bundle.b8_snapshot_link_status).toBe("linked");
+    expect(bundle.b8_outcome_review_link_status).toBe("linked");
+    expect(bundle.b8_outcome_summary?.worked_count).toBe(1);
+    expect(bundle.b8_outcome_summary?.unclear_count).toBe(13);
+
+    const md = buildTrueMomentumPreviewEvidenceMarkdown(bundle);
+    expect(md).toContain("## Linked B8 Trial Evidence");
+    expect(md).toContain("- B8 outcome review: linked");
+    expect(md).toContain("worked: 1");
+    expect(md).toContain("unclear: 13");
+  });
+
+  it("subset candidate_outcomes still links when the embedded snapshot matches the full queue", () => {
+    // The deployed scenario can have a 45-candidate snapshot but a
+    // 14-row outcome review (top + warning candidates only). The link
+    // must still resolve to "linked" because the embedded snapshot's
+    // signature matches the live queue.
+    const fullQueue: QueueCandidate[] = [];
+    for (let i = 0; i < 45; i += 1) {
+      fullQueue.push(
+        candidate({
+          rank: i + 1,
+          symbol: `FULL${i + 1}`,
+        }),
+      );
+    }
+    const snapshot = buildMomentumTrialSnapshot(fullQueue);
+    const previewResult = buildTrueMomentumStrategyPreview(fullQueue, status());
+    // Construct a 14-row outcome review (top + warning subset) over
+    // the full 45-candidate snapshot. The embedded ``review.snapshot``
+    // still references the full snapshot, so the signature should
+    // match the live 45-row queue.
+    const baseReview = buildMomentumTrialOutcomeReview(snapshot);
+    const subsetReview = {
+      ...baseReview,
+      candidate_outcomes: snapshot.candidates.slice(0, 14).map((c, idx) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: (idx === 0 ? "worked" : "unclear") as
+          | "worked"
+          | "unclear",
+        note: "",
+        reason_codes: [] as string[],
+        trade_warning_flags: [] as string[],
+        operational_caveat_flags: [] as string[],
+      })),
+    };
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(previewResult, {
+      queueCandidates: fullQueue,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: subsetReview,
+    });
+    // Linkage is computed from the embedded snapshot signature, not
+    // from candidate_outcomes — so a subset must not flip to mismatch.
+    expect(bundle.b8_snapshot_link_status).toBe("linked");
+    expect(bundle.b8_outcome_review_link_status).toBe("linked");
+    expect(bundle.b8_outcome_reviewed_count).toBe(14);
+  });
+
+  it("JSON export carries linked status + outcome summary in the deployed-scenario shape", () => {
+    const queue: QueueCandidate[] = [];
+    for (let i = 0; i < 14; i += 1) {
+      queue.push(candidate({ rank: i + 1, symbol: `SYM${i + 1}` }));
+    }
+    const snapshot = buildMomentumTrialSnapshot(queue);
+    const previewResult = buildTrueMomentumStrategyPreview(queue, status());
+    const baseReview = buildMomentumTrialOutcomeReview(snapshot);
+    const review = {
+      ...baseReview,
+      candidate_outcomes: snapshot.candidates.map((c, idx) => ({
+        symbol: c.symbol,
+        strategy: c.strategy,
+        rank: c.rank,
+        tag: (idx === 0 ? "worked" : "unclear") as
+          | "worked"
+          | "unclear",
+        note: "",
+        reason_codes: [] as string[],
+        trade_warning_flags: [] as string[],
+        operational_caveat_flags: [] as string[],
+      })),
+    };
+    const bundle = buildTrueMomentumPreviewEvidenceBundle(previewResult, {
+      queueCandidates: queue,
+      b8Snapshot: snapshot,
+      b8OutcomeReview: review,
+    });
+    const parsed = JSON.parse(buildTrueMomentumPreviewEvidenceJson(bundle));
+    expect(parsed.bundle.b8_outcome_review_link_status).toBe("linked");
+    expect(parsed.bundle.b8_outcome_summary.worked_count).toBe(1);
+    expect(parsed.bundle.b8_outcome_summary.unclear_count).toBe(13);
+    expect(parsed.bundle.b8_outcome_reviewed_count).toBe(14);
+  });
+});
+
 describe("validateTrueMomentumPreviewEvidenceBundle", () => {
   it("accepts a freshly built bundle", () => {
     const bundle = buildTrueMomentumPreviewEvidenceBundle(PREVIEW_RESULT, {

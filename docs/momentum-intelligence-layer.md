@@ -2061,6 +2061,60 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C2.2 — live B8 outcome linkage + Ranked queue scroll polish
+
+Phase C2.2 fixes the deployed-state mismatch where the Phase C2
+evidence panel reported "B8 outcome review: missing" even though the
+Phase B8 outcome review was visibly populated on the same page, and
+adds a scrollable container to the Ranked queue candidates panel so it
+behaves like the Persisted recommendations panel.
+
+Still frontend-only and research-only. No backend write, no DB row,
+no migration, no LLM call. No Phase C activation. No ranking, queue
+sorting, approval, paper-order, replay, or options-preview behavior
+change.
+
+### Live B8 linkage
+
+- `MomentumTrialJournal` accepts two new callbacks,
+  `onSnapshotChange(snapshot)` and `onOutcomeReviewChange(review)`,
+  and threads the outcome callback through to
+  `MomentumTrialOutcomeReviewPanel`.
+- The Recommendations page lifts the live B7 snapshot + B8 outcome
+  review state and passes them down to
+  `<TrueMomentumStrategyPreviewPanel>`, which forwards them to
+  `<TrueMomentumPreviewEvidencePanel>`.
+- The C2 panel uses the lifted state when provided and falls back to
+  the existing `localStorage` rehydration for fresh page loads.
+- Linkage continues to use the *embedded* B7 snapshot signature
+  (`review.snapshot.candidates`) so a subset outcome review (top +
+  warning candidates only) still links to a larger queue as long as
+  the embedded snapshot matches.
+
+### Resolved deployed scenario
+
+- `worked_count = 1` / `unclear_count = 13` → `b8_outcome_review_link_status: "linked"`.
+- The compact outcome-counts line + the `Reviewed candidates` /
+  `Unclear outcomes` summary cards render the deployed counts.
+- The Markdown export's "Linked B8 Trial Evidence" section lists the
+  resolved status and per-tag counts.
+- The JSON export carries the link fields end-to-end.
+
+### Ranked queue scroll polish
+
+The Ranked queue candidates table is now wrapped in
+`<div data-testid="ranked-queue-scroll-container">` with `maxHeight:
+360`, `overflowY: "auto"`, and the themed border that the Persisted
+recommendations panel already uses. About 10 rows are visible before
+scrolling. Row selection, the compare-checkbox column, and the
+ranking order are unchanged.
+
+### Still pending
+
+- Accumulated B8 outcome evidence corpus.
+- Real Thinkorswim fixture parity.
+- Operator authorization before any active Phase C.
+
 ## Phase C2.1 — link B7/B8 trial evidence into the C2 bundle
 
 Phase C2.1 wires the existing Phase B7 trial-journal snapshot and the

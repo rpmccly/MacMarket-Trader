@@ -96,6 +96,17 @@ Under these values:
   guardrail copy under the C1 panel is cleaned up — the C2 panel is
   now the canonical owner of the deterministic research-only note
   whenever it is mounted.
+- **Phase C2.2 live B8 outcome linkage + Ranked queue scroll polish
+  (feature implemented).** B7 snapshot + B8 outcome review state is
+  now lifted to the Recommendations page and passed directly into the
+  C2 evidence panel, so a worked / missed tag in B8 immediately flips
+  the C2 panel's "B8 outcome review" badge to `linked` (with the
+  matching per-tag counts) rather than showing `missing`. Linkage uses
+  the *embedded* B7 snapshot signature, so a subset outcome review
+  (top + warning candidates only) still links against a larger queue.
+  The Ranked queue candidates panel is now wrapped in a scroll
+  container that shows ~10 rows at a time, mirroring the Persisted
+  recommendations panel.
 
 ## Outstanding items
 

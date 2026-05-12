@@ -19,6 +19,8 @@ import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel
 import { MomentumRankingCard } from "@/components/recommendations/momentum-ranking-card";
 import { MomentumImpactReview } from "@/components/recommendations/momentum-impact-review";
 import { MomentumTrialJournal } from "@/components/recommendations/momentum-trial-journal";
+import type { MomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
+import type { MomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
 import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
@@ -489,6 +491,12 @@ export default function RecommendationsPage() {
   const [analysisPacketExport, setAnalysisPacketExport] = useState<AnalysisPacketExport | null>(null);
   const [analysisPacketPreviewOpen, setAnalysisPacketPreviewOpen] = useState(false);
   const [analysisPacketFeedback, setAnalysisPacketFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message: string }>({ state: "idle", message: "" });
+
+  // Phase C2.2 — lift the B7 trial snapshot + B8 outcome review state
+  // up so the Phase C2 evidence panel always sees the live values.
+  const [b8Snapshot, setB8Snapshot] = useState<MomentumTrialSnapshot | null>(null);
+  const [b8OutcomeReview, setB8OutcomeReview] =
+    useState<MomentumTrialOutcomeReview | null>(null);
 
   const prefill = useMemo(() => parseRecommendationSearchParams(searchParams), [searchParams]);
   const guidedState = useMemo(() => parseGuidedFlowState(searchParams), [searchParams]);
@@ -1496,6 +1504,15 @@ export default function RecommendationsPage() {
           {loading.queue && queue.length === 0 ? <EmptyState title="Loading queue" hint="Fetching ranked queue candidates." /> : null}
           {!loading.queue && queue.length === 0 ? <EmptyState title="No queue candidates" hint="Refresh queue with at least one symbol." /> : null}
           {queue.length > 0 ? (
+            <div
+              data-testid="ranked-queue-scroll-container"
+              style={{
+                maxHeight: 360,
+                overflowY: "auto",
+                border: "1px solid var(--op-border, #1e2d3d)",
+                borderRadius: 8,
+              }}
+            >
             <table className="op-table">
               <thead><tr><th>compare</th><th>rank</th><th>symbol</th><th>strategy</th><th>status</th><th>risk calendar</th><th><MetricLabel label="score" term="score" /></th><th><MetricLabel label="rr" term="rr" /></th><th><MetricLabel label="conf" term="confidence" /></th><th></th></tr></thead>
               <tbody>
@@ -1542,6 +1559,7 @@ export default function RecommendationsPage() {
                 })}
               </tbody>
             </table>
+            </div>
           ) : null}
           </> : null}
         </Card>
@@ -1949,6 +1967,8 @@ export default function RecommendationsPage() {
       <MomentumTrialJournal
         candidates={queue}
         universeSymbols={parsedSymbols.symbols}
+        onSnapshotChange={setB8Snapshot}
+        onOutcomeReviewChange={setB8OutcomeReview}
       />
 
       {/*
@@ -1965,6 +1985,8 @@ export default function RecommendationsPage() {
       <TrueMomentumStrategyPreviewPanel
         candidates={queue}
         universeSymbols={parsedSymbols.symbols}
+        b8Snapshot={b8Snapshot}
+        b8OutcomeReview={b8OutcomeReview}
       />
     </section>
   );

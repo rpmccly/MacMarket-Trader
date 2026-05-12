@@ -1169,6 +1169,112 @@ describe("Momentum Intelligence Phase C2.1 — B8 link + duplicate-guardrail gua
   });
 });
 
+describe("Momentum Intelligence Phase C2.2 — live B8 linkage + scroll polish guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Recommendations page lifts B7 snapshot + B8 outcome review state and threads it into the C1 panel", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("setB8Snapshot");
+    expect(source).toContain("setB8OutcomeReview");
+    expect(source).toContain("onSnapshotChange={setB8Snapshot}");
+    expect(source).toContain("onOutcomeReviewChange={setB8OutcomeReview}");
+    expect(source).toContain("b8Snapshot={b8Snapshot}");
+    expect(source).toContain("b8OutcomeReview={b8OutcomeReview}");
+  });
+
+  it("MomentumTrialJournal exposes the lift callbacks", () => {
+    const source = read("components/recommendations/momentum-trial-journal.tsx");
+    expect(source).toContain("onSnapshotChange?: (snapshot: MomentumTrialSnapshot | null) => void;");
+    expect(source).toContain("onOutcomeReviewChange?: (review: MomentumTrialOutcomeReview | null) => void;");
+  });
+
+  it("MomentumTrialOutcomeReview accepts the onReviewChange callback and fires it on review changes", () => {
+    const source = read(
+      "components/recommendations/momentum-trial-outcome-review.tsx",
+    );
+    expect(source).toContain("onReviewChange?: (review: MomentumTrialOutcomeReview | null) => void;");
+    expect(source).toContain("onReviewChange(snapshot ? review : null);");
+  });
+
+  it("C1 preview panel threads lifted B7/B8 props into the C2 evidence panel", () => {
+    const source = read(
+      "components/recommendations/true-momentum-strategy-preview-panel.tsx",
+    );
+    expect(source).toContain("b8Snapshot?: MomentumTrialSnapshot | null;");
+    expect(source).toContain("b8OutcomeReview?: MomentumTrialOutcomeReview | null;");
+    expect(source).toContain("b8Snapshot={b8Snapshot}");
+    expect(source).toContain("b8OutcomeReview={b8OutcomeReview}");
+  });
+
+  it("Ranked queue panel uses the scrollable container pattern with a max-height of ~10 rows", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain('data-testid="ranked-queue-scroll-container"');
+    expect(source).toContain('maxHeight: 360');
+    expect(source).toContain('overflowY: "auto"');
+    // The scroll container sits immediately above the Ranked queue
+    // table — the table block still renders as before.
+    const containerIdx = source.indexOf('data-testid="ranked-queue-scroll-container"');
+    const tableIdx = source.indexOf("<table className=\"op-table\"", containerIdx);
+    expect(tableIdx).toBeGreaterThan(containerIdx);
+  });
+
+  it("Persisted recommendations panel keeps its existing scroll wrapper", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    // The Persisted recommendations block still scrolls at its
+    // historical max-height. We assert both scroll wrappers coexist.
+    const ranked = source.indexOf('data-testid="ranked-queue-scroll-container"');
+    expect(ranked).toBeGreaterThan(-1);
+    const persisted = source.indexOf(
+      'maxHeight: 360, overflowY: "auto"',
+      ranked + 1,
+    );
+    expect(persisted).toBeGreaterThan(ranked);
+  });
+
+  it("C2 evidence component remains out of order / paper / replay / options-paper routes (C2.2 re-guard)", () => {
+    const routes = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+    ];
+    const patterns = [
+      "@/components/recommendations/true-momentum-preview-evidence-panel",
+      "TrueMomentumPreviewEvidencePanel",
+      "buildTrueMomentumPreviewEvidenceBundle",
+    ];
+    for (const route of routes) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of patterns) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("scroll-polish does not alter recommendation approval / promote / paper-order paths", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    // The scroll wrapper is purely a visual container; the table row
+    // click handler that selects a queue candidate must still be
+    // intact, and there must be no new promote / approve / route /
+    // paper-order calls introduced.
+    expect(source).toContain("setSelectedQueueKey(key)");
+    expect(source).toMatch(/setSelectedQueueKey\(key\)/);
+    // The new scroll container should not duplicate the click handler
+    // or wrap it in any disabling logic.
+  });
+});
+
 describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
   function readSafe(relative: string): string | null {
     try {

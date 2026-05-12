@@ -20,6 +20,8 @@ import {
   type TrueMomentumStrategyFamilyStatus,
 } from "@/lib/true-momentum-strategy-families";
 import type { QueueCandidate } from "@/lib/recommendations";
+import type { MomentumTrialSnapshot } from "@/lib/momentum-trial-journal";
+import type { MomentumTrialOutcomeReview } from "@/lib/momentum-trial-outcomes";
 
 const NOTE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -149,6 +151,18 @@ export type TrueMomentumStrategyPreviewPanelProps = {
    * undefined (defaults to ``true``).
    */
   persistEvidenceLatest?: boolean;
+  /**
+   * Phase C2.2 — live-lifted B7 trial snapshot from the
+   * Recommendations page. When provided, the nested C2 evidence panel
+   * uses this value directly instead of falling back to localStorage.
+   */
+  b8Snapshot?: MomentumTrialSnapshot | null;
+  /**
+   * Phase C2.2 — live-lifted B8 outcome review from the
+   * Recommendations page. When provided, the nested C2 evidence panel
+   * uses this value directly instead of falling back to localStorage.
+   */
+  b8OutcomeReview?: MomentumTrialOutcomeReview | null;
 };
 
 export function TrueMomentumStrategyPreviewPanelView({
@@ -160,6 +174,8 @@ export function TrueMomentumStrategyPreviewPanelView({
   candidates = null,
   universeSymbols = null,
   persistEvidenceLatest = true,
+  b8Snapshot = null,
+  b8OutcomeReview = null,
 }: {
   result: TrueMomentumStrategyPreviewResult | null;
   status: TrueMomentumStrategyFamilyStatus | null;
@@ -169,6 +185,8 @@ export function TrueMomentumStrategyPreviewPanelView({
   candidates?: ReadonlyArray<QueueCandidate> | null;
   universeSymbols?: ReadonlyArray<string> | null;
   persistEvidenceLatest?: boolean;
+  b8Snapshot?: MomentumTrialSnapshot | null;
+  b8OutcomeReview?: MomentumTrialOutcomeReview | null;
 }) {
   if (error) {
     return (
@@ -399,6 +417,8 @@ MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES=true`}
             previewResult={result}
             universeSymbols={universeSymbols ?? null}
             persistLatest={persistEvidenceLatest}
+            b8Snapshot={b8Snapshot}
+            b8OutcomeReview={b8OutcomeReview}
           />
         ) : null}
 
@@ -433,6 +453,8 @@ export function TrueMomentumStrategyPreviewPanel({
   title,
   initialStatus = null,
   persistEvidenceLatest = true,
+  b8Snapshot = null,
+  b8OutcomeReview = null,
 }: TrueMomentumStrategyPreviewPanelProps) {
   const [status, setStatus] = useState<TrueMomentumStrategyFamilyStatus | null>(initialStatus);
   const [loading, setLoading] = useState<boolean>(!initialStatus);
@@ -479,6 +501,8 @@ export function TrueMomentumStrategyPreviewPanel({
       candidates={candidates ?? null}
       universeSymbols={universeSymbols ?? null}
       persistEvidenceLatest={persistEvidenceLatest}
+      b8Snapshot={b8Snapshot}
+      b8OutcomeReview={b8OutcomeReview}
     />
   );
 }
