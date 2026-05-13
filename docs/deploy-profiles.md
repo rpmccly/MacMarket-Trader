@@ -74,6 +74,70 @@ correctly on a given machine before a real deploy:
 `-DryRun` also skips the trailing `pause` in the wrapper so the dry-run
 is safe to invoke from automation / unit tests.
 
+## Post-schema validation mode (`-ValidateRealPath`)
+
+`-DryRun` exits before the real deploy phase (mirror / install / schema
+update / tests / build / restart). That is the right behaviour for
+checking source-path resolution, but it cannot catch parser errors in
+the post-schema test-plan branches.
+
+`-ValidateRealPath` exercises the **same test-plan branching that runs
+after schema update in a real deploy**, but skips every side-effectful
+step (mirror, venv setup, pip install, schema apply, pytest, npm
+install, npm build, tsc, vitest, playwright, service start, health
+checks). It exists so a subprocess test (or an operator on a fresh
+machine) can confirm that the post-schema parser path is balanced and
+the per-profile branching resolves correctly, without touching any
+shared state:
+
+```powershell
+.\deploy-macmarket-trader.bat -ValidateRealPath
+.\deploy-macmarket-trader.bat -TestProfile fast -ValidateRealPath
+.\deploy-macmarket-trader.bat -TestProfile full -ValidateRealPath
+.\deploy-macmarket-trader.bat -TestProfile frontend -ValidateRealPath
+.\deploy-macmarket-trader.bat -TestProfile backend -ValidateRealPath
+```
+
+Each invocation prints the resolved banner, the validation plan, a
+`[STEP] backend-validation-plan` / `[STEP] frontend-validation-plan`
+trace, and exits 0. If the parser cannot balance the script the run
+will fail with `... was unexpected at this time.` — surfacing the bug
+before any side effects happen.
+
+`-ValidateRealPath` also skips the wrapper's trailing `pause`, so it is
+safe to call from automation.
+
+## Step tracing
+
+Every deploy emits `[STEP] <name>` lines from a lightweight `:STEP`
+subroutine so that the next failure tells us which phase died:
+
+```
+[STEP] validate-source-root
+[STEP] admin-check
+[STEP] ensure-deploy-dirs
+[STEP] node-version-check
+[STEP] stop-services
+[STEP] mirror-sources
+[STEP] venv-create
+[STEP] backend-deps-install
+[STEP] database-check
+[STEP] schema-update            (or schema-init on a fresh DB)
+[STEP] backend-validation-plan
+[STEP] backend-validation-prep  (only when backend tests run)
+[STEP] backend-validation-run   (only when backend tests run)
+[STEP] frontend-validation-plan
+[STEP] frontend-deps-install    (only when frontend present)
+[STEP] frontend-build           (only when frontend present)
+[STEP] frontend-tsc             (when tsc is enabled)
+[STEP] frontend-tests-run       (when frontend Vitest is enabled)
+[STEP] restart-services
+[STEP] health-checks
+```
+
+When a real deploy fails, look for the **last `[STEP]` line printed** —
+that is the phase the script died in.
+
 ## Fast profile test set
 
 Backend (`pytest -q -p no:cacheprovider --basetemp <unique> --tb=short`):
@@ -242,18 +306,49 @@ applies schema updates, then fails with the literal message
 
 **Root cause.** Inside a parenthesized `IF` / `IF...ELSE` block, the
 batch parser pre-scans the body for the matching `)`. Strings that
-contain a literal `)` (for example `SKIPPED (emergency)` or `echo
-... -TestProfile none (emergency).`) close the block prematurely, so
-the subsequent block ends up unbalanced. Note: `"..."` quoting does
-**not** protect parens here — quoted parens inside an `IF` body still
-miscount.
+contain a literal `)` (for example `SKIPPED (emergency)`, `echo
+[INFO] Running backend tests (profile: %TEST_PROFILE%)...`, or
+`echo [INFO] Running TypeScript check (tsc --noEmit)...`) close the
+block prematurely, so the subsequent block ends up unbalanced. Note:
+`"..."` quoting does **not** protect parens here — quoted parens
+inside an `IF` body still miscount.
 
-**Fix.** All occurrences of `(emergency)` inside parenthesized blocks
-were replaced with `[emergency]` (square brackets are not special to
-the cmd parser). The argument parser was also refactored from a
-parenthesized-`IF` chain to a goto-based labeled parser so that no
-future value-containing-parens issue can re-introduce the same parse
-error.
+**Fix.** Two waves of cleanup landed:
+
+1. The arg parser and `[emergency]` / profile-description set lines
+   were moved out of parenthesized IF blocks (replaced with goto
+   handlers and single-line `if … set …` statements).
+2. The post-schema backend / frontend validation paths were extracted
+   into named subroutines (`:RUN_BACKEND_VALIDATION`, `:FRONTEND_PHASE`,
+   `:INSTALL_FRONTEND_DEPS`, `:BUILD_FRONTEND`,
+   `:RUN_TYPESCRIPT_CHECK`, `:RUN_FRONTEND_VALIDATION`,
+   `:RUN_PLAYWRIGHT`) so the offending `echo … (profile: …)` and
+   `echo … (tsc --noEmit)` lines no longer live inside a top-level
+   parenthesized block. The remaining literal-paren echo (`echo
+   Default profile is "full" (full backend pytest + …).`) lives inside
+   the `:HANDLE_HELP` subroutine, reached only via `goto :HANDLE_HELP`,
+   so it cannot collide with any outer block parser.
+
+**How to confirm the fix on a given machine.** Run
+
+```powershell
+.\deploy-macmarket-trader.bat -TestProfile fast -ValidateRealPath
+.\deploy-macmarket-trader.bat -TestProfile full -ValidateRealPath
+.\deploy-macmarket-trader.bat -ValidateRealPath
+```
+
+Each must exit 0 and print
+
+```
+[STEP] backend-validation-plan
+[STEP] frontend-validation-plan
+[STEP] validate-real-path-exit
+```
+
+If any invocation surfaces `... was unexpected at this time.` the
+parser-safety static test
+(`tests/test_deploy_profiles.py::test_no_parens_inside_top_level_if_block_bodies`)
+should also fail and identify the offending line.
 
 ### Source-path validation diagnostics
 

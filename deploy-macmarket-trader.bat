@@ -21,11 +21,13 @@ if not exist "%REPO_ROOT%\scripts\deploy_windows.bat" (
   exit /b 1
 )
 
-REM Detect -DryRun in the forwarded args so we can skip the trailing pause
-REM (the dry-run path is meant to be safe for automation / unit tests).
+REM Detect -DryRun or -ValidateRealPath in the forwarded args so we can
+REM skip the trailing pause. Both flags are designed to be safe for
+REM automation / unit tests, so the wrapper must not block on input.
 set "WRAPPER_DRY_RUN=0"
 for %%A in (%*) do (
-  if /I "%%~A"=="-DryRun" set "WRAPPER_DRY_RUN=1"
+  if /I "%%~A"=="-DryRun"           set "WRAPPER_DRY_RUN=1"
+  if /I "%%~A"=="-ValidateRealPath" set "WRAPPER_DRY_RUN=1"
 )
 
 REM Pin the working directory to the repo root before invoking the

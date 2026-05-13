@@ -87,9 +87,12 @@ def test_deploy_bat_rejects_unknown_profile_with_clear_error() -> None:
 def test_full_profile_runs_full_backend_pytest_and_frontend_npm_test() -> None:
     text = _read(DEPLOY_BAT)
     # The unbranded `pytest -q -p no:cacheprovider --basetemp "..."`
-    # invocation must still exist as the full-profile path.
+    # invocation must still exist as the full-profile path. Either
+    # delayed (`!VAR!`) or normal (`%VAR%`) expansion is accepted;
+    # the subroutine refactor uses normal expansion since the call
+    # no longer lives inside a parenthesized IF block.
     assert re.search(
-        r'pytest\s+-q\s+-p\s+no:cacheprovider\s+--basetemp\s+"!DEPLOY_PYTEST_BASETEMP!"',
+        r'pytest\s+-q\s+-p\s+no:cacheprovider\s+--basetemp\s+"[!%]DEPLOY_PYTEST_BASETEMP[!%]"',
         text,
     ), "full profile must still invoke full pytest with --basetemp"
     # The full frontend `npm test` path is still used outside the fast
@@ -586,3 +589,276 @@ def test_wrapper_rejects_missing_testprofile_value(tmp_path: Path) -> None:
     )
     assert completed.returncode == 64, completed.stdout + completed.stderr
     assert "-TestProfile requires a value" in completed.stdout
+
+
+# ── Post-schema parser hardening ─────────────────────────────────────
+
+
+def test_no_parens_inside_top_level_if_block_bodies() -> None:
+    """Regression for the post-schema "... was unexpected at this time."
+    parse failure. ``echo ... (profile: %TEST_PROFILE%)...`` and
+    ``echo ... (tsc --noEmit)...`` lived inside large parenthesized
+    IF blocks at script top level. The literal ``(...)`` text in
+    those echoes prematurely closed the block parens, leaving the
+    parser unable to balance the outer block.
+
+    This test enforces: no echo/set line that lives inside a top-
+    level parenthesized IF / FOR block may contain a literal ``(``
+    or ``)`` unless the parens are escaped (``^(``, ``^)``) or the
+    whole line is a comment. Subroutines reached via ``call :LABEL``
+    are exempt because their body is parsed sequentially, not as
+    part of any caller's block.
+    """
+    text = _read(DEPLOY_BAT)
+    lines = text.splitlines()
+
+    in_subroutine = False
+    paren_depth = 0
+    offenders: list[tuple[int, str]] = []
+
+    for i, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        # Label transitions: a `:LABEL` at column 0 starts a subroutine
+        # / named region. Reaching another label or the implicit `:END`
+        # exits it.
+        if stripped.startswith(":") and not stripped.startswith("::"):
+            # Subroutine bodies are reached only via `call :LABEL`, so
+            # paren_depth is reset at every label boundary.
+            in_subroutine = True
+            paren_depth = 0
+            continue
+        # `goto :PARSE_ARGS` etc don't change subroutine status, but
+        # falling off the top of the script (before any label) is the
+        # top-level region.
+        if not in_subroutine:
+            # Track parenthesized block depth crudely. Ignore quoted
+            # text and `^(` / `^)` escapes.
+            cleaned = re.sub(r'"[^"]*"', '', raw)
+            cleaned = cleaned.replace("^(", "").replace("^)", "")
+            opens = cleaned.count("(")
+            closes = cleaned.count(")")
+            # We only care about lines that have an echo/set with
+            # literal parens inside an open block.
+            if paren_depth > 0:
+                if re.match(r'\s*(echo|set)\s', raw, re.IGNORECASE):
+                    code = re.sub(r'"[^"]*"', '', raw)
+                    code = code.replace("^(", "").replace("^)", "")
+                    if "(" in code or ")" in code:
+                        offenders.append((i, raw.rstrip()))
+            paren_depth += opens - closes
+            if paren_depth < 0:
+                paren_depth = 0
+    assert not offenders, (
+        "echo/set lines with unescaped () inside top-level parenthesized "
+        "blocks (would cause '... was unexpected at this time.'):\n"
+        + "\n".join(f"  line {i}: {line}" for i, line in offenders)
+    )
+
+
+# ── Step tracing ─────────────────────────────────────────────────────
+
+
+def test_deploy_bat_defines_step_subroutine() -> None:
+    text = _read(DEPLOY_BAT)
+    assert ":STEP" in text
+    assert re.search(r":STEP\s*\n\s*echo \[STEP\]\s+%~1", text), (
+        "expected a :STEP subroutine that echoes [STEP] <name>"
+    )
+
+
+def test_deploy_bat_traces_key_post_schema_steps() -> None:
+    """The deploy script must log named trace steps so the next time a
+    deploy fails we can see which step ran last."""
+    text = _read(DEPLOY_BAT)
+    for step in (
+        "validate-source-root",
+        "database-check",
+        "schema-update",
+        "backend-validation-plan",
+        "frontend-validation-plan",
+        "restart-services",
+    ):
+        assert f'call :STEP "{step}"' in text, (
+            f"deploy script must call :STEP \"{step}\" so failures pinpoint phase"
+        )
+
+
+# ── -ValidateRealPath flag ──────────────────────────────────────────
+
+
+def test_deploy_bat_supports_validate_real_path_flag() -> None:
+    text = _read(DEPLOY_BAT)
+    assert "-ValidateRealPath" in text
+    assert ":HANDLE_VALIDATEREALPATH" in text
+    assert "VALIDATE_REAL_PATH" in text
+    # The validate-real-path flag must skip mirror / install / schema /
+    # test / build / restart but still walk through the test-plan
+    # branching. The script jumps to :POST_SCHEMA_PLAN to skip the
+    # side-effectful pre-test phase, and the per-phase guards must
+    # short-circuit individual execution calls.
+    assert 'if "%VALIDATE_REAL_PATH%"=="1" goto :POST_SCHEMA_PLAN' in text
+    # After the plan section it must exit via the dedicated exit label.
+    assert ":PLAN_REPORT_DONE" in text
+
+
+def test_wrapper_bat_skips_pause_on_validate_real_path() -> None:
+    text = _read(WRAPPER_BAT)
+    assert "-ValidateRealPath" in text
+    assert 'if "%WRAPPER_DRY_RUN%"=="0" pause' in text
+
+
+# ── Subroutine refactor: backend/frontend phases live outside the
+#    top-level parenthesized IF blocks that previously broke the parser
+#    after schema update ───────────────────────────────────────────────
+
+
+def test_backend_validation_runs_in_subroutine() -> None:
+    text = _read(DEPLOY_BAT)
+    assert ":RUN_BACKEND_VALIDATION" in text
+    # The pytest call must live inside the subroutine, not inside a
+    # top-level `if "%RUN_BACKEND_TESTS%"=="1" (` block.
+    after_label = text.split(":RUN_BACKEND_VALIDATION", 1)[1]
+    assert "pytest -q -p no:cacheprovider" in after_label
+
+
+def test_frontend_validation_runs_in_subroutines() -> None:
+    text = _read(DEPLOY_BAT)
+    for label in (
+        ":FRONTEND_PHASE",
+        ":INSTALL_FRONTEND_DEPS",
+        ":BUILD_FRONTEND",
+        ":RUN_TYPESCRIPT_CHECK",
+        ":RUN_FRONTEND_VALIDATION",
+    ):
+        assert label in text, f"deploy script must define {label}"
+
+
+# ── Opportunistic behavioral tests for -ValidateRealPath ────────────
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="ValidateRealPath behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_validate_real_path_fast_reaches_test_plan(tmp_path: Path) -> None:
+    """The real-path failure mode was a parser error AFTER schema update
+    but BEFORE backend tests ran. ``-ValidateRealPath`` must traverse
+    that exact branching without touching the filesystem / DB / venv /
+    services, and must exit 0 if the parser can balance the script."""
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+            "fast",
+            "-ValidateRealPath",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, (
+        f"ValidateRealPath should exit 0 — a non-zero exit usually means "
+        f"the batch parser tripped post-schema.\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    out = completed.stdout
+    assert "[STEP] backend-validation-plan" in out
+    assert "[STEP] frontend-validation-plan" in out
+    assert "Backend validation plan:" in out
+    assert "Frontend validation plan:" in out
+    # No real side effect should have run.
+    for forbidden in (
+        "Mirroring repo to deployment folder",
+        "Installing backend dependencies",
+        "Running backend tests",
+        "Installing frontend dependencies",
+        "Building frontend",
+        "Running TypeScript check",
+        "Starting backend",
+    ):
+        assert forbidden not in out, (
+            f"ValidateRealPath must not perform side effect: {forbidden!r}"
+        )
+    # And the unexpected-at-this-time symptom must not appear.
+    assert "was unexpected at this time" not in out.lower()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="ValidateRealPath behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_validate_real_path_full(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+            "full",
+            "-ValidateRealPath",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    out = completed.stdout
+    assert "Test profile: full" in out
+    assert "[STEP] backend-validation-plan" in out
+    assert "[STEP] frontend-validation-plan" in out
+    assert "was unexpected at this time" not in out.lower()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="ValidateRealPath behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_validate_real_path_no_args_defaults_full(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        ["cmd.exe", "/c", str(WRAPPER_BAT), "-ValidateRealPath"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "Test profile: full" in completed.stdout
+    assert "was unexpected at this time" not in completed.stdout.lower()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Windows" or shutil.which("cmd.exe") is None,
+    reason="ValidateRealPath behavioral test requires Windows + cmd.exe",
+)
+def test_wrapper_validate_real_path_frontend_profile_skips_backend(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            "cmd.exe",
+            "/c",
+            str(WRAPPER_BAT),
+            "-TestProfile",
+            "frontend",
+            "-ValidateRealPath",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    out = completed.stdout
+    assert "Backend tests skipped: -TestProfile frontend" in out
+    assert "Frontend validation plan:" in out
+    assert "was unexpected at this time" not in out.lower()
