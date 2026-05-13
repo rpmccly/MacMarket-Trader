@@ -79,8 +79,11 @@ When Phase C1 is authorized, the planned implementations will need:
    here is the *accumulated corpus* of exported B8 reviews across a
    representative sector / regime mix.
 2. **Thinkorswim spot-check / parity review.** Real Thinkorswim fixtures
-   landing in `tests/fixtures/thinkorswim_momentum/` and the
-   `parity_required_for_active` flag flipping to `True`.
+   landing in `tests/fixtures/thinkorswim_momentum/` and the structured
+   parity workflow reaching `thinkorswim_parity_workflow_status == "passed"`
+   (see [`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md)
+   for the manifest schema, validator CLI, and report interpretation).
+   The `parity_required_for_active` flag must also be flipped to `True`.
 3. **Operator authorization.** Explicit go-ahead per family.
 
 ## Env vars

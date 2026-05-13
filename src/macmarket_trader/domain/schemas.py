@@ -1479,6 +1479,23 @@ class MomentumRankingStatus(BaseModel):
     # here so operators can confirm the new build is live without git
     # forensics.
     queue_response_consistency_guard: bool = True
+    # Thinkorswim parity workflow status. Resolved lazily by inspecting
+    # the manifest + report files in the fixture directory. The endpoint
+    # never runs full parity calculations on a status read — that work
+    # belongs to the CLI / test path. See
+    # ``docs/thinkorswim-momentum-parity.md``.
+    thinkorswim_parity_workflow_status: Literal[
+        "missing", "partial", "ready", "passed", "failed", "pending"
+    ] = "missing"
+    thinkorswim_parity_fixture_count: int = 0
+    thinkorswim_parity_fixtures_ready: int = 0
+    thinkorswim_parity_fixtures_passed: int | None = None
+    thinkorswim_parity_fixtures_failed: int | None = None
+    thinkorswim_parity_report_available: bool = False
+    thinkorswim_parity_report_path: str | None = None
+    thinkorswim_parity_last_report_generated_at: str | None = None
+    thinkorswim_parity_summary: str | None = None
+    thinkorswim_parity_reason_codes: list[str] = Field(default_factory=list)
 
 
 class MomentumRankingContribution(BaseModel):

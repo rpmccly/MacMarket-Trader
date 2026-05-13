@@ -780,12 +780,52 @@ def build_momentum_ranking_status(
     except OSError:
         manifest_present = False
 
-    parity_status = (
-        "validated_against_thinkorswim_fixture"
-        if manifest_present
-        else "pending_thinkorswim_fixture_validation"
-    )
-    real_thinkorswim_parity_pending = not manifest_present
+    # Resolve the richer Thinkorswim parity workflow status from the
+    # fixture folder. This only inspects manifest + report files — it
+    # never runs the indicator math or touches the database. Status
+    # reads must stay cheap; the full parity comparison belongs in the
+    # CLI / test path.
+    fixture_dir = manifest_resolved.parent
+    try:
+        from macmarket_trader.indicators.thinkorswim_parity import (
+            build_thinkorswim_momentum_parity_status,
+        )
+
+        parity_workflow = build_thinkorswim_momentum_parity_status(fixture_dir)
+    except Exception:  # pragma: no cover - defensive; status must not raise.
+        parity_workflow = {
+            "status": "missing",
+            "fixture_dir": str(fixture_dir),
+            "manifest_present": manifest_present,
+            "manifest_valid": False,
+            "fixtures_total": 0,
+            "fixtures_ready": 0,
+            "fixtures_passed": None,
+            "fixtures_failed": None,
+            "fixtures_skipped": None,
+            "last_report_generated_at": None,
+            "report_path": None,
+            "report_markdown_path": None,
+            "report_present": False,
+            "reason_codes": ["thinkorswim_manifest_missing"],
+            "summary": None,
+            "overall_status_from_report": None,
+        }
+
+    workflow_status = parity_workflow.get("status") or "missing"
+
+    if workflow_status == "passed":
+        parity_status = "validated_against_thinkorswim_fixture"
+    elif workflow_status == "failed":
+        parity_status = "thinkorswim_fixture_validation_failed"
+    elif manifest_present:
+        parity_status = "thinkorswim_fixture_present_pending_validation"
+    else:
+        parity_status = "pending_thinkorswim_fixture_validation"
+
+    # ``real_thinkorswim_parity_pending`` is the legacy gate: it stays
+    # True until parity has actually passed (workflow_status == "passed").
+    real_thinkorswim_parity_pending = workflow_status != "passed"
 
     enabled = mode in {"shadow", "active"}
     applied_by_default = mode == "active"
@@ -871,6 +911,16 @@ def build_momentum_ranking_status(
         active_delta_formula_version=ACTIVE_DELTA_FORMULA_VERSION,
         ranking_score_consistency_guard=RANKING_SCORE_CONSISTENCY_GUARD,
         queue_response_consistency_guard=QUEUE_RESPONSE_CONSISTENCY_GUARD,
+        thinkorswim_parity_workflow_status=workflow_status,
+        thinkorswim_parity_fixture_count=int(parity_workflow.get("fixtures_total") or 0),
+        thinkorswim_parity_fixtures_ready=int(parity_workflow.get("fixtures_ready") or 0),
+        thinkorswim_parity_fixtures_passed=parity_workflow.get("fixtures_passed"),
+        thinkorswim_parity_fixtures_failed=parity_workflow.get("fixtures_failed"),
+        thinkorswim_parity_report_available=bool(parity_workflow.get("report_present")),
+        thinkorswim_parity_report_path=parity_workflow.get("report_path"),
+        thinkorswim_parity_last_report_generated_at=parity_workflow.get("last_report_generated_at"),
+        thinkorswim_parity_summary=parity_workflow.get("summary"),
+        thinkorswim_parity_reason_codes=list(parity_workflow.get("reason_codes") or []),
     )
 
 

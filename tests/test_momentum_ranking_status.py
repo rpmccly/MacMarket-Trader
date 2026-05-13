@@ -146,18 +146,110 @@ def test_missing_env_value_resolves_to_shadow_without_invalid_flag(tmp_path: Pat
     assert "invalid_env_value_resolved_to_shadow" not in status.reason_codes
 
 
-def test_manifest_present_marks_parity_validated(tmp_path: Path) -> None:
+def test_manifest_present_without_report_stays_pending(tmp_path: Path) -> None:
+    """Dropping a manifest alone must NOT mark parity as validated.
+
+    The old behavior was a known false positive — anyone could touch
+    an empty ``manifest.json`` and the status flipped to
+    "validated_against_thinkorswim_fixture". The Thinkorswim parity
+    workflow now requires a passing ``parity-report.json`` to flip
+    that state. A manifest with no report stays in the "ready"/
+    "pending" zone.
+    """
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    bars.write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-04-01,1,2,0.5,1.5,100\n",
+        encoding="utf-8",
+    )
     manifest = tmp_path / "manifest.json"
-    manifest.write_text("{\"fixtures\":[]}", encoding="utf-8")
+    manifest.write_text(
+        '{"fixtures":[{"name":"AAPL_1D","symbol":"AAPL","timeframe":"1D",'
+        '"bars_csv":"AAPL_1D_bars.csv",'
+        '"expected_latest":{"total_score":80},"tolerances":{"total_score":2}}]}',
+        encoding="utf-8",
+    )
     status = build_momentum_ranking_status(
         _settings_with_mode("shadow"),
         manifest_path=manifest,
     )
     assert status.parity_fixture_manifest_present is True
+    assert status.parity_status == "thinkorswim_fixture_present_pending_validation"
+    assert status.real_thinkorswim_parity_pending is True
+    assert status.parity_fixture_manifest_path is not None
+    # The new workflow status surfaces "ready" — staged fixtures but no
+    # parity report has been generated yet.
+    assert status.thinkorswim_parity_workflow_status == "ready"
+    assert status.thinkorswim_parity_fixture_count == 1
+    assert status.thinkorswim_parity_fixtures_ready == 1
+    assert status.thinkorswim_parity_report_available is False
+    assert "thinkorswim_parity_pending" in status.thinkorswim_parity_reason_codes
+    # Legacy reason code still surfaces while parity is not actually passed.
+    assert "thinkorswim_parity_pending" in status.reason_codes
+
+
+def test_parity_report_passed_marks_parity_validated(tmp_path: Path) -> None:
+    """A passing parity-report.json is what flips parity to validated."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    bars.write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-04-01,1,2,0.5,1.5,100\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"fixtures":[{"name":"AAPL_1D","symbol":"AAPL","timeframe":"1D",'
+        '"bars_csv":"AAPL_1D_bars.csv",'
+        '"expected_latest":{"total_score":80},"tolerances":{"total_score":2}}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "parity-report.json").write_text(
+        '{"schema_version":"thinkorswim_momentum_parity_report.v1",'
+        '"overall_status":"passed","fixtures_total":1,"fixtures_passed":1,'
+        '"fixtures_failed":0,"fixtures_skipped":0,'
+        '"generated_at":"2026-05-12T00:00:00+00:00","results":[]}',
+        encoding="utf-8",
+    )
+    status = build_momentum_ranking_status(
+        _settings_with_mode("shadow"),
+        manifest_path=manifest,
+    )
     assert status.parity_status == "validated_against_thinkorswim_fixture"
     assert status.real_thinkorswim_parity_pending is False
-    assert status.parity_fixture_manifest_path is not None
+    assert status.thinkorswim_parity_workflow_status == "passed"
+    assert status.thinkorswim_parity_report_available is True
+    assert status.thinkorswim_parity_last_report_generated_at == "2026-05-12T00:00:00+00:00"
+    assert "thinkorswim_parity_passed" in status.thinkorswim_parity_reason_codes
     assert "thinkorswim_parity_pending" not in status.reason_codes
+
+
+def test_parity_report_failed_surfaces_failure(tmp_path: Path) -> None:
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    bars.write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-04-01,1,2,0.5,1.5,100\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"fixtures":[{"name":"AAPL_1D","symbol":"AAPL","timeframe":"1D",'
+        '"bars_csv":"AAPL_1D_bars.csv",'
+        '"expected_latest":{"total_score":80},"tolerances":{"total_score":2}}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "parity-report.json").write_text(
+        '{"schema_version":"thinkorswim_momentum_parity_report.v1",'
+        '"overall_status":"failed","fixtures_total":1,"fixtures_passed":0,'
+        '"fixtures_failed":1,"fixtures_skipped":0,'
+        '"generated_at":"2026-05-12T00:00:00+00:00","results":[]}',
+        encoding="utf-8",
+    )
+    status = build_momentum_ranking_status(
+        _settings_with_mode("shadow"),
+        manifest_path=manifest,
+    )
+    assert status.parity_status == "thinkorswim_fixture_validation_failed"
+    assert status.real_thinkorswim_parity_pending is True
+    assert status.thinkorswim_parity_workflow_status == "failed"
+    assert status.thinkorswim_parity_fixtures_failed == 1
+    assert "thinkorswim_parity_failed" in status.thinkorswim_parity_reason_codes
 
 
 def test_status_payload_carries_no_approval_or_routing_fields(tmp_path: Path) -> None:

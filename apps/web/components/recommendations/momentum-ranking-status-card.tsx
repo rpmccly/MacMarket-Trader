@@ -29,10 +29,41 @@ function describeAppliedByDefault(status: MomentumRankingStatus): string {
 }
 
 function describeParity(status: MomentumRankingStatus): { label: string; tone: "good" | "warn" | "bad" | "neutral" } {
+  const workflow = status.thinkorswim_parity_workflow_status;
+  if (workflow === "passed") {
+    return { label: "Thinkorswim parity passed", tone: "good" };
+  }
+  if (workflow === "failed") {
+    return { label: "Thinkorswim parity failed", tone: "warn" };
+  }
+  if (workflow === "partial") {
+    return { label: "Thinkorswim parity partial — fixture files missing", tone: "warn" };
+  }
+  if (workflow === "ready") {
+    return { label: "Thinkorswim parity ready — run validator", tone: "neutral" };
+  }
   if (status.parity_fixture_manifest_present) {
-    return { label: "Thinkorswim parity manifest present", tone: "good" };
+    return { label: "Thinkorswim parity manifest present", tone: "neutral" };
   }
   return { label: "Thinkorswim parity pending", tone: "neutral" };
+}
+
+const PARITY_WORKFLOW_LABEL: Record<string, string> = {
+  missing: "Missing",
+  partial: "Partial",
+  ready: "Report available — pending",
+  passed: "Passed",
+  failed: "Failed",
+  pending: "Pending",
+};
+
+function parityWorkflowTone(
+  workflow: MomentumRankingStatus["thinkorswim_parity_workflow_status"],
+): "good" | "warn" | "bad" | "neutral" {
+  if (workflow === "passed") return "good";
+  if (workflow === "failed") return "warn";
+  if (workflow === "partial") return "warn";
+  return "neutral";
 }
 
 function modeTone(status: MomentumRankingStatus): "good" | "warn" | "bad" | "neutral" {
@@ -50,6 +81,13 @@ const REASON_LABELS: Record<string, string> = {
   active_blocked_parity_required: "Active blocked — parity required",
   // Phase B6 — safety-guard reason codes.
   active_mode_blocked_by_safety_guard: "Active blocked — safety guard not enabled",
+  // Thinkorswim parity workflow reason codes.
+  thinkorswim_manifest_missing: "Thinkorswim manifest missing",
+  thinkorswim_fixture_files_missing: "Thinkorswim fixture files missing",
+  thinkorswim_fixture_validation_failed: "Thinkorswim fixture validation failed",
+  thinkorswim_parity_passed: "Thinkorswim parity passed",
+  thinkorswim_parity_failed: "Thinkorswim parity failed",
+  thinkorswim_parity_partial: "Thinkorswim parity partial",
 };
 
 function reasonLabel(code: string): string {
@@ -320,6 +358,8 @@ export function MomentumRankingStatusCard({
           </ul>
         ) : null}
 
+        <ThinkorswimParityWorkflowSection status={status} />
+
         <p style={NOTE_STYLE} data-testid="momentum-ranking-status-deterministic-note">
           {DETERMINISTIC_NOTE}
         </p>
@@ -337,6 +377,110 @@ export function MomentumRankingStatusCard({
         </p>
       </div>
     </Card>
+  );
+}
+
+function ThinkorswimParityWorkflowSection({
+  status,
+}: {
+  status: MomentumRankingStatus;
+}) {
+  const workflow = status.thinkorswim_parity_workflow_status ?? "missing";
+  const workflowLabel = PARITY_WORKFLOW_LABEL[workflow] ?? "Pending";
+  const tone = parityWorkflowTone(workflow);
+  const fixtureCount = status.thinkorswim_parity_fixture_count ?? 0;
+  const fixturesReady = status.thinkorswim_parity_fixtures_ready ?? 0;
+  const fixturesPassed = status.thinkorswim_parity_fixtures_passed ?? null;
+  const fixturesFailed = status.thinkorswim_parity_fixtures_failed ?? null;
+  const reportAvailable = status.thinkorswim_parity_report_available === true;
+  const lastReportAt = status.thinkorswim_parity_last_report_generated_at ?? null;
+  const reasonCodes = status.thinkorswim_parity_reason_codes ?? [];
+  const summary = status.thinkorswim_parity_summary ?? null;
+  const reportPath = status.thinkorswim_parity_report_path ?? null;
+
+  return (
+    <div
+      role="region"
+      aria-label="Thinkorswim parity workflow"
+      data-testid="thinkorswim-parity-workflow-section"
+      className="op-stack"
+      style={{
+        gap: 8,
+        padding: "10px 12px",
+        borderRadius: 8,
+        background: "rgba(15, 24, 34, 0.55)",
+        border: "1px solid rgba(115, 138, 163, 0.22)",
+      }}
+    >
+      <div className="op-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <strong style={{ fontSize: "0.85rem" }}>Thinkorswim parity workflow</strong>
+        <StatusBadge
+          tone={tone}
+          data-testid="thinkorswim-parity-workflow-badge"
+        >
+          {workflowLabel}
+        </StatusBadge>
+        <StatusBadge tone="neutral" data-testid="thinkorswim-parity-fixture-count-badge">
+          Fixtures: {fixturesReady}/{fixtureCount}
+        </StatusBadge>
+        {reportAvailable ? (
+          <StatusBadge tone="neutral" data-testid="thinkorswim-parity-report-available-badge">
+            Report available
+          </StatusBadge>
+        ) : null}
+        {fixturesPassed !== null ? (
+          <StatusBadge tone={tone}>Passed: {fixturesPassed}</StatusBadge>
+        ) : null}
+        {fixturesFailed !== null && fixturesFailed > 0 ? (
+          <StatusBadge tone="warn">Failed: {fixturesFailed}</StatusBadge>
+        ) : null}
+      </div>
+      {summary ? (
+        <p
+          style={{ ...NOTE_STYLE, margin: 0 }}
+          data-testid="thinkorswim-parity-summary"
+        >
+          {summary}
+        </p>
+      ) : null}
+      {lastReportAt ? (
+        <p
+          style={{ ...NOTE_STYLE, margin: 0 }}
+          data-testid="thinkorswim-parity-last-report"
+        >
+          Last report generated at <code>{lastReportAt}</code>
+          {reportPath ? (
+            <>
+              {" "}
+              (<code>{reportPath}</code>)
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
+      {reasonCodes.length > 0 ? (
+        <div
+          className="op-row"
+          style={{ flexWrap: "wrap", gap: 6 }}
+          aria-label="Thinkorswim parity reason codes"
+          data-testid="thinkorswim-parity-reason-codes"
+        >
+          {reasonCodes.map((code) => (
+            <StatusBadge key={code} tone="neutral">
+              {reasonLabel(code)}
+            </StatusBadge>
+          ))}
+        </div>
+      ) : null}
+      <p
+        style={{ ...NOTE_STYLE, margin: 0 }}
+        data-testid="thinkorswim-parity-operator-hint"
+      >
+        Export Thinkorswim study CSVs and run{" "}
+        <code>python scripts/validate_thinkorswim_momentum_parity.py --write-report</code>{" "}
+        to update this status. A parity pass does not approve, reject, size, or route trades, and does not auto-activate Phase C.
+      </p>
+    </div>
   );
 }
 

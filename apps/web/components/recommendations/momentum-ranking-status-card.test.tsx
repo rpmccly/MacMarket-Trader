@@ -17,10 +17,18 @@ vi.mock("@/components/operator-ui", async () => {
       ReactModule.createElement("div", { "data-testid": "empty" }, `${title} ${hint}`),
     ErrorState: ({ title, hint }: { title: string; hint: string }) =>
       ReactModule.createElement("div", { "data-testid": "error" }, `${title} ${hint}`),
-    StatusBadge: ({ tone, children }: { tone?: string; children: ReactNode }) =>
+    StatusBadge: ({
+      tone,
+      children,
+      ...rest
+    }: {
+      tone?: string;
+      children: ReactNode;
+      [key: string]: unknown;
+    }) =>
       ReactModule.createElement(
         "span",
-        { className: `op-badge op-badge-${tone ?? "neutral"}` },
+        { className: `op-badge op-badge-${tone ?? "neutral"}`, ...rest },
         children,
       ),
   };
@@ -285,5 +293,115 @@ describe("MomentumRankingStatusCard", () => {
     expect(html).toContain("data-testid=\"momentum-ranking-status-active-delta-scale-invalid\"");
     expect(html).toContain("MACMARKET_MOMENTUM_ACTIVE_DELTA_SCALE");
     expect(html).toContain("falling back to the deterministic default 0.35");
+  });
+
+  // ── Thinkorswim parity workflow ─────────────────────────────────────
+
+  it("renders the Thinkorswim parity workflow section (missing) by default", () => {
+    const html = renderToStaticMarkup(<MomentumRankingStatusCard status={shadowStatus()} />);
+    expect(html).toContain('data-testid="thinkorswim-parity-workflow-section"');
+    expect(html).toContain('data-testid="thinkorswim-parity-workflow-badge"');
+    expect(html).toContain('data-testid="thinkorswim-parity-fixture-count-badge"');
+    expect(html).toContain('data-testid="thinkorswim-parity-operator-hint"');
+    expect(html).toContain("Thinkorswim parity workflow");
+    expect(html).toContain("python scripts/validate_thinkorswim_momentum_parity.py");
+  });
+
+  it("renders 'Passed' status when the parity workflow reports passed", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixture_count: 5,
+          thinkorswim_parity_fixtures_ready: 5,
+          thinkorswim_parity_fixtures_passed: 5,
+          thinkorswim_parity_fixtures_failed: 0,
+          thinkorswim_parity_report_available: true,
+          thinkorswim_parity_last_report_generated_at: "2026-05-12T01:00:00+00:00",
+          thinkorswim_parity_reason_codes: ["thinkorswim_parity_passed"],
+          thinkorswim_parity_summary: "Parity passed for 5/5 fixtures.",
+          parity_fixture_manifest_present: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Passed");
+    expect(html).toContain("Fixtures: 5/5");
+    expect(html).toContain("Passed: 5");
+    expect(html).toContain('data-testid="thinkorswim-parity-report-available-badge"');
+    expect(html).toContain("Parity passed for 5/5 fixtures");
+    expect(html).toContain("Thinkorswim parity passed");
+    expect(html).toContain('data-testid="thinkorswim-parity-last-report"');
+  });
+
+  it("renders 'Failed' status when the parity workflow reports failed", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "failed",
+          thinkorswim_parity_fixture_count: 5,
+          thinkorswim_parity_fixtures_ready: 5,
+          thinkorswim_parity_fixtures_passed: 3,
+          thinkorswim_parity_fixtures_failed: 2,
+          thinkorswim_parity_report_available: true,
+          thinkorswim_parity_reason_codes: ["thinkorswim_parity_failed"],
+          thinkorswim_parity_summary: "Parity failed for 2 fixture(s). Review parity-report.md.",
+          parity_fixture_manifest_present: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Failed");
+    expect(html).toContain("Failed: 2");
+    expect(html).toContain("Thinkorswim parity failed");
+    expect(html).toContain("Parity failed for 2 fixture(s)");
+  });
+
+  it("renders 'Partial' status when fixture files are missing", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "partial",
+          thinkorswim_parity_fixture_count: 5,
+          thinkorswim_parity_fixtures_ready: 2,
+          thinkorswim_parity_reason_codes: ["thinkorswim_fixture_files_missing"],
+          thinkorswim_parity_summary:
+            "2/5 fixtures have all required CSV files. Add the missing files and rerun the validator.",
+          parity_fixture_manifest_present: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Partial");
+    expect(html).toContain("Fixtures: 2/5");
+    expect(html).toContain("Thinkorswim fixture files missing");
+  });
+
+  it("parity workflow section never includes approval/order/route language", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixtures_passed: 5,
+          thinkorswim_parity_fixture_count: 5,
+          thinkorswim_parity_report_available: true,
+        })}
+      />,
+    ).toLowerCase();
+    // Affirmative trade-action / approval / routing language must never
+    // appear here. The hint copy contains the negation "does not
+    // auto-activate Phase C" so we deliberately don't list
+    // "activate phase c" as a forbidden substring (it matches the
+    // negation by substring).
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "promote to recommendation",
+      "buy now",
+      "sell now",
+    ]) {
+      expect(html.includes(forbidden)).toBe(false);
+    }
+    // A parity pass surfaces explicit non-activation copy.
+    expect(html).toContain("does not auto-activate phase c");
   });
 });

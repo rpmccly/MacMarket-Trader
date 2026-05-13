@@ -1,30 +1,46 @@
 {
-  "_comment": "Example manifest for Thinkorswim Momentum Intelligence parity fixtures. Copy to manifest.json and replace the example values with real Thinkorswim exports. Do not commit fabricated parity values. See README.md in this directory for the full workflow.",
+  "_comment": "Example manifest for Thinkorswim Momentum Intelligence parity fixtures. Copy to manifest.json and replace the example values with real Thinkorswim exports. Do not commit fabricated parity values. See README.md and docs/thinkorswim-momentum-parity.md for the full workflow.",
+  "schema_version": "thinkorswim_momentum_parity.v1",
+  "generated_at": "2026-05-12T00:00:00Z",
+  "source": "thinkorswim",
+  "study_names": [
+    "ST_TrueMomentumScoreSTUDY",
+    "ST_TrueMomentumSTUDY",
+    "ST_HiLoEliteSTUDY"
+  ],
   "fixtures": [
     {
-      "name": "AAPL_1D_sample",
-      "symbol": "AAPL",
+      "name": "XLK_1D_sample",
+      "symbol": "XLK",
       "timeframe": "1D",
-      "bars_csv": "AAPL_1D_bars.csv",
-      "study_csv": "AAPL_1D_study.csv",
-      "higher_timeframe_bars_csv": "AAPL_1W_bars.csv",
+      "bars_csv": "XLK_1D_bars.csv",
+      "study_csv": "XLK_1D_study.csv",
+      "higher_timeframe_bars_csv": "XLK_1W_bars.csv",
+      "study_timezone": "America/New_York",
+      "comparison_window": 5,
+      "label_must_match": false,
+      "notes": "Example only. Replace numbers with real Thinkorswim study values before relying on the parity report.",
       "expected_latest": {
         "total_score": 80,
+        "total_label": "Bull",
+        "trend_score": 75.0,
+        "momo_score": 83.33,
         "true_momentum": 67.25,
         "true_momentum_ema": 61.40,
         "hilo_thrust": 20,
         "hilo_output": 20,
-        "trend_score": 75.0,
-        "momo_score": 83.33
+        "pullback_signal": false,
+        "reversal_warning": false,
+        "no_trade_warning": false
       },
       "tolerances": {
         "total_score": 2,
+        "trend_score": 2.5,
+        "momo_score": 2.5,
         "true_momentum": 1.0,
         "true_momentum_ema": 1.0,
         "hilo_thrust": 5,
-        "hilo_output": 5,
-        "trend_score": 2.5,
-        "momo_score": 2.5
+        "hilo_output": 5
       }
     }
   ]

@@ -123,6 +123,11 @@ Under these values:
 
 1. **Real Thinkorswim parity fixtures.** Land measured fixtures in
    `tests/fixtures/thinkorswim_momentum/` and update `manifest.json`.
+   The end-to-end workflow (manifest schema, exports, validator CLI,
+   report interpretation) is documented in
+   [`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md).
+   The resolved `thinkorswim_parity_workflow_status` is surfaced on
+   `MomentumRankingStatus` and rendered in the Settings card.
 2. **Accumulated B8 outcome evidence corpus.** The B8 feature itself
    is implemented — what remains pending is enough exported B8
    outcome reviews across a representative sector / regime mix to

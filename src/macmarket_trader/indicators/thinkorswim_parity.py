@@ -1,0 +1,1475 @@
+"""Thinkorswim Momentum Intelligence parity workflow.
+
+Production-side module that owns the operator-supplied Thinkorswim CSV
+fixture contract for the Momentum Intelligence Layer. Splits cleanly
+into three concerns:
+
+1. **Parsing / normalization.** ``parse_thinkorswim_bars_csv`` and
+   ``parse_thinkorswim_study_csv`` read the operator's Thinkorswim
+   exports with case- / whitespace- / underscore-insensitive column
+   matching. ``normalize_thinkorswim_columns`` is the underlying
+   header normalizer.
+2. **Manifest + folder validation.** ``load_thinkorswim_manifest`` and
+   ``validate_thinkorswim_fixture_folder`` enforce the
+   ``manifest.json`` contract documented in
+   ``docs/thinkorswim-momentum-parity.md`` *without* running the
+   indicator math.
+3. **Comparison + status.** ``compare_momentum_to_thinkorswim`` runs
+   :class:`MomentumChartService` against a fixture's bars and compares
+   the deterministic payload to the operator-supplied
+   ``expected_latest`` values (and to the study CSV's last row when
+   available). ``build_thinkorswim_parity_report`` aggregates results
+   into Markdown / JSON.
+   ``build_thinkorswim_momentum_parity_status`` is the cheap,
+   read-only status helper consumed by the Settings card — it never
+   runs indicator math, only inspects the manifest / report files on
+   disk.
+
+The module is intentionally **research-only**:
+
+- it never approves, rejects, sizes, routes, opens, closes, or settles
+  trades,
+- it never creates recommendations / paper orders,
+- it never mutates settings, the database, or third-party services,
+- and it never calls an LLM.
+
+A failing parity report is loud diagnostic evidence; it does not
+"deactivate" any production switch automatically.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import math
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, date as date_cls, datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+
+from macmarket_trader.domain.schemas import Bar
+
+
+# ── canonical study field names ─────────────────────────────────────────────
+
+
+STUDY_FIELDS: tuple[str, ...] = (
+    "total_score",
+    "true_momentum",
+    "true_momentum_ema",
+    "hilo_thrust",
+    "hilo_output",
+    "trend_score",
+    "momo_score",
+)
+
+# Optional categorical / flag fields. The numeric study fields above are
+# compared with per-field absolute tolerances; the fields below are
+# compared by equality (after canonical normalization). Operators may
+# omit any of them.
+LABEL_FIELDS: tuple[str, ...] = (
+    "total_label",
+    "pullback_signal",
+    "reversal_warning",
+    "no_trade_warning",
+)
+
+
+# ── column-name normalization ───────────────────────────────────────────────
+
+
+def _normalize_key(value: str) -> str:
+    """Lowercase a column header and strip non-alphanumeric characters.
+
+    ``Total Score`` → ``totalscore``; ``HLP_Output`` → ``hlpoutput``.
+    """
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+_STUDY_FIELD_BY_KEY: dict[str, str] = {
+    # total score
+    "totalscore": "total_score",
+    "dailyscore": "total_score",
+    # total label (Strong Bull / Bull / Neutral / Bear / Strong Bear / etc.)
+    "totallabel": "total_label",
+    "label": "total_label",
+    # true momentum
+    "truemomentum": "true_momentum",
+    # true momentum EMA — accept several common variants. ``EMA`` is what the
+    # source ST_TrueMomentumSTUDY plot is actually called; operators often
+    # rename it on export.
+    "truemomentumema": "true_momentum_ema",
+    "ema": "true_momentum_ema",
+    # HiLo thrust
+    "hilothrust": "hilo_thrust",
+    # HLP composite output / HiLo Score
+    "hlpoutput": "hilo_output",
+    "hilooutput": "hilo_output",
+    "hiloscore": "hilo_output",
+    # Trend / Momo
+    "trend": "trend_score",
+    "trendscore": "trend_score",
+    "momo": "momo_score",
+    "momoscore": "momo_score",
+    # Signal flags
+    "pullbacksignal": "pullback_signal",
+    "pullback": "pullback_signal",
+    "reversalwarning": "reversal_warning",
+    "notradewarning": "no_trade_warning",
+    "notrade": "no_trade_warning",
+}
+
+
+_BAR_FIELDS_BY_KEY: dict[str, str] = {
+    "date": "date",
+    "datetime": "datetime",
+    "time": "datetime",
+    "timestamp": "datetime",
+    "open": "open",
+    "o": "open",
+    "high": "high",
+    "h": "high",
+    "low": "low",
+    "l": "low",
+    "close": "close",
+    "c": "close",
+    "last": "close",
+    "volume": "volume",
+    "vol": "volume",
+    "v": "volume",
+}
+
+
+class ParityFixtureError(AssertionError):
+    """Raised when a fixture's data is missing or malformed.
+
+    Inherits from ``AssertionError`` so pytest surfaces it as a normal
+    test failure rather than an unexpected exception. Carrying the
+    original file path / column in the message is required.
+    """
+
+
+# ── primitive parsers ───────────────────────────────────────────────────────
+
+
+def parse_float(value: Any) -> float | None:
+    """Best-effort float parser.
+
+    Returns ``None`` for ``None``/empty/``"NaN"``/``"#N/A"``/whitespace-only
+    strings. Strips commas, percent signs, and surrounding whitespace.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # Avoid treating True/False as 1/0 silently — they are flags, not numbers.
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"nan", "n/a", "#n/a", "na", "null", "none", "-"}:
+        return None
+    cleaned = text.replace(",", "").replace("%", "").replace("$", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def parse_int(value: Any) -> int | None:
+    flt = parse_float(value)
+    if flt is None:
+        return None
+    return int(round(flt))
+
+
+def parse_bool(value: Any) -> bool | None:
+    """Parse a Thinkorswim-style flag value to ``bool`` or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if math.isnan(value) if isinstance(value, float) else False:
+            return None
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"true", "yes", "y", "1", "on"}:
+        return True
+    if text in {"false", "no", "n", "0", "off"}:
+        return False
+    return None
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    """Parse a Thinkorswim-style date/time string into a UTC datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date_cls):
+        return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    iso_text = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(iso_text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        pass
+    fmts = (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%y %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+    )
+    for fmt in fmts:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_date(value: Any) -> date_cls | None:
+    dt = parse_datetime(value)
+    if dt is None:
+        return None
+    return dt.date()
+
+
+# ── manifest schema ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ParityFixtureSpec:
+    """Validated single-fixture entry from ``manifest.json``."""
+
+    name: str
+    symbol: str
+    timeframe: str
+    bars_csv: Path
+    study_csv: Path | None
+    higher_timeframe_bars_csv: Path | None
+    expected_latest: Mapping[str, float]
+    expected_labels: Mapping[str, str]
+    tolerances: Mapping[str, float]
+    label_must_match: bool
+    comparison_window: int
+    study_timezone: str
+    notes: str | None
+    raw: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ParityManifest:
+    """Top-level manifest container exposing fixture-list metadata."""
+
+    schema_version: str
+    generated_at: datetime | None
+    source: str
+    study_names: tuple[str, ...]
+    fixtures: tuple[ParityFixtureSpec, ...]
+    raw: Mapping[str, Any]
+
+
+# Default per-field absolute tolerances. Conservative starting values
+# documented in the operator workflow.
+DEFAULT_TOLERANCES: Mapping[str, float] = {
+    "total_score": 2.0,
+    "trend_score": 2.5,
+    "momo_score": 2.5,
+    "true_momentum": 1.0,
+    "true_momentum_ema": 1.0,
+    "hilo_thrust": 5.0,
+    "hilo_output": 5.0,
+}
+
+# Allowed timeframe tokens.
+_ALLOWED_TIMEFRAMES = {"1D", "1W", "4H", "1H"}
+
+# Recommended Thinkorswim study script names. Used for documentation /
+# validation only — the parity comparison itself does not care which
+# studies produced the values.
+RECOMMENDED_STUDY_NAMES: tuple[str, ...] = (
+    "ST_TrueMomentumScoreSTUDY",
+    "ST_TrueMomentumSTUDY",
+    "ST_HiLoEliteSTUDY",
+)
+
+
+def _coerce_tolerances(raw: Any, fixture_name: str) -> dict[str, float]:
+    """Validate the per-fixture tolerances mapping.
+
+    Returns only what the operator supplied. Defaults from
+    :data:`DEFAULT_TOLERANCES` are applied lazily at comparison time
+    (see :func:`compare_with_tolerance`) so the manifest round-trips
+    cleanly and operators see only their own tolerances in the spec.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ParityFixtureError(
+            f"fixture {fixture_name!r} tolerances must be a mapping"
+        )
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if key not in STUDY_FIELDS:
+            raise ParityFixtureError(
+                f"fixture {fixture_name!r} tolerance for unknown field {key!r}"
+            )
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ParityFixtureError(
+                f"fixture {fixture_name!r} tolerance for {key!r} is not numeric: {value!r}"
+            ) from exc
+    return out
+
+
+def resolve_tolerance(
+    tolerances: Mapping[str, float],
+    field: str,
+    *,
+    default_tolerance: float = 1.0,
+) -> float:
+    """Return the per-field tolerance, falling back to defaults."""
+    if field in tolerances:
+        return float(tolerances[field])
+    if field in DEFAULT_TOLERANCES:
+        return float(DEFAULT_TOLERANCES[field])
+    return float(default_tolerance)
+
+
+def _split_expected(raw: Mapping[str, Any], fixture_name: str) -> tuple[dict[str, float], dict[str, str]]:
+    """Split ``expected_latest`` into numeric vs label/flag buckets."""
+    numeric: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    for key, value in raw.items():
+        if key in STUDY_FIELDS:
+            try:
+                numeric[str(key)] = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ParityFixtureError(
+                    f"fixture {fixture_name!r} expected_latest {key!r} is not numeric: {value!r}"
+                ) from exc
+        elif key in LABEL_FIELDS:
+            labels[str(key)] = str(value).strip()
+        else:
+            raise ParityFixtureError(
+                f"fixture {fixture_name!r} expected_latest key {key!r} is not a known study field"
+            )
+    return numeric, labels
+
+
+def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
+    """Load and validate ``manifest.json``.
+
+    Returns the full :class:`ParityManifest` (top-level metadata + the
+    validated fixture list). Use :func:`load_manifest` for the legacy
+    "just give me the fixture list" entrypoint.
+    """
+    manifest_path = Path(manifest_path)
+    if not manifest_path.exists():
+        raise ParityFixtureError(f"manifest not found: {manifest_path}")
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ParityFixtureError(f"manifest is not valid JSON: {exc}") from exc
+
+    if not isinstance(raw, dict) or "fixtures" not in raw:
+        raise ParityFixtureError(
+            "manifest must be a JSON object with a top-level 'fixtures' array"
+        )
+
+    fixtures_raw = raw.get("fixtures")
+    if not isinstance(fixtures_raw, list) or not fixtures_raw:
+        raise ParityFixtureError("'fixtures' must be a non-empty list")
+
+    schema_version = str(raw.get("schema_version", "thinkorswim_momentum_parity.v1"))
+    source = str(raw.get("source", "thinkorswim"))
+    generated_at = parse_datetime(raw.get("generated_at") or raw.get("exported_at"))
+    study_names_raw = raw.get("study_names") or list(RECOMMENDED_STUDY_NAMES)
+    if not isinstance(study_names_raw, list) or any(not isinstance(s, str) for s in study_names_raw):
+        raise ParityFixtureError("'study_names' must be a list of strings")
+    study_names = tuple(str(s) for s in study_names_raw)
+
+    base_dir = manifest_path.parent
+    specs: list[ParityFixtureSpec] = []
+    seen_names: set[str] = set()
+    for index, entry in enumerate(fixtures_raw):
+        if not isinstance(entry, dict):
+            raise ParityFixtureError(f"fixture[{index}] must be an object")
+        for required in ("name", "symbol", "timeframe", "bars_csv"):
+            if required not in entry:
+                raise ParityFixtureError(
+                    f"fixture[{index}] missing required field: {required}"
+                )
+
+        name = str(entry["name"]).strip()
+        if not name:
+            raise ParityFixtureError(f"fixture[{index}] name must be non-empty")
+        if name in seen_names:
+            raise ParityFixtureError(f"duplicate fixture name in manifest: {name}")
+        seen_names.add(name)
+
+        timeframe = str(entry["timeframe"]).strip().upper()
+        if timeframe not in _ALLOWED_TIMEFRAMES:
+            raise ParityFixtureError(
+                f"fixture {name!r} timeframe must be one of "
+                f"{sorted(_ALLOWED_TIMEFRAMES)} (got {timeframe!r})"
+            )
+
+        expected = entry.get("expected_latest", {})
+        if not isinstance(expected, dict) or not expected:
+            raise ParityFixtureError(
+                f"fixture {name!r} must include a non-empty expected_latest mapping"
+            )
+        numeric_expected, label_expected = _split_expected(expected, name)
+        tolerances = _coerce_tolerances(entry.get("tolerances"), name)
+
+        study_csv = entry.get("study_csv")
+        htf_csv = entry.get("higher_timeframe_bars_csv")
+        notes_raw = entry.get("notes")
+        notes = str(notes_raw).strip() if isinstance(notes_raw, str) and notes_raw.strip() else None
+
+        comparison_window_raw = entry.get("comparison_window", 1)
+        try:
+            comparison_window = max(1, int(comparison_window_raw))
+        except (TypeError, ValueError) as exc:
+            raise ParityFixtureError(
+                f"fixture {name!r} comparison_window must be a positive integer "
+                f"(got {comparison_window_raw!r})"
+            ) from exc
+
+        label_must_match = bool(entry.get("label_must_match", False))
+        study_timezone = str(entry.get("study_timezone", "America/New_York"))
+
+        specs.append(
+            ParityFixtureSpec(
+                name=name,
+                symbol=str(entry["symbol"]).strip().upper(),
+                timeframe=timeframe,
+                bars_csv=(base_dir / str(entry["bars_csv"])).resolve(),
+                study_csv=(base_dir / str(study_csv)).resolve() if study_csv else None,
+                higher_timeframe_bars_csv=(
+                    (base_dir / str(htf_csv)).resolve() if htf_csv else None
+                ),
+                expected_latest=numeric_expected,
+                expected_labels=label_expected,
+                tolerances=tolerances,
+                label_must_match=label_must_match,
+                comparison_window=comparison_window,
+                study_timezone=study_timezone,
+                notes=notes,
+                raw=entry,
+            )
+        )
+
+    return ParityManifest(
+        schema_version=schema_version,
+        generated_at=generated_at,
+        source=source,
+        study_names=study_names,
+        fixtures=tuple(specs),
+        raw=raw,
+    )
+
+
+def load_manifest(manifest_path: Path) -> list[ParityFixtureSpec]:
+    """Backward-compat shim: return just the fixture list."""
+    return list(load_thinkorswim_manifest(manifest_path).fixtures)
+
+
+# ── CSV parsers ─────────────────────────────────────────────────────────────
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        raise ParityFixtureError(f"CSV file not found: {path}")
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        return [dict(row) for row in reader]
+
+
+def normalize_thinkorswim_columns(
+    row: Mapping[str, Any],
+    *,
+    kind: str = "study",
+) -> dict[str, Any]:
+    """Normalize Thinkorswim CSV headers to canonical keys.
+
+    ``kind`` selects which key map to use:
+
+    - ``"bars"``  → OHLCV / date / volume columns only,
+    - ``"study"`` → study output columns (also accepts bar date columns).
+
+    Returns a new dict keyed by canonical names, picking the *first*
+    occurrence of each canonical key. Unknown columns are dropped.
+    """
+    if kind == "bars":
+        key_map = _BAR_FIELDS_BY_KEY
+    elif kind == "study":
+        key_map = {**_BAR_FIELDS_BY_KEY, **_STUDY_FIELD_BY_KEY}
+    else:
+        raise ParityFixtureError(f"normalize_thinkorswim_columns: unknown kind {kind!r}")
+    canonical: dict[str, Any] = {}
+    for header, value in row.items():
+        if header is None:
+            continue
+        normalized = _normalize_key(str(header))
+        canonical_key = key_map.get(normalized)
+        if canonical_key is None:
+            continue
+        canonical.setdefault(canonical_key, value)
+    return canonical
+
+
+def parse_thinkorswim_bars_csv(path: Path) -> list[Bar]:
+    """Parse a Thinkorswim-style OHLCV CSV into a list of ``Bar`` rows.
+
+    Sort order matches CSV order; the indicator services re-sort by
+    timestamp or date as needed.
+    """
+    rows = _read_csv_rows(path)
+    if not rows:
+        raise ParityFixtureError(f"bars CSV is empty: {path}")
+
+    bars: list[Bar] = []
+    for line_no, raw_row in enumerate(rows, start=2):  # +1 for header, +1 for 1-indexed
+        row = normalize_thinkorswim_columns(raw_row, kind="bars")
+        when = parse_datetime(row.get("datetime"))
+        when_date = parse_date(row.get("date")) if "date" in row else (when.date() if when else None)
+        if when_date is None and when is not None:
+            when_date = when.date()
+        if when_date is None:
+            raise ParityFixtureError(
+                f"{path}: row {line_no} is missing a parseable date/datetime column "
+                f"(seen headers: {sorted(raw_row.keys())})"
+            )
+
+        open_ = parse_float(row.get("open"))
+        high = parse_float(row.get("high"))
+        low = parse_float(row.get("low"))
+        close = parse_float(row.get("close"))
+        volume = parse_int(row.get("volume")) or 0
+        if open_ is None or high is None or low is None or close is None:
+            raise ParityFixtureError(
+                f"{path}: row {line_no} is missing one of open/high/low/close (got {row!r})"
+            )
+
+        bars.append(
+            Bar(
+                date=when_date,
+                timestamp=when,
+                open=float(open_),
+                high=float(high),
+                low=float(low),
+                close=float(close),
+                volume=int(volume),
+            )
+        )
+    return bars
+
+
+# Legacy alias kept for the existing tests that import via the path-based
+# helper loader.
+load_bars_csv = parse_thinkorswim_bars_csv
+
+
+def parse_thinkorswim_study_csv(path: Path) -> list[dict[str, Any]]:
+    """Parse a Thinkorswim study export into normalized rows.
+
+    Each returned dict carries any of the canonical fields in
+    ``STUDY_FIELDS`` / ``LABEL_FIELDS`` that the CSV provided, plus
+    ``date`` / ``datetime`` if those columns were present. Numeric
+    values are parsed via :func:`parse_float` so they are either
+    ``float`` or ``None``. Flag fields are parsed via :func:`parse_bool`.
+    """
+    rows = _read_csv_rows(path)
+    if not rows:
+        raise ParityFixtureError(f"study CSV is empty: {path}")
+
+    out: list[dict[str, Any]] = []
+    for raw_row in rows:
+        canonical = normalize_thinkorswim_columns(raw_row, kind="study")
+        record: dict[str, Any] = {}
+        for field in STUDY_FIELDS:
+            if field in canonical:
+                record[field] = parse_float(canonical.get(field))
+        for field in LABEL_FIELDS:
+            if field in canonical:
+                value = canonical.get(field)
+                if field == "total_label":
+                    record[field] = (
+                        str(value).strip() if value is not None and str(value).strip() else None
+                    )
+                else:
+                    record[field] = parse_bool(value)
+        when = parse_datetime(canonical.get("datetime"))
+        when_date = parse_date(canonical.get("date")) if "date" in canonical else (when.date() if when else None)
+        if when_date is not None:
+            record["date"] = when_date
+        if when is not None:
+            record["datetime"] = when
+        out.append(record)
+    return out
+
+
+# Legacy alias.
+load_study_csv = parse_thinkorswim_study_csv
+
+
+def latest_study_row(study_rows: Iterable[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Return the row with the largest parseable date/datetime, or the last row."""
+    rows = list(study_rows)
+    if not rows:
+        raise ParityFixtureError("study CSV produced zero rows")
+    keyed = [(row.get("datetime") or row.get("date"), row) for row in rows]
+    if any(when is not None for when, _ in keyed):
+        keyed.sort(key=lambda item: (item[0] is not None, item[0] or 0))
+        return keyed[-1][1]
+    return rows[-1]
+
+
+# ── tolerance comparison ────────────────────────────────────────────────────
+
+
+def compare_with_tolerance(
+    expected: Mapping[str, float],
+    actual: Mapping[str, float | int | None],
+    tolerances: Mapping[str, float],
+    *,
+    label: str,
+    default_tolerance: float = 1.0,
+) -> list[str]:
+    """Return a list of human-readable mismatches, empty when within tolerance.
+
+    When a field is missing from ``tolerances`` the function falls back
+    to :data:`DEFAULT_TOLERANCES`, then to ``default_tolerance``.
+    """
+    mismatches: list[str] = []
+    for key, expected_value in expected.items():
+        if key not in STUDY_FIELDS:
+            mismatches.append(f"{label}: unknown field {key!r}")
+            continue
+        actual_value = actual.get(key) if isinstance(actual, Mapping) else None
+        if actual_value is None:
+            mismatches.append(f"{label}: missing actual value for {key!r}")
+            continue
+        try:
+            actual_float = float(actual_value)
+        except (TypeError, ValueError):
+            mismatches.append(f"{label}: non-numeric actual {key!r}={actual_value!r}")
+            continue
+        if key in tolerances:
+            tol = float(tolerances[key])
+        elif key in DEFAULT_TOLERANCES:
+            tol = float(DEFAULT_TOLERANCES[key])
+        else:
+            tol = float(default_tolerance)
+        if abs(actual_float - float(expected_value)) > tol:
+            mismatches.append(
+                f"{label}: {key} expected {expected_value} ± {tol}, actual {actual_float:.4f}"
+            )
+    return mismatches
+
+
+# ── comparison engine ───────────────────────────────────────────────────────
+
+
+@dataclass
+class FieldDelta:
+    field: str
+    expected: float
+    actual: float
+    abs_error: float
+    tolerance: float
+    within_tolerance: bool
+
+
+@dataclass
+class FixtureComparisonResult:
+    """Result of running MacMarket Momentum against a single fixture."""
+
+    fixture_name: str
+    symbol: str
+    timeframe: str
+    status: str  # passed | failed | skipped_missing_data | skipped_not_enough_history | skipped_manifest_missing
+    rows_compared: int
+    higher_timeframe_source: str | None
+    parity_status: str | None
+    derived_higher_timeframe: bool
+    field_deltas: list[FieldDelta] = field(default_factory=list)
+    label_mismatches: list[str] = field(default_factory=list)
+    mismatches: list[str] = field(default_factory=list)
+    reason_codes: list[str] = field(default_factory=list)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "passed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fixture_name": self.fixture_name,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "status": self.status,
+            "rows_compared": self.rows_compared,
+            "higher_timeframe_source": self.higher_timeframe_source,
+            "parity_status": self.parity_status,
+            "derived_higher_timeframe": self.derived_higher_timeframe,
+            "field_deltas": [
+                {
+                    "field": delta.field,
+                    "expected": delta.expected,
+                    "actual": delta.actual,
+                    "abs_error": delta.abs_error,
+                    "tolerance": delta.tolerance,
+                    "within_tolerance": delta.within_tolerance,
+                }
+                for delta in self.field_deltas
+            ],
+            "label_mismatches": list(self.label_mismatches),
+            "mismatches": list(self.mismatches),
+            "reason_codes": list(self.reason_codes),
+            "diagnostics": dict(self.diagnostics),
+        }
+
+
+def compare_momentum_to_thinkorswim(
+    fixture: ParityFixtureSpec,
+    *,
+    bars: Sequence[Bar] | None = None,
+    study_rows: Sequence[Mapping[str, Any]] | None = None,
+    higher_timeframe_bars: Sequence[Bar] | None = None,
+) -> FixtureComparisonResult:
+    """Run MacMarket Momentum against a fixture and produce a parity result.
+
+    Parameters
+    ----------
+    fixture:
+        Validated :class:`ParityFixtureSpec` from the manifest.
+    bars / study_rows / higher_timeframe_bars:
+        Optional pre-loaded inputs (used by the tests). When omitted
+        the function loads the fixture's CSVs from disk.
+
+    The function never approves, sizes, routes, opens, closes, or
+    settles trades. It only computes the deterministic Momentum
+    payload and reports whether it agrees with the operator-supplied
+    Thinkorswim values within tolerance.
+    """
+    if bars is None:
+        try:
+            bars = parse_thinkorswim_bars_csv(fixture.bars_csv)
+        except ParityFixtureError as exc:
+            return FixtureComparisonResult(
+                fixture_name=fixture.name,
+                symbol=fixture.symbol,
+                timeframe=fixture.timeframe,
+                status="skipped_missing_data",
+                rows_compared=0,
+                higher_timeframe_source=None,
+                parity_status=None,
+                derived_higher_timeframe=False,
+                reason_codes=["thinkorswim_fixture_files_missing"],
+                diagnostics={"error": str(exc)},
+            )
+
+    htf_bars = higher_timeframe_bars
+    if htf_bars is None and fixture.higher_timeframe_bars_csv is not None:
+        try:
+            htf_bars = parse_thinkorswim_bars_csv(fixture.higher_timeframe_bars_csv)
+        except ParityFixtureError as exc:
+            return FixtureComparisonResult(
+                fixture_name=fixture.name,
+                symbol=fixture.symbol,
+                timeframe=fixture.timeframe,
+                status="skipped_missing_data",
+                rows_compared=0,
+                higher_timeframe_source=None,
+                parity_status=None,
+                derived_higher_timeframe=False,
+                reason_codes=["thinkorswim_fixture_files_missing"],
+                diagnostics={"error": str(exc)},
+            )
+
+    if not bars:
+        return FixtureComparisonResult(
+            fixture_name=fixture.name,
+            symbol=fixture.symbol,
+            timeframe=fixture.timeframe,
+            status="skipped_not_enough_history",
+            rows_compared=0,
+            higher_timeframe_source=None,
+            parity_status=None,
+            derived_higher_timeframe=False,
+            reason_codes=["thinkorswim_fixture_validation_failed"],
+            diagnostics={"error": "bars CSV produced zero rows"},
+        )
+
+    # Lazy import to keep the module light when called purely for status.
+    from macmarket_trader.charts.momentum_service import MomentumChartService
+
+    service = MomentumChartService()
+    payload = service.build_payload(
+        symbol=fixture.symbol,
+        timeframe=fixture.timeframe,
+        bars=list(bars),
+        higher_timeframe_bars=list(htf_bars) if htf_bars else None,
+    )
+
+    snapshot = payload.latest_snapshot
+    if snapshot is None:
+        return FixtureComparisonResult(
+            fixture_name=fixture.name,
+            symbol=fixture.symbol,
+            timeframe=fixture.timeframe,
+            status="skipped_not_enough_history",
+            rows_compared=0,
+            higher_timeframe_source=payload.higher_timeframe_source,
+            parity_status=payload.parity_status,
+            derived_higher_timeframe=payload.higher_timeframe_source != "provided_higher_timeframe_bars",
+            reason_codes=["thinkorswim_fixture_validation_failed"],
+            diagnostics={"error": "payload.latest_snapshot is None"},
+        )
+
+    actual: dict[str, float] = {
+        "total_score": float(snapshot.total_score),
+        "true_momentum": float(snapshot.true_momentum),
+        "true_momentum_ema": float(snapshot.true_momentum_ema),
+        "hilo_thrust": float(snapshot.hilo_thrust),
+        "hilo_output": float(snapshot.hilo_score),
+        "trend_score": float(snapshot.trend_score),
+        "momo_score": float(snapshot.momo_score),
+    }
+
+    deltas: list[FieldDelta] = []
+    mismatches: list[str] = []
+    for key, expected_value in fixture.expected_latest.items():
+        if key not in actual:
+            mismatches.append(
+                f"{fixture.name}: MacMarket payload missing field {key!r}"
+            )
+            continue
+        actual_value = actual[key]
+        tol = resolve_tolerance(fixture.tolerances, key)
+        abs_error = abs(actual_value - float(expected_value))
+        within = abs_error <= tol
+        deltas.append(
+            FieldDelta(
+                field=key,
+                expected=float(expected_value),
+                actual=actual_value,
+                abs_error=abs_error,
+                tolerance=tol,
+                within_tolerance=within,
+            )
+        )
+        if not within:
+            mismatches.append(
+                f"{fixture.name} payload: {key} expected {expected_value} ± {tol}, "
+                f"actual {actual_value:.4f} (Δ={abs_error:.4f})"
+            )
+
+    label_mismatches: list[str] = []
+    if fixture.expected_labels:
+        snapshot_label = getattr(snapshot, "total_label", None)
+        snapshot_flags = {
+            "total_label": snapshot_label,
+            "pullback_signal": bool(getattr(snapshot, "pullback_signal", False)),
+            "reversal_warning": bool(getattr(snapshot, "reversal_warning", False)),
+            "no_trade_warning": bool(getattr(snapshot, "no_trade_warning", False)),
+        }
+        for key, expected_label in fixture.expected_labels.items():
+            actual_label = snapshot_flags.get(key)
+            actual_norm = str(actual_label).strip().lower() if actual_label is not None else ""
+            expected_norm = expected_label.strip().lower()
+            if actual_norm != expected_norm:
+                msg = (
+                    f"{fixture.name} payload: {key} expected {expected_label!r}, "
+                    f"actual {actual_label!r}"
+                )
+                label_mismatches.append(msg)
+                if fixture.label_must_match:
+                    mismatches.append(msg)
+
+    # Optional cross-check against the operator's study CSV last row.
+    study_rows_loaded: list[Mapping[str, Any]] = list(study_rows) if study_rows is not None else []
+    if not study_rows_loaded and fixture.study_csv is not None and fixture.study_csv.exists():
+        try:
+            study_rows_loaded = parse_thinkorswim_study_csv(fixture.study_csv)
+        except ParityFixtureError as exc:
+            mismatches.append(f"{fixture.name} study CSV: {exc}")
+
+    if study_rows_loaded:
+        latest = latest_study_row(study_rows_loaded)
+        study_subset = {
+            key: float(value)
+            for key, value in latest.items()
+            if key in STUDY_FIELDS and value is not None and key in fixture.expected_latest
+        }
+        if study_subset:
+            mismatches.extend(
+                compare_with_tolerance(
+                    {k: fixture.expected_latest[k] for k in study_subset},
+                    study_subset,
+                    fixture.tolerances,
+                    label=f"{fixture.name} study CSV",
+                )
+            )
+
+    derived_htf = payload.higher_timeframe_source != "provided_higher_timeframe_bars"
+
+    rows_compared = max(1, fixture.comparison_window)
+    status = "passed" if not mismatches else "failed"
+    reason_codes: list[str]
+    if status == "passed":
+        reason_codes = ["thinkorswim_parity_passed"]
+    else:
+        reason_codes = ["thinkorswim_parity_failed"]
+
+    diagnostics: dict[str, Any] = {
+        "bars_loaded": len(list(bars)),
+        "study_rows_loaded": len(study_rows_loaded),
+        "comparison_window_requested": fixture.comparison_window,
+    }
+    if fixture.notes:
+        diagnostics["notes"] = fixture.notes
+    if derived_htf and fixture.timeframe == "1W":
+        diagnostics["caveat"] = (
+            "higher timeframe was derived from daily bars rather than supplied as a "
+            "separate weekly Thinkorswim export"
+        )
+
+    return FixtureComparisonResult(
+        fixture_name=fixture.name,
+        symbol=fixture.symbol,
+        timeframe=fixture.timeframe,
+        status=status,
+        rows_compared=rows_compared,
+        higher_timeframe_source=payload.higher_timeframe_source,
+        parity_status=payload.parity_status,
+        derived_higher_timeframe=derived_htf,
+        field_deltas=deltas,
+        label_mismatches=label_mismatches,
+        mismatches=mismatches,
+        reason_codes=reason_codes,
+        diagnostics=diagnostics,
+    )
+
+
+# ── folder validation ──────────────────────────────────────────────────────
+
+
+@dataclass
+class FixtureReadiness:
+    fixture_name: str
+    symbol: str
+    timeframe: str
+    bars_present: bool
+    study_present: bool
+    higher_timeframe_bars_present: bool | None
+    ready: bool
+    missing_files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FixtureFolderValidation:
+    fixture_dir: Path
+    manifest_present: bool
+    manifest_valid: bool
+    fixtures_total: int
+    fixtures_ready: int
+    errors: list[str]
+    fixtures: list[FixtureReadiness]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fixture_dir": str(self.fixture_dir),
+            "manifest_present": self.manifest_present,
+            "manifest_valid": self.manifest_valid,
+            "fixtures_total": self.fixtures_total,
+            "fixtures_ready": self.fixtures_ready,
+            "errors": list(self.errors),
+            "fixtures": [
+                {
+                    "fixture_name": f.fixture_name,
+                    "symbol": f.symbol,
+                    "timeframe": f.timeframe,
+                    "bars_present": f.bars_present,
+                    "study_present": f.study_present,
+                    "higher_timeframe_bars_present": f.higher_timeframe_bars_present,
+                    "ready": f.ready,
+                    "missing_files": list(f.missing_files),
+                }
+                for f in self.fixtures
+            ],
+        }
+
+
+def validate_thinkorswim_fixture_folder(fixture_dir: Path) -> FixtureFolderValidation:
+    """Inspect ``fixture_dir`` without running any indicator math.
+
+    Returns a structured :class:`FixtureFolderValidation` describing
+    whether ``manifest.json`` is present and valid, plus per-fixture
+    file-readiness for the bars / study / higher-timeframe CSVs.
+    Errors are collected, never raised.
+    """
+    fixture_dir = Path(fixture_dir)
+    manifest_path = fixture_dir / "manifest.json"
+    errors: list[str] = []
+    fixtures_readiness: list[FixtureReadiness] = []
+    fixtures_total = 0
+    fixtures_ready = 0
+
+    if not manifest_path.exists():
+        return FixtureFolderValidation(
+            fixture_dir=fixture_dir,
+            manifest_present=False,
+            manifest_valid=False,
+            fixtures_total=0,
+            fixtures_ready=0,
+            errors=[],
+            fixtures=[],
+        )
+
+    try:
+        manifest = load_thinkorswim_manifest(manifest_path)
+    except ParityFixtureError as exc:
+        return FixtureFolderValidation(
+            fixture_dir=fixture_dir,
+            manifest_present=True,
+            manifest_valid=False,
+            fixtures_total=0,
+            fixtures_ready=0,
+            errors=[str(exc)],
+            fixtures=[],
+        )
+
+    fixtures_total = len(manifest.fixtures)
+    for spec in manifest.fixtures:
+        bars_present = spec.bars_csv.exists()
+        study_present = spec.study_csv.exists() if spec.study_csv is not None else False
+        htf_present: bool | None = None
+        if spec.higher_timeframe_bars_csv is not None:
+            htf_present = spec.higher_timeframe_bars_csv.exists()
+        missing: list[str] = []
+        if not bars_present:
+            missing.append(str(spec.bars_csv.name))
+        if spec.study_csv is not None and not study_present:
+            missing.append(str(spec.study_csv.name))
+        if spec.higher_timeframe_bars_csv is not None and not htf_present:
+            missing.append(str(spec.higher_timeframe_bars_csv.name))
+        ready = not missing
+        if ready:
+            fixtures_ready += 1
+        fixtures_readiness.append(
+            FixtureReadiness(
+                fixture_name=spec.name,
+                symbol=spec.symbol,
+                timeframe=spec.timeframe,
+                bars_present=bars_present,
+                study_present=study_present,
+                higher_timeframe_bars_present=htf_present,
+                ready=ready,
+                missing_files=missing,
+            )
+        )
+
+    return FixtureFolderValidation(
+        fixture_dir=fixture_dir,
+        manifest_present=True,
+        manifest_valid=True,
+        fixtures_total=fixtures_total,
+        fixtures_ready=fixtures_ready,
+        errors=errors,
+        fixtures=fixtures_readiness,
+    )
+
+
+# ── report generation ──────────────────────────────────────────────────────
+
+
+REPORT_FILENAME_JSON = "parity-report.json"
+REPORT_FILENAME_MD = "parity-report.md"
+REPORT_SCHEMA_VERSION = "thinkorswim_momentum_parity_report.v1"
+
+
+@dataclass
+class ParityReportSummary:
+    fixture_dir: Path
+    generated_at: datetime
+    fixtures_total: int
+    fixtures_passed: int
+    fixtures_failed: int
+    fixtures_skipped: int
+    results: list[FixtureComparisonResult]
+    manifest_present: bool
+    manifest_valid: bool
+
+    @property
+    def overall_status(self) -> str:
+        if not self.manifest_present:
+            return "missing"
+        if not self.manifest_valid:
+            return "missing"
+        if self.fixtures_total == 0:
+            return "missing"
+        if self.fixtures_failed > 0:
+            return "failed"
+        if self.fixtures_passed == 0:
+            return "ready"
+        if self.fixtures_passed < self.fixtures_total:
+            return "partial"
+        return "passed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "fixture_dir": str(self.fixture_dir),
+            "generated_at": self.generated_at.isoformat(),
+            "manifest_present": self.manifest_present,
+            "manifest_valid": self.manifest_valid,
+            "fixtures_total": self.fixtures_total,
+            "fixtures_passed": self.fixtures_passed,
+            "fixtures_failed": self.fixtures_failed,
+            "fixtures_skipped": self.fixtures_skipped,
+            "overall_status": self.overall_status,
+            "results": [r.to_dict() for r in self.results],
+        }
+
+
+def _render_report_markdown(summary: ParityReportSummary) -> str:
+    lines: list[str] = []
+    lines.append("# Thinkorswim Momentum parity report")
+    lines.append("")
+    lines.append(f"- Fixture directory: `{summary.fixture_dir}`")
+    lines.append(f"- Generated at: `{summary.generated_at.isoformat()}`")
+    lines.append(f"- Manifest present: `{summary.manifest_present}`")
+    lines.append(f"- Manifest valid: `{summary.manifest_valid}`")
+    lines.append(f"- Fixtures total: {summary.fixtures_total}")
+    lines.append(f"- Fixtures passed: {summary.fixtures_passed}")
+    lines.append(f"- Fixtures failed: {summary.fixtures_failed}")
+    lines.append(f"- Fixtures skipped: {summary.fixtures_skipped}")
+    lines.append(f"- Overall status: `{summary.overall_status}`")
+    lines.append("")
+    lines.append(
+        "_This report is operator readiness context only. It does not approve, "
+        "reject, size, or route trades, and a parity pass does not auto-activate "
+        "Phase C strategy families._"
+    )
+    lines.append("")
+    if not summary.results:
+        lines.append("No fixture results — drop Thinkorswim CSV exports and rerun.")
+        return "\n".join(lines) + "\n"
+    for result in summary.results:
+        lines.append(f"## {result.fixture_name} — `{result.status}`")
+        lines.append("")
+        lines.append(f"- Symbol: `{result.symbol}`")
+        lines.append(f"- Timeframe: `{result.timeframe}`")
+        lines.append(f"- Rows compared: {result.rows_compared}")
+        lines.append(f"- Higher timeframe source: `{result.higher_timeframe_source}`")
+        if result.derived_higher_timeframe and result.timeframe in {"1W"}:
+            lines.append(
+                "- **Caveat:** higher timeframe series was derived from daily bars "
+                "rather than supplied as a separate weekly Thinkorswim export."
+            )
+        lines.append(f"- Parity status: `{result.parity_status}`")
+        lines.append("")
+        if result.field_deltas:
+            lines.append("| Field | Expected | Actual | abs_error | Tolerance | OK? |")
+            lines.append("|---|---:|---:|---:|---:|:---:|")
+            for delta in result.field_deltas:
+                ok = "ok" if delta.within_tolerance else "MISS"
+                lines.append(
+                    f"| `{delta.field}` | {delta.expected} | {delta.actual:.4f} | "
+                    f"{delta.abs_error:.4f} | {delta.tolerance} | {ok} |"
+                )
+            lines.append("")
+        if result.label_mismatches:
+            lines.append("Label / flag mismatches:")
+            for msg in result.label_mismatches:
+                lines.append(f"- {msg}")
+            lines.append("")
+        if result.mismatches:
+            lines.append("Numeric mismatches:")
+            for msg in result.mismatches:
+                lines.append(f"- {msg}")
+            lines.append("")
+        if result.diagnostics:
+            lines.append("Diagnostics:")
+            for k, v in result.diagnostics.items():
+                lines.append(f"- `{k}`: {v}")
+            lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def build_thinkorswim_parity_report(
+    fixture_dir: Path,
+    *,
+    write: bool = False,
+) -> ParityReportSummary:
+    """Run parity for every fixture in ``fixture_dir`` and return a summary.
+
+    When ``write`` is True the JSON + Markdown reports are written next
+    to the manifest. The summary is always returned to the caller.
+
+    Never runs when no manifest is present — instead returns a
+    summary with ``manifest_present=False`` and ``overall_status='missing'``
+    so the operator can rerun after dropping fixtures.
+    """
+    fixture_dir = Path(fixture_dir)
+    manifest_path = fixture_dir / "manifest.json"
+    now = datetime.now(UTC)
+
+    if not manifest_path.exists():
+        summary = ParityReportSummary(
+            fixture_dir=fixture_dir,
+            generated_at=now,
+            fixtures_total=0,
+            fixtures_passed=0,
+            fixtures_failed=0,
+            fixtures_skipped=0,
+            results=[],
+            manifest_present=False,
+            manifest_valid=False,
+        )
+        if write:
+            _write_report_files(fixture_dir, summary)
+        return summary
+
+    try:
+        manifest = load_thinkorswim_manifest(manifest_path)
+    except ParityFixtureError as exc:
+        summary = ParityReportSummary(
+            fixture_dir=fixture_dir,
+            generated_at=now,
+            fixtures_total=0,
+            fixtures_passed=0,
+            fixtures_failed=0,
+            fixtures_skipped=0,
+            results=[
+                FixtureComparisonResult(
+                    fixture_name="<manifest>",
+                    symbol="",
+                    timeframe="",
+                    status="skipped_manifest_missing",
+                    rows_compared=0,
+                    higher_timeframe_source=None,
+                    parity_status=None,
+                    derived_higher_timeframe=False,
+                    reason_codes=["thinkorswim_fixture_validation_failed"],
+                    diagnostics={"error": str(exc)},
+                )
+            ],
+            manifest_present=True,
+            manifest_valid=False,
+        )
+        if write:
+            _write_report_files(fixture_dir, summary)
+        return summary
+
+    results: list[FixtureComparisonResult] = []
+    passed = failed = skipped = 0
+    for spec in manifest.fixtures:
+        result = compare_momentum_to_thinkorswim(spec)
+        results.append(result)
+        if result.status == "passed":
+            passed += 1
+        elif result.status == "failed":
+            failed += 1
+        else:
+            skipped += 1
+
+    summary = ParityReportSummary(
+        fixture_dir=fixture_dir,
+        generated_at=now,
+        fixtures_total=len(manifest.fixtures),
+        fixtures_passed=passed,
+        fixtures_failed=failed,
+        fixtures_skipped=skipped,
+        results=results,
+        manifest_present=True,
+        manifest_valid=True,
+    )
+    if write:
+        _write_report_files(fixture_dir, summary)
+    return summary
+
+
+def _write_report_files(fixture_dir: Path, summary: ParityReportSummary) -> tuple[Path, Path]:
+    json_path = fixture_dir / REPORT_FILENAME_JSON
+    md_path = fixture_dir / REPORT_FILENAME_MD
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(summary.to_dict(), indent=2, default=str), encoding="utf-8")
+    md_path.write_text(_render_report_markdown(summary), encoding="utf-8")
+    return json_path, md_path
+
+
+# ── status builder ─────────────────────────────────────────────────────────
+
+
+def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any]:
+    """Read-only status helper for the Settings card.
+
+    Inspects ``manifest.json`` + ``parity-report.json`` in
+    ``fixture_dir`` without running indicator math. Returns a plain
+    dict that callers serialize alongside the existing
+    ``MomentumRankingStatus`` payload.
+
+    Status values:
+
+    - ``missing`` — no manifest, or manifest invalid.
+    - ``partial`` — manifest present but some fixture files are missing.
+    - ``ready``   — manifest present, files present, no parity report yet.
+    - ``passed``  — last parity report says every fixture passed.
+    - ``failed``  — last parity report flagged at least one failure.
+    - ``pending`` — legacy fallback when none of the above apply.
+    """
+    fixture_dir = Path(fixture_dir)
+    validation = validate_thinkorswim_fixture_folder(fixture_dir)
+    report_path = fixture_dir / REPORT_FILENAME_JSON
+    md_path = fixture_dir / REPORT_FILENAME_MD
+
+    report_present = report_path.exists()
+    report_md_present = md_path.exists()
+    report_payload: dict[str, Any] | None = None
+    report_generated_at: str | None = None
+    fixtures_passed: int | None = None
+    fixtures_failed: int | None = None
+    fixtures_skipped: int | None = None
+    overall_status_from_report: str | None = None
+    summary_text: str | None = None
+
+    if report_present:
+        try:
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            report_payload = None
+        if isinstance(report_payload, dict):
+            report_generated_at = report_payload.get("generated_at") or None
+            fixtures_passed = report_payload.get("fixtures_passed")
+            fixtures_failed = report_payload.get("fixtures_failed")
+            fixtures_skipped = report_payload.get("fixtures_skipped")
+            overall_status_from_report = report_payload.get("overall_status")
+
+    # Derive workflow status.
+    reason_codes: list[str] = []
+    if not validation.manifest_present:
+        status = "missing"
+        reason_codes.append("thinkorswim_manifest_missing")
+    elif not validation.manifest_valid:
+        status = "missing"
+        reason_codes.append("thinkorswim_fixture_validation_failed")
+    elif validation.fixtures_total == 0:
+        status = "missing"
+        reason_codes.append("thinkorswim_manifest_missing")
+    elif validation.fixtures_ready < validation.fixtures_total:
+        status = "partial"
+        reason_codes.append("thinkorswim_fixture_files_missing")
+    elif report_payload and overall_status_from_report in {"passed", "failed", "partial"}:
+        if overall_status_from_report == "passed":
+            status = "passed"
+            reason_codes.append("thinkorswim_parity_passed")
+        elif overall_status_from_report == "failed":
+            status = "failed"
+            reason_codes.append("thinkorswim_parity_failed")
+        else:
+            status = "partial"
+            reason_codes.append("thinkorswim_parity_partial")
+    else:
+        status = "ready"
+        reason_codes.append("thinkorswim_parity_pending")
+
+    if status == "missing":
+        summary_text = "Drop Thinkorswim CSV exports and a manifest.json to begin parity validation."
+    elif status == "partial":
+        summary_text = (
+            f"{validation.fixtures_ready}/{validation.fixtures_total} fixtures have all required "
+            "CSV files. Add the missing files and rerun the validator."
+        )
+    elif status == "ready":
+        summary_text = (
+            f"{validation.fixtures_total} fixture(s) staged. Run the parity validator to produce a report."
+        )
+    elif status == "passed":
+        summary_text = (
+            f"Parity passed for {fixtures_passed}/{validation.fixtures_total} fixtures."
+        )
+    elif status == "failed":
+        summary_text = (
+            f"Parity failed for {fixtures_failed} fixture(s). Review {REPORT_FILENAME_MD}."
+        )
+
+    return {
+        "status": status,
+        "fixture_dir": str(fixture_dir),
+        "manifest_present": validation.manifest_present,
+        "manifest_valid": validation.manifest_valid,
+        "fixtures_total": validation.fixtures_total,
+        "fixtures_ready": validation.fixtures_ready,
+        "fixtures_passed": fixtures_passed,
+        "fixtures_failed": fixtures_failed,
+        "fixtures_skipped": fixtures_skipped,
+        "last_report_generated_at": report_generated_at,
+        "report_path": str(report_path) if report_present else None,
+        "report_markdown_path": str(md_path) if report_md_present else None,
+        "report_present": report_present,
+        "reason_codes": reason_codes,
+        "summary": summary_text,
+        "overall_status_from_report": overall_status_from_report,
+    }
+
+
+__all__ = [
+    "DEFAULT_TOLERANCES",
+    "FieldDelta",
+    "FixtureComparisonResult",
+    "FixtureFolderValidation",
+    "FixtureReadiness",
+    "LABEL_FIELDS",
+    "ParityFixtureError",
+    "ParityFixtureSpec",
+    "ParityManifest",
+    "ParityReportSummary",
+    "RECOMMENDED_STUDY_NAMES",
+    "REPORT_FILENAME_JSON",
+    "REPORT_FILENAME_MD",
+    "REPORT_SCHEMA_VERSION",
+    "STUDY_FIELDS",
+    "build_thinkorswim_momentum_parity_status",
+    "build_thinkorswim_parity_report",
+    "compare_momentum_to_thinkorswim",
+    "compare_with_tolerance",
+    "latest_study_row",
+    "load_bars_csv",
+    "load_manifest",
+    "load_study_csv",
+    "load_thinkorswim_manifest",
+    "normalize_thinkorswim_columns",
+    "parse_bool",
+    "parse_date",
+    "parse_datetime",
+    "parse_float",
+    "parse_int",
+    "parse_thinkorswim_bars_csv",
+    "parse_thinkorswim_study_csv",
+    "validate_thinkorswim_fixture_folder",
+]

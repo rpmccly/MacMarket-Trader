@@ -31,6 +31,24 @@ export type MomentumRankingStatus = {
   active_delta_scale_env_var?: string;
   active_delta_scale_invalid?: boolean;
   active_delta_scale_warning?: string | null;
+  // Thinkorswim parity workflow — operator readiness only. A
+  // `passed` status here does NOT activate any trading behavior.
+  thinkorswim_parity_workflow_status?:
+    | "missing"
+    | "partial"
+    | "ready"
+    | "passed"
+    | "failed"
+    | "pending";
+  thinkorswim_parity_fixture_count?: number;
+  thinkorswim_parity_fixtures_ready?: number;
+  thinkorswim_parity_fixtures_passed?: number | null;
+  thinkorswim_parity_fixtures_failed?: number | null;
+  thinkorswim_parity_report_available?: boolean;
+  thinkorswim_parity_report_path?: string | null;
+  thinkorswim_parity_last_report_generated_at?: string | null;
+  thinkorswim_parity_summary?: string | null;
+  thinkorswim_parity_reason_codes?: string[];
 };
 
 /**
