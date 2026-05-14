@@ -682,6 +682,50 @@ descriptions (`status: research_preview`,
 visual parity review, operator authorization]`). No active generator
 function was added.
 
+### Phase C4.1 — True Momentum UX consolidation
+
+Phase C4.1 is a frontend-only UX consolidation. The Recommendations
+page now leads with the Phase C4 selected-candidate card and groups
+every other Momentum / True Momentum research surface into clearly
+labeled collapsibles. No backend behavior changes.
+
+Order on the Recommendations page:
+
+1. **True Momentum operator guide** (compact mini-guide).
+2. **True Momentum Strategy Context — selected candidate** (Phase C4
+   card; empty state when no candidate selected).
+3. **Momentum ranking diagnostics** — collapsible `<details>`
+   wrapping the Phase B4 Momentum Shadow Impact Review (global
+   ranking diagnostic, not a selected-candidate evaluation).
+4. **True Momentum research evidence** — collapsible `<details>`
+   wrapping:
+   - C1 Family Preview — current queue (with C2 Preview Evidence +
+     C3 Cohort Review nested inside the C1 panel as before).
+   - B7/B8 Trial Journal — capture and tag outcomes.
+
+Phase C4.1 does **not** change ranking, queue sorting, recommendation
+approval, promote / save / paper-order, replay, or options behavior,
+and does not generate queue candidates. All capture / export /
+archive buttons (Capture Momentum Trial Snapshot, Export Outcome
+Markdown/JSON, Capture True Momentum Preview Evidence, Add current
+evidence bundle to cohort archive, Export Cohort Markdown/JSON,
+Shadow impact sorting/details) still work — they live inside the
+expanded subsection that owns them.
+
+The Phase C4 card now carries an explicit scope note on both states
+("This card evaluates the selected queue candidate only. … and does
+not approve, reject, size, or route trades.") plus the
+"How to use True Momentum on this page" operator guide just above it.
+
+Recommended operator workflow:
+
+1. Select a queue candidate.
+2. Read True Momentum Strategy Context for that candidate.
+3. Use the chart to confirm price context.
+4. Capture trial / evidence snapshots only when reviewing a session
+   (expand the research evidence collapsible).
+5. Approval and paper orders remain manual.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

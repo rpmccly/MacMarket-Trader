@@ -108,7 +108,7 @@ export function TrueMomentumStrategyContextCardView({
   context,
   loading,
   error,
-  title = "True Momentum Strategy Context (Phase C4 research-only)",
+  title = "True Momentum Strategy Context — selected candidate (Phase C4 research-only)",
 }: {
   candidate: QueueCandidate | null | undefined;
   context: TrueMomentumStrategyContext | null;
@@ -148,9 +148,16 @@ export function TrueMomentumStrategyContextCardView({
           style={{ gap: 8 }}
         >
           <EmptyState
-            title="Select a candidate"
-            hint="Choose a Recommendations queue row to see its True Momentum strategy context."
+            title="Select a queue candidate to view True Momentum strategy context."
+            hint="Select a row in Ranked queue candidates to update this card."
           />
+          <p
+            style={NOTE_STYLE}
+            data-testid="true-momentum-strategy-context-card-scope-note"
+          >
+            This card evaluates the selected queue candidate only. It does not generate
+            recommendations, and does not approve, reject, size, or route trades.
+          </p>
           <p
             style={NOTE_STYLE}
             data-testid="true-momentum-strategy-context-card-deterministic-note"
@@ -242,7 +249,25 @@ export function TrueMomentumStrategyContextCardView({
           >
             Readiness: {readinessLabel}
           </StatusBadge>
+          {context.trigger_checklist ? (
+            <StatusBadge
+              tone="neutral"
+              data-testid="true-momentum-strategy-context-card-checklist-summary"
+            >
+              Checklist: {context.trigger_checklist.summary.pass}/
+              {context.trigger_checklist.summary.total} pass
+            </StatusBadge>
+          ) : null}
         </div>
+
+        <p
+          style={NOTE_STYLE}
+          data-testid="true-momentum-strategy-context-card-scope-note"
+        >
+          This card evaluates the selected queue candidate only. Select a row in Ranked
+          queue candidates to update this card. It does not generate recommendations,
+          and does not approve, reject, size, or route trades.
+        </p>
 
         {context.trigger_checklist ? (
           <section

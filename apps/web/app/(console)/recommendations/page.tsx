@@ -1970,63 +1970,46 @@ export default function RecommendationsPage() {
       })()}
 
       {/*
-        Phase B4 — Momentum Shadow Impact Review. Operator-facing review
-        of how Momentum Intelligence would affect ranking under the
-        current mode (off / shadow / active). Uses already-loaded queue
-        rows; does not refetch, does not change queue sorting, approval,
-        promote, save, paper-order, settle, replay, or options preview
-        flows.
+        Phase C4.1 — Operator guide. Compact mini-guide so the operator
+        knows the recommended workflow at a glance. Frontend-only copy;
+        does not change ranking, queue sorting, recommendation
+        approval, promote, save, paper-order, replay, or options
+        behavior, and does not generate queue candidates.
       */}
-      {queue.length > 0 ? (
-        <MomentumImpactReview candidates={queue} compact />
-      ) : null}
+      <div
+        role="region"
+        aria-label="True Momentum operator guide"
+        data-testid="true-momentum-operator-guide"
+        style={{
+          padding: "10px 12px",
+          borderRadius: 8,
+          border: "1px solid rgba(115, 138, 163, 0.22)",
+          background: "rgba(15, 24, 34, 0.55)",
+          fontSize: "0.82rem",
+          lineHeight: 1.5,
+        }}
+      >
+        <strong style={{ fontSize: "0.86rem" }}>How to use True Momentum on this page</strong>
+        <ol style={{ margin: "6px 0 0 0", paddingLeft: 20 }}>
+          <li>Select a queue candidate.</li>
+          <li>Read True Momentum Strategy Context for that candidate.</li>
+          <li>Use the chart to confirm price context.</li>
+          <li>Capture trial / evidence snapshots only when reviewing a session.</li>
+          <li>Approval and paper orders remain manual.</li>
+        </ol>
+      </div>
 
       {/*
-        Phase B7 — Active Momentum Trial Journal / Comparison Report.
-        Phase B7.1 — pass the parsed manual symbol input as the
-        evaluated universe so the journal can label "Evaluated universe"
-        (the symbols this run was asked to evaluate) instead of
-        "Captured symbols" (only those that ended up in the queue).
-        Operator evidence capture only. Uses already-loaded queue rows;
-        does not refetch, does not change queue sorting, approval,
-        promote, save, paper-order, settle, replay, or options preview
-        flows. Snapshot is local/export-only (localStorage + JSON/Markdown
-        download); no backend persistence and no DB migration.
-      */}
-      <MomentumTrialJournal
-        candidates={queue}
-        universeSymbols={parsedSymbols.symbols}
-        onSnapshotChange={setB8Snapshot}
-        onOutcomeReviewChange={setB8OutcomeReview}
-      />
-
-      {/*
-        Phase C1 — True Momentum strategy-family research-preview panel.
-        Read-only classification of the already-loaded queue into the
-        three planned True Momentum families. Does not generate queue
-        candidates, does not approve / reject / size / route trades, and
-        does not change ranking, queue sorting, approval, paper-order,
-        replay, or options behavior. Disabled by default; the
-        research_preview mode requires both
-        MACMARKET_TRUE_MOMENTUM_STRATEGY_MODE=research_preview and the
-        MACMARKET_ALLOW_TRUE_MOMENTUM_STRATEGY_FAMILIES guard.
-      */}
-      <TrueMomentumStrategyPreviewPanel
-        candidates={queue}
-        universeSymbols={parsedSymbols.symbols}
-        b8Snapshot={b8Snapshot}
-        b8OutcomeReview={b8OutcomeReview}
-      />
-
-      {/*
-        Phase C4 — True Momentum Strategy Context card for the
-        currently selected queue candidate. Renders the research-only
-        Phase C4 bundle (family badge + match strength +
-        trigger-readiness checklist + parity/evidence caveats +
-        activation-readiness status). Does not generate queue
-        candidates, change ranking, queue sorting, promote / save /
-        paper-order, replay, or options behavior. Activation
-        readiness ≠ approval; Phase C remains reserved.
+        Phase C4 — True Momentum Strategy Context card. Moved up above
+        C1/C2/C3/B7/B8 so the selected-candidate context is the primary
+        True Momentum surface on this page (Phase C4.1 UX
+        consolidation). Renders the research-only bundle (family badge,
+        match strength, trigger-readiness checklist, parity/evidence
+        caveats, activation-readiness status) for the currently
+        selected queue candidate. Does not generate queue candidates,
+        change ranking, queue sorting, promote / save / paper-order,
+        replay, or options behavior. Activation readiness ≠ approval;
+        Phase C remains reserved.
       */}
       <TrueMomentumStrategyContextCard
         candidate={selectedQueue}
@@ -2034,6 +2017,129 @@ export default function RecommendationsPage() {
           b8OutcomeReview ? "available" : b8Snapshot ? "captured_without_outcomes" : "not_captured"
         }
       />
+
+      {/*
+        Phase C4.1 — Momentum ranking diagnostics (collapsed by
+        default). Phase B4 Momentum Shadow Impact Review lives here
+        because it is a global ranking diagnostic, not a
+        selected-candidate evaluation. Toggling open does not change
+        any queue / approval / order / paper-order behavior.
+      */}
+      {queue.length > 0 ? (
+        <details
+          data-testid="momentum-ranking-diagnostics-section"
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid rgba(115, 138, 163, 0.22)",
+            background: "rgba(15, 24, 34, 0.45)",
+          }}
+        >
+          <summary
+            data-testid="momentum-ranking-diagnostics-summary"
+            style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.86rem" }}
+          >
+            Momentum ranking diagnostics — Shadow Impact Review (collapsed by default)
+          </summary>
+          <div style={{ marginTop: 10 }}>
+            <MomentumImpactReview candidates={queue} compact />
+          </div>
+        </details>
+      ) : null}
+
+      {/*
+        Phase C4.1 — True Momentum research evidence (collapsed by
+        default). Groups the existing C1 family preview, C2 evidence
+        bundle (nested inside the preview panel), C3 cohort review
+        (also nested), and the B7/B8 trial journal + outcome review
+        into collapsible subsections so the operator does not face a
+        wall of cards when reading the selected-candidate context. All
+        underlying behavior (capture buttons, exports, classifier
+        modes) is preserved.
+      */}
+      <details
+        data-testid="true-momentum-research-evidence-section"
+        style={{
+          padding: "8px 12px",
+          borderRadius: 8,
+          border: "1px solid rgba(115, 138, 163, 0.22)",
+          background: "rgba(15, 24, 34, 0.45)",
+        }}
+      >
+        <summary
+          data-testid="true-momentum-research-evidence-summary"
+          style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.86rem" }}
+        >
+          True Momentum research evidence (collapsed by default)
+        </summary>
+        <p
+          style={{
+            margin: "6px 0 8px 0",
+            color: "var(--op-muted, #7a8999)",
+            fontSize: "0.78rem",
+            lineHeight: 1.5,
+          }}
+        >
+          Research/evidence tools for the full queue and archived
+          sessions. Capture snapshots and export evidence only when
+          reviewing — none of these tools approve, reject, size, or
+          route trades, and none of them change ranking.
+        </p>
+
+        <details
+          data-testid="true-momentum-research-evidence-c1-section"
+          style={{ marginTop: 8 }}
+        >
+          <summary
+            data-testid="true-momentum-research-evidence-c1-summary"
+            style={{ cursor: "pointer", fontSize: "0.84rem", fontWeight: 600 }}
+          >
+            C1 Family Preview — current queue
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            <TrueMomentumStrategyPreviewPanel
+              candidates={queue}
+              universeSymbols={parsedSymbols.symbols}
+              b8Snapshot={b8Snapshot}
+              b8OutcomeReview={b8OutcomeReview}
+              title="C1 Family Preview — current queue (C2 Preview Evidence + C3 Cohort Review nested)"
+            />
+          </div>
+          <p
+            style={{
+              margin: "6px 0 0 0",
+              color: "var(--op-muted, #7a8999)",
+              fontSize: "0.74rem",
+              lineHeight: 1.5,
+            }}
+            data-testid="true-momentum-research-evidence-c2-c3-hint"
+          >
+            C2 Preview Evidence — export current family evidence — and C3 Cohort
+            Review — archived research sessions — are mounted inside the C1
+            panel above. All capture / export / archive buttons live there.
+          </p>
+        </details>
+
+        <details
+          data-testid="true-momentum-research-evidence-b78-section"
+          style={{ marginTop: 8 }}
+        >
+          <summary
+            data-testid="true-momentum-research-evidence-b78-summary"
+            style={{ cursor: "pointer", fontSize: "0.84rem", fontWeight: 600 }}
+          >
+            B7/B8 Trial Journal — capture and tag outcomes
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            <MomentumTrialJournal
+              candidates={queue}
+              universeSymbols={parsedSymbols.symbols}
+              onSnapshotChange={setB8Snapshot}
+              onOutcomeReviewChange={setB8OutcomeReview}
+            />
+          </div>
+        </details>
+      </details>
     </section>
   );
 }

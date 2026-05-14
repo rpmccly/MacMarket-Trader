@@ -2189,10 +2189,14 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
 Phase C4 wires the existing Phase C1 / C2 / C3 research bundles plus
 the Thinkorswim visual-attestation parity status into a single
 operator-readable context card for the currently selected
-Recommendations queue candidate. See
+Recommendations queue candidate. Phase C4.1 follows with a UX
+consolidation: the C4 card becomes the primary Momentum surface,
+the Phase B4 Shadow Impact Review collapses into a "Momentum ranking
+diagnostics" section, and C1 / C2 / C3 / B7 / B8 fold into a "True
+Momentum research evidence" collapsible. See
 [`true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
-for the full charter, checklist rules, readiness classification, and
-the XLP example. Phase C4 is frontend-only research integration; it
+for the full charter, checklist rules, readiness classification, the
+XLP example, and the Phase C4.1 operator workflow. Phase C4 is frontend-only research integration; it
 does not change ranking, queue sorting, recommendation approval,
 promote, save, paper-order, replay, or options behavior, never
 generates queue candidates, never activates Phase C strategy

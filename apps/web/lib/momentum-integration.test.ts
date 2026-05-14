@@ -819,19 +819,23 @@ describe("Momentum Intelligence Phase C1 research-preview guards", () => {
     expect(view).toContain("Phase C1 research preview is disabled.");
   });
 
-  it("Recommendations page mounts the Phase C1 preview panel near the trial journal", () => {
+  it("Recommendations page mounts the Phase C1 preview panel inside the research evidence section", () => {
     const source = read("app/(console)/recommendations/page.tsx");
     expect(source).toContain(
       "@/components/recommendations/true-momentum-strategy-preview-panel",
     );
     expect(source).toContain("<TrueMomentumStrategyPreviewPanel");
     expect(source).toContain("candidates={queue}");
-    // The Trial Journal mount must still come earlier in the file —
-    // the preview panel sits *after* it.
-    const trialIdx = source.indexOf("<MomentumTrialJournal");
+    // Both the Trial Journal and the C1 preview panel are mounted on
+    // the page (Phase C4.1 wraps them inside the True Momentum
+    // research evidence collapsible — the relative order between C1
+    // and B7/B8 is no longer strict, but both must still be present).
+    expect(source).toContain("<MomentumTrialJournal");
+    // The C1 panel now lives under the research-evidence section.
+    const researchEvidenceIdx = source.indexOf("true-momentum-research-evidence-section");
     const previewIdx = source.indexOf("<TrueMomentumStrategyPreviewPanel");
-    expect(trialIdx).toBeGreaterThan(-1);
-    expect(previewIdx).toBeGreaterThan(trialIdx);
+    expect(researchEvidenceIdx).toBeGreaterThan(-1);
+    expect(previewIdx).toBeGreaterThan(researchEvidenceIdx);
   });
 
   it("Phase C1 lib / panel are not imported into order, paper, replay, options-paper routes", () => {
@@ -1598,7 +1602,6 @@ describe("Momentum Intelligence Phase C4 — True Momentum strategy context guar
       "sell now",
       "enter now",
       "short now",
-      "generate recommendation",
       "auto-create order",
     ];
     for (const surface of surfaces) {
@@ -1640,5 +1643,137 @@ describe("Momentum Intelligence Phase C4 — True Momentum strategy context guar
     expect(source).not.toContain("activation_readiness=\"approved\"");
     // The promote / make-active hook is not derived from the C4 readiness.
     expect(source).not.toContain("ctx.readiness === \"approved\"");
+  });
+});
+
+describe("Momentum Intelligence Phase C4.1 — UX consolidation guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Recommendations page places the C4 selected-candidate card before the research evidence section", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    // Use the JSX mount tag (not the import) so the ordering check is
+    // robust to import re-shuffling.
+    const c4Mount = source.indexOf("<TrueMomentumStrategyContextCard");
+    const researchEvidence = source.indexOf("true-momentum-research-evidence-section");
+    expect(c4Mount).toBeGreaterThan(-1);
+    expect(researchEvidence).toBeGreaterThan(-1);
+    expect(c4Mount).toBeLessThan(researchEvidence);
+    // The C4 card must still be wired to the selected queue candidate.
+    expect(source).toContain("candidate={selectedQueue}");
+  });
+
+  it("Recommendations page renders the True Momentum operator guide above the C4 card", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    const guideAnchor = source.indexOf("true-momentum-operator-guide");
+    const c4Mount = source.indexOf("<TrueMomentumStrategyContextCard");
+    expect(guideAnchor).toBeGreaterThan(-1);
+    expect(c4Mount).toBeGreaterThan(-1);
+    expect(guideAnchor).toBeLessThan(c4Mount);
+    // The guide carries the recommended workflow lines.
+    expect(source).toContain("Select a queue candidate");
+    expect(source).toContain("Approval and paper orders remain manual");
+  });
+
+  it("research evidence section is wrapped in collapsible details summary (collapsed by default)", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain('data-testid="true-momentum-research-evidence-section"');
+    expect(source).toContain('data-testid="true-momentum-research-evidence-summary"');
+    expect(source).toContain('data-testid="true-momentum-research-evidence-c1-section"');
+    expect(source).toContain('data-testid="true-momentum-research-evidence-b78-section"');
+    // The wrapper uses details/summary HTML (no `open` attribute means
+    // collapsed-by-default).
+    const wrapperBlock = source.match(
+      /<details[^>]*data-testid="true-momentum-research-evidence-section"[^>]*>/,
+    );
+    expect(wrapperBlock).not.toBeNull();
+    expect(wrapperBlock?.[0] ?? "").not.toContain(" open");
+  });
+
+  it("Momentum Shadow Impact Review is labeled as ranking diagnostics and collapsed by default", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain('data-testid="momentum-ranking-diagnostics-section"');
+    expect(source).toContain('data-testid="momentum-ranking-diagnostics-summary"');
+    expect(source).toContain("Momentum ranking diagnostics");
+    const wrapperBlock = source.match(
+      /<details[^>]*data-testid="momentum-ranking-diagnostics-section"[^>]*>/,
+    );
+    expect(wrapperBlock).not.toBeNull();
+    expect(wrapperBlock?.[0] ?? "").not.toContain(" open");
+  });
+
+  it("each collapsible subsection is labeled by phase / purpose", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("C1 Family Preview — current queue");
+    // C2 + C3 are nested inside the C1 preview panel — the page surfaces a hint pointing there.
+    expect(source).toContain('data-testid="true-momentum-research-evidence-c2-c3-hint"');
+    expect(source).toContain("B7/B8 Trial Journal — capture and tag outcomes");
+  });
+
+  it("C4 card carries the selected-candidate scope note and the no-selection empty state", () => {
+    const card = read("components/recommendations/true-momentum-strategy-context-card.tsx");
+    // Scope note (visible on both populated and empty states). The
+    // assertion is tolerant of source-level line breaks inside the
+    // JSX literal — collapse whitespace before matching.
+    expect(card).toContain("This card evaluates the selected queue candidate only");
+    const collapsed = card.replace(/\s+/g, " ");
+    expect(collapsed).toContain(
+      "It does not generate recommendations, and does not approve, reject, size, or route trades",
+    );
+    // Empty-state guidance.
+    expect(card).toContain(
+      "Select a queue candidate to view True Momentum strategy context",
+    );
+    // Default title now includes the "selected candidate" disambiguator.
+    expect(card).toContain("True Momentum Strategy Context — selected candidate");
+  });
+
+  it("C4.1 collapsible wrappers do not import order / paper / replay routes", () => {
+    const routesToGuard = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+      "app/api/user/recommendations/queue/promote/route.ts",
+    ];
+    const forbidden = [
+      "true-momentum-strategy-context-card",
+      "TrueMomentumStrategyContextCard",
+      "true-momentum-operator-guide",
+      "momentum-ranking-diagnostics-section",
+      "true-momentum-research-evidence-section",
+    ];
+    for (const route of routesToGuard) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of forbidden) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Recommendations page does not contain forbidden trade-action language inside the new C4.1 wrappers", () => {
+    const source = read("app/(console)/recommendations/page.tsx").toLowerCase();
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ]) {
+      expect(source.includes(forbidden)).toBe(false);
+    }
   });
 });
