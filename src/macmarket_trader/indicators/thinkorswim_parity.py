@@ -63,7 +63,31 @@ STUDY_FIELDS: tuple[str, ...] = (
     "hilo_output",
     "trend_score",
     "momo_score",
+    # HiLo field-label cleanup (visual parity work). ``hilo_slowd`` and
+    # ``hilo_slowd_x`` are the rendered stochastic SlowD / SlowD_X
+    # values MacMarket currently surfaces on the HiLo panel.
+    # ``tos_hilo_elite_scalar`` is the operator-read ToS ST_HiLoElite
+    # scalar — MacMarket does not compute a ToS-comparable scalar today,
+    # so the field is recorded for the audit trail but never
+    # auto-compared against a MacMarket value (see
+    # ``_REFERENCE_ONLY_FIELDS`` below).
+    "hilo_slowd",
+    "hilo_slowd_x",
+    "tos_hilo_elite_scalar",
+    # ``hilo_score`` is the composite -30/0/+30 HiLo thrust component
+    # the operator reads off MacMarket's HiLo panel. It is distinct from
+    # ``hilo_output`` (legacy alias) and from the categorical
+    # ``hilo_thrust_state`` label.
+    "hilo_score",
 )
+
+# Reference-only study fields: operators can record observed values
+# for these (so the audit trail captures the rendered ToS reading),
+# but the validator never asserts a MacMarket equivalent because
+# MacMarket does not currently compute one. The fixture report
+# surfaces the observed value alongside a clear "MacMarket has no
+# equivalent" diagnostic rather than failing parity.
+_REFERENCE_ONLY_FIELDS: frozenset[str] = frozenset({"tos_hilo_elite_scalar"})
 
 # Optional categorical / flag fields. The numeric study fields above are
 # compared with per-field absolute tolerances; the fields below are
@@ -74,6 +98,10 @@ LABEL_FIELDS: tuple[str, ...] = (
     "pullback_signal",
     "reversal_warning",
     "no_trade_warning",
+    # HiLo thrust state — categorical (bullish / bearish / neutral /
+    # confirmed / deconfirmed). Operators record this string directly
+    # when capturing a visual attestation.
+    "hilo_thrust_state",
 )
 
 
@@ -108,6 +136,19 @@ _STUDY_FIELD_BY_KEY: dict[str, str] = {
     "hlpoutput": "hilo_output",
     "hilooutput": "hilo_output",
     "hiloscore": "hilo_output",
+    # SlowD / SlowD_X — rendered stochastic values MacMarket already
+    # surfaces. Accept a handful of common operator labels.
+    "hiloslowd": "hilo_slowd",
+    "slowd": "hilo_slowd",
+    "hiloslowdx": "hilo_slowd_x",
+    "slowdx": "hilo_slowd_x",
+    "hiloslowdxline": "hilo_slowd_x",
+    # ToS-comparable ST_HiLoElite scalar (operator-read only).
+    "hiloelite": "tos_hilo_elite_scalar",
+    "hiloelitescalar": "tos_hilo_elite_scalar",
+    "stoshiloelite": "tos_hilo_elite_scalar",
+    "toshiloelite": "tos_hilo_elite_scalar",
+    "toshiloelitescalar": "tos_hilo_elite_scalar",
     # Trend / Momo
     "trend": "trend_score",
     "trendscore": "trend_score",
@@ -256,7 +297,11 @@ def parse_date(value: Any) -> date_cls | None:
 # ── manifest schema ─────────────────────────────────────────────────────────
 
 
-PARITY_MODES: tuple[str, ...] = ("exported_study_csv", "visual_observation")
+PARITY_MODES: tuple[str, ...] = (
+    "exported_study_csv",
+    "visual_observation",
+    "visual_attestation",
+)
 
 # Subset of canonical study/label fields the operator is *strongly
 # recommended* to capture from a Thinkorswim rendered chart label when
@@ -271,16 +316,33 @@ RECOMMENDED_VISUAL_FIELDS: tuple[str, ...] = (
     "true_momentum_ema",
 )
 
+# "At least one HiLo field" recommendation — the validator emits a
+# reason code when none of these were captured for a visual fixture.
+RECOMMENDED_HILO_VISUAL_FIELDS: tuple[str, ...] = (
+    "hilo_slowd",
+    "hilo_slowd_x",
+    "tos_hilo_elite_scalar",
+    "hilo_thrust",
+    "hilo_output",
+)
+
 
 @dataclass(frozen=True)
 class ParityFixtureSpec:
-    """Validated single-fixture entry from ``manifest.json``."""
+    """Validated single-fixture entry from ``manifest.json``.
+
+    ``bars_csv`` is ``None`` only when ``parity_mode ==
+    "visual_attestation"``. The visual-attestation mode does not need a
+    bars CSV because no MacMarket computation runs — the validator
+    compares the operator-entered ToS reading against the
+    operator-entered MM reading directly.
+    """
 
     name: str
     symbol: str
     timeframe: str
     parity_mode: str
-    bars_csv: Path
+    bars_csv: Path | None
     study_csv: Path | None
     higher_timeframe_bars_csv: Path | None
     expected_latest: Mapping[str, float]
@@ -296,9 +358,19 @@ class ParityFixtureSpec:
     # observation is the source of truth.
     observed_bar_date: date_cls | None
     screenshot: str | None
+    macmarket_screenshot: str | None
     screenshot_notes: str | None
     reviewer: str | None
     reviewed_at: datetime | None
+    # ── visual_attestation mode fields ────────────────────────────────
+    # No bars / no study / no computation. Both sides are operator-
+    # entered. ``tos_observed_latest`` / ``macmarket_observed_latest``
+    # are numeric maps; ``tos_observed_labels`` / ``macmarket_observed_labels``
+    # carry the label fields (total_label, pullback_signal, etc).
+    tos_observed_latest: Mapping[str, float]
+    tos_observed_labels: Mapping[str, str]
+    macmarket_observed_latest: Mapping[str, float]
+    macmarket_observed_labels: Mapping[str, str]
     raw: Mapping[str, Any]
 
     @property
@@ -308,6 +380,10 @@ class ParityFixtureSpec:
     @property
     def is_exported_study_csv(self) -> bool:
         return self.parity_mode == "exported_study_csv"
+
+    @property
+    def is_visual_attestation(self) -> bool:
+        return self.parity_mode == "visual_attestation"
 
 
 @dataclass(frozen=True)
@@ -330,6 +406,34 @@ DEFAULT_TOLERANCES: Mapping[str, float] = {
     "momo_score": 2.5,
     "true_momentum": 1.0,
     "true_momentum_ema": 1.0,
+    "hilo_thrust": 5.0,
+    "hilo_output": 5.0,
+    # SlowD / SlowD_X (range 0..100). Start conservative; tighten once
+    # multiple symbols agree.
+    "hilo_slowd": 2.0,
+    "hilo_slowd_x": 2.0,
+    # ToS-comparable ST_HiLoElite scalar is reference-only in
+    # visual_observation mode (MacMarket does not compute one). In
+    # visual_attestation mode it CAN be compared if both ToS and MM
+    # observations include it — the tolerance is honored there.
+    "tos_hilo_elite_scalar": 5.0,
+}
+
+# Visual-attestation default tolerances. These match the prompt's
+# specification — wider than the legacy CSV-derived defaults because
+# operator readings carry one to two pixels of visual error per side.
+DEFAULT_VISUAL_ATTESTATION_TOLERANCES: Mapping[str, float] = {
+    "total_score": 2.0,
+    "trend_score": 2.0,
+    "momo_score": 2.0,
+    "true_momentum": 1.5,
+    "true_momentum_ema": 1.5,
+    "hilo_slowd": 2.0,
+    "hilo_slowd_x": 2.0,
+    "hilo_score": 5.0,
+    # tos_hilo_elite_scalar is compared symmetrically when both sides
+    # populated; keep the same width as the SlowD readings.
+    "tos_hilo_elite_scalar": 2.0,
     "hilo_thrust": 5.0,
     "hilo_output": 5.0,
 }
@@ -449,7 +553,9 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
     for index, entry in enumerate(fixtures_raw):
         if not isinstance(entry, dict):
             raise ParityFixtureError(f"fixture[{index}] must be an object")
-        for required in ("name", "symbol", "timeframe", "bars_csv"):
+        # ``bars_csv`` is now mode-dependent; check the always-required
+        # fields first and validate ``bars_csv`` after we resolve mode.
+        for required in ("name", "symbol", "timeframe"):
             if required not in entry:
                 raise ParityFixtureError(
                     f"fixture[{index}] missing required field: {required}"
@@ -482,6 +588,11 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
             )
         captured_raw = observed_raw if observed_raw is not None else expected_raw
 
+        # ``visual_attestation``-mode observation pair. Both sides are
+        # operator-entered readings — no MacMarket computation runs.
+        tos_observed_raw = entry.get("tos_observed_latest")
+        macmarket_observed_raw = entry.get("macmarket_observed_latest")
+
         # Resolve parity_mode. Explicit value wins; otherwise infer from
         # the manifest shape (backward compatible).
         explicit_mode_raw = entry.get("parity_mode")
@@ -494,8 +605,19 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 )
         else:
             study_csv_present = entry.get("study_csv") is not None
+            bars_csv_present = entry.get("bars_csv") is not None
+            attestation_present = (
+                tos_observed_raw is not None and macmarket_observed_raw is not None
+            )
             observed_present = observed_raw is not None
-            if observed_present:
+            if attestation_present:
+                parity_mode = "visual_attestation"
+            elif observed_present and bars_csv_present:
+                parity_mode = "visual_observation"
+            elif observed_present:
+                # No bars and only single-sided ``observed_latest`` — treat
+                # as visual_observation (legacy shape) and let the loader
+                # require bars_csv below.
                 parity_mode = "visual_observation"
             elif study_csv_present:
                 parity_mode = "exported_study_csv"
@@ -515,7 +637,45 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 "non-empty expected_latest mapping"
             )
 
+        # bars_csv requirement — required for all modes EXCEPT
+        # visual_attestation. The attestation mode does no computation,
+        # so a bars CSV is not needed and not requested from the
+        # operator.
+        if parity_mode != "visual_attestation" and "bars_csv" not in entry:
+            raise ParityFixtureError(
+                f"fixture {name!r} ({parity_mode}) missing required field: bars_csv"
+            )
+
         numeric_expected, label_expected = _split_expected(captured_raw, name)
+
+        # Parse the visual_attestation observation pair when the mode
+        # uses them. Either side may omit fields; the comparison engine
+        # skips fields not present in both observations.
+        if parity_mode == "visual_attestation":
+            if not isinstance(tos_observed_raw, dict) or not tos_observed_raw:
+                raise ParityFixtureError(
+                    f"fixture {name!r} (visual_attestation) must include a "
+                    "non-empty 'tos_observed_latest' mapping"
+                )
+            if not isinstance(macmarket_observed_raw, dict) or not macmarket_observed_raw:
+                raise ParityFixtureError(
+                    f"fixture {name!r} (visual_attestation) must include a "
+                    "non-empty 'macmarket_observed_latest' mapping"
+                )
+            tos_numeric, tos_labels = _split_expected(tos_observed_raw, name)
+            mm_numeric, mm_labels = _split_expected(macmarket_observed_raw, name)
+        else:
+            tos_numeric = {}
+            tos_labels = {}
+            mm_numeric = {}
+            mm_labels = {}
+            if tos_observed_raw is not None or macmarket_observed_raw is not None:
+                raise ParityFixtureError(
+                    f"fixture {name!r} declares tos_observed_latest / "
+                    "macmarket_observed_latest but parity_mode is not "
+                    "'visual_attestation'"
+                )
+
         tolerances = _coerce_tolerances(entry.get("tolerances"), name)
 
         study_csv = entry.get("study_csv")
@@ -544,8 +704,18 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 f"fixture {name!r} observed_bar_date {observed_bar_date_raw!r} is not parseable"
             )
 
-        screenshot_raw = entry.get("screenshot")
+        # ``tos_screenshot`` is the canonical name in visual_attestation
+        # mode (paired with ``macmarket_screenshot``). ``screenshot`` is
+        # the legacy single-screenshot field — accepted as an alias so
+        # older manifests continue to load.
+        screenshot_raw = entry.get("tos_screenshot") or entry.get("screenshot")
         screenshot = str(screenshot_raw).strip() if isinstance(screenshot_raw, str) and screenshot_raw.strip() else None
+        macmarket_screenshot_raw = entry.get("macmarket_screenshot")
+        macmarket_screenshot = (
+            str(macmarket_screenshot_raw).strip()
+            if isinstance(macmarket_screenshot_raw, str) and macmarket_screenshot_raw.strip()
+            else None
+        )
         screenshot_notes_raw = entry.get("screenshot_notes")
         screenshot_notes = (
             str(screenshot_notes_raw).strip()
@@ -561,13 +731,20 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 f"fixture {name!r} reviewed_at {reviewed_at_raw!r} is not parseable"
             )
 
+        bars_csv_raw = entry.get("bars_csv")
+        bars_csv_path: Path | None
+        if bars_csv_raw is not None:
+            bars_csv_path = (base_dir / str(bars_csv_raw)).resolve()
+        else:
+            bars_csv_path = None
+
         specs.append(
             ParityFixtureSpec(
                 name=name,
                 symbol=str(entry["symbol"]).strip().upper(),
                 timeframe=timeframe,
                 parity_mode=parity_mode,
-                bars_csv=(base_dir / str(entry["bars_csv"])).resolve(),
+                bars_csv=bars_csv_path,
                 study_csv=(base_dir / str(study_csv)).resolve() if study_csv else None,
                 higher_timeframe_bars_csv=(
                     (base_dir / str(htf_csv)).resolve() if htf_csv else None
@@ -581,9 +758,14 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 notes=notes,
                 observed_bar_date=observed_bar_date,
                 screenshot=screenshot,
+                macmarket_screenshot=macmarket_screenshot,
                 screenshot_notes=screenshot_notes,
                 reviewer=reviewer,
                 reviewed_at=reviewed_at,
+                tos_observed_latest=tos_numeric,
+                tos_observed_labels=tos_labels,
+                macmarket_observed_latest=mm_numeric,
+                macmarket_observed_labels=mm_labels,
                 raw=entry,
             )
         )
@@ -843,6 +1025,7 @@ class FixtureComparisonResult:
     # the audit trail records the operator + screenshot + observed bar.
     observed_bar_date: str | None = None
     screenshot: str | None = None
+    macmarket_screenshot: str | None = None
     screenshot_notes: str | None = None
     reviewer: str | None = None
     reviewed_at: str | None = None
@@ -883,6 +1066,7 @@ class FixtureComparisonResult:
             "diagnostics": dict(self.diagnostics),
             "observed_bar_date": self.observed_bar_date,
             "screenshot": self.screenshot,
+            "macmarket_screenshot": self.macmarket_screenshot,
             "screenshot_notes": self.screenshot_notes,
             "reviewer": self.reviewer,
             "reviewed_at": self.reviewed_at,
@@ -911,7 +1095,7 @@ def compare_momentum_to_thinkorswim(
     payload and reports whether it agrees with the operator-supplied
     Thinkorswim values within tolerance.
 
-    Two modes are supported:
+    Three modes are supported:
 
     - ``exported_study_csv`` — the operator dropped a Thinkorswim study
       CSV. The validator parses the CSV's last row and cross-checks it
@@ -922,8 +1106,17 @@ def compare_momentum_to_thinkorswim(
       auto-loads a study CSV in this mode (Thinkorswim does not export
       the Momentum study rows) and surfaces explicit reason codes
       labelling the comparison basis as visual/manual.
+    - ``visual_attestation`` — the operator manually transcribed both
+      Thinkorswim AND MacMarket rendered chart labels. No bars / study
+      CSV is required (Thinkorswim cannot export usable bars for this
+      workflow). The validator compares ``tos_observed_latest`` against
+      ``macmarket_observed_latest`` directly. Status values are
+      ``visual_attested`` / ``visual_failed`` / ``visual_partial``.
     """
     visual_metadata = _visual_metadata_for_result(fixture)
+
+    if fixture.is_visual_attestation:
+        return _compare_visual_attestation(fixture, visual_metadata)
 
     if fixture.is_visual and not fixture.expected_latest and not fixture.expected_labels:
         return FixtureComparisonResult(
@@ -1041,6 +1234,18 @@ def compare_momentum_to_thinkorswim(
         "momo_score": float(snapshot.momo_score),
     }
 
+    # Source SlowD / SlowD_X from the visual parity snapshot when
+    # available (same surface the chart frontend uses). MacMarket does
+    # not currently compute a ToS-comparable ST_HiLoElite scalar, so
+    # ``tos_hilo_elite_scalar`` is intentionally absent from ``actual``
+    # and handled below as reference-only.
+    parity_snapshot = payload.visual_parity_snapshot
+    if parity_snapshot is not None:
+        if parity_snapshot.hilo_slowd is not None:
+            actual["hilo_slowd"] = float(parity_snapshot.hilo_slowd)
+        if parity_snapshot.hilo_slowd_x is not None:
+            actual["hilo_slowd_x"] = float(parity_snapshot.hilo_slowd_x)
+
     diagnostics: dict[str, Any] = {
         "bars_loaded": len(list(bars)),
         "comparison_window_requested": fixture.comparison_window,
@@ -1070,7 +1275,16 @@ def compare_momentum_to_thinkorswim(
 
     deltas: list[FieldDelta] = []
     mismatches: list[str] = []
+    reference_only_observations: dict[str, float] = {}
     for key, expected_value in fixture.expected_latest.items():
+        # Reference-only fields (e.g. ``tos_hilo_elite_scalar``) are
+        # recorded into diagnostics for the audit trail but never
+        # asserted against a MacMarket equivalent because MacMarket does
+        # not currently compute one. This preserves the operator's
+        # visual reading without fabricating a MacMarket value.
+        if key in _REFERENCE_ONLY_FIELDS:
+            reference_only_observations[key] = float(expected_value)
+            continue
         if key not in actual:
             mismatches.append(
                 f"{fixture.name}: MacMarket payload missing field {key!r}"
@@ -1095,6 +1309,13 @@ def compare_momentum_to_thinkorswim(
                 f"{fixture.name} payload: {key} expected {expected_value} ± {tol}, "
                 f"actual {actual_value:.4f} (Δ={abs_error:.4f})"
             )
+    if reference_only_observations:
+        diagnostics["reference_only_observations"] = reference_only_observations
+        diagnostics["reference_only_note"] = (
+            "tos_hilo_elite_scalar is recorded for operator review but not "
+            "auto-compared because MacMarket does not currently compute a "
+            "ToS-comparable ST_HiLoElite scalar"
+        )
 
     label_mismatches: list[str] = []
     if fixture.expected_labels:
@@ -1174,6 +1395,11 @@ def compare_momentum_to_thinkorswim(
                 code = f"thinkorswim_visual_observation_missing_{recommended}"
                 if code not in reason_codes:
                     reason_codes.append(code)
+        # "At least one HiLo field" recommendation.
+        if not (provided_fields & set(RECOMMENDED_HILO_VISUAL_FIELDS)):
+            code = "thinkorswim_visual_observation_missing_hilo_field"
+            if code not in reason_codes:
+                reason_codes.append(code)
 
     diagnostics["study_rows_loaded"] = len(study_rows_loaded)
     if fixture.notes:
@@ -1214,12 +1440,249 @@ def _visual_metadata_for_result(fixture: ParityFixtureSpec) -> dict[str, Any]:
             fixture.observed_bar_date.isoformat() if fixture.observed_bar_date else None
         ),
         "screenshot": fixture.screenshot,
+        "macmarket_screenshot": fixture.macmarket_screenshot,
         "screenshot_notes": fixture.screenshot_notes,
         "reviewer": fixture.reviewer,
         "reviewed_at": (
             fixture.reviewed_at.isoformat() if fixture.reviewed_at else None
         ),
     }
+
+
+# ── visual_attestation comparison ──────────────────────────────────────────
+
+
+def _resolve_visual_attestation_tolerance(
+    tolerances: Mapping[str, float],
+    field: str,
+) -> float:
+    """Return the per-field tolerance for visual_attestation.
+
+    Operator-supplied ``tolerances`` win; otherwise the wider
+    visual-attestation defaults apply (because eye-read precision is
+    coarser than CSV-derived precision).
+    """
+    if field in tolerances:
+        return float(tolerances[field])
+    if field in DEFAULT_VISUAL_ATTESTATION_TOLERANCES:
+        return float(DEFAULT_VISUAL_ATTESTATION_TOLERANCES[field])
+    if field in DEFAULT_TOLERANCES:
+        return float(DEFAULT_TOLERANCES[field])
+    return 1.0
+
+
+def _compare_visual_attestation(
+    fixture: ParityFixtureSpec,
+    visual_metadata: dict[str, Any],
+) -> FixtureComparisonResult:
+    """Compare operator-entered ToS readings against operator-entered
+    MacMarket readings — no bars, no study CSV, no MacMarket computation.
+
+    Result statuses:
+
+    - ``visual_attested`` — every field present in both observations is
+      within tolerance and label rules pass.
+    - ``visual_failed`` — at least one numeric mismatch or, when
+      ``label_must_match`` is true, a label mismatch.
+    - ``visual_partial`` — observations exist but no field is present in
+      both sides (nothing to compare). Strict CLI treats this as
+      non-pass.
+    - ``skipped_missing_observation`` — one or both observation maps are
+      empty.
+
+    The function never approves, sizes, routes, opens, closes, or
+    settles trades.
+    """
+    diagnostics: dict[str, Any] = {
+        "mode": "visual_attestation",
+        "source": "operator-read Thinkorswim and MacMarket rendered chart labels",
+        "parity_basis": (
+            "manual visual attestation — both ToS and MacMarket values are "
+            "operator-entered from rendered charts"
+        ),
+    }
+    if fixture.observed_bar_date is not None:
+        diagnostics["observed_bar_date"] = fixture.observed_bar_date.isoformat()
+
+    has_tos = bool(fixture.tos_observed_latest or fixture.tos_observed_labels)
+    has_mm = bool(
+        fixture.macmarket_observed_latest or fixture.macmarket_observed_labels
+    )
+    if not has_tos or not has_mm:
+        return FixtureComparisonResult(
+            fixture_name=fixture.name,
+            symbol=fixture.symbol,
+            timeframe=fixture.timeframe,
+            parity_mode=fixture.parity_mode,
+            status="skipped_missing_observation",
+            rows_compared=0,
+            higher_timeframe_source=None,
+            parity_status=None,
+            derived_higher_timeframe=False,
+            reason_codes=[
+                "thinkorswim_visual_attestation_missing_observation",
+                "thinkorswim_parity_pending",
+            ],
+            diagnostics={
+                **diagnostics,
+                "note": (
+                    "tos_observed_latest and macmarket_observed_latest are "
+                    "both required to compare visual attestation"
+                ),
+            },
+            **visual_metadata,
+        )
+
+    # Numeric field comparison — only compare fields present on BOTH
+    # sides. Missing fields are recorded as skipped (advisory).
+    tos_numeric = dict(fixture.tos_observed_latest)
+    mm_numeric = dict(fixture.macmarket_observed_latest)
+    common_numeric_fields = sorted(set(tos_numeric) & set(mm_numeric))
+    skipped_fields: list[str] = []
+    deltas: list[FieldDelta] = []
+    mismatches: list[str] = []
+    reference_only_observations: dict[str, dict[str, float]] = {}
+
+    for field_name in set(tos_numeric) | set(mm_numeric):
+        if field_name in common_numeric_fields:
+            continue
+        # tos_hilo_elite_scalar declared only on the ToS side is a
+        # reference-only observation — there is no MM equivalent to
+        # compare against (MacMarket does not compute it). Record it
+        # in diagnostics so the audit trail preserves the reading.
+        if field_name == "tos_hilo_elite_scalar" and field_name in tos_numeric:
+            reference_only_observations.setdefault("tos_only", {})[field_name] = (
+                float(tos_numeric[field_name])
+            )
+        else:
+            skipped_fields.append(field_name)
+
+    for field_name in common_numeric_fields:
+        tos_value = float(tos_numeric[field_name])
+        mm_value = float(mm_numeric[field_name])
+        tol = _resolve_visual_attestation_tolerance(fixture.tolerances, field_name)
+        abs_error = abs(tos_value - mm_value)
+        within = abs_error <= tol
+        deltas.append(
+            FieldDelta(
+                field=field_name,
+                expected=tos_value,
+                actual=mm_value,
+                abs_error=abs_error,
+                tolerance=tol,
+                within_tolerance=within,
+            )
+        )
+        if not within:
+            mismatches.append(
+                f"{fixture.name} attestation: {field_name} ToS {tos_value} vs "
+                f"MM {mm_value:.4f} differ by {abs_error:.4f} (tol {tol})"
+            )
+
+    # Label field comparison.
+    label_mismatches: list[str] = []
+    tos_labels = dict(fixture.tos_observed_labels)
+    mm_labels = dict(fixture.macmarket_observed_labels)
+    common_label_fields = sorted(set(tos_labels) & set(mm_labels))
+    for field_name in set(tos_labels) | set(mm_labels):
+        if field_name not in common_label_fields:
+            skipped_fields.append(field_name)
+    for field_name in common_label_fields:
+        tos_value = tos_labels[field_name]
+        mm_value = mm_labels[field_name]
+        tos_norm = str(tos_value).strip().lower()
+        mm_norm = str(mm_value).strip().lower()
+        if tos_norm == mm_norm:
+            continue
+        msg = (
+            f"{fixture.name} attestation: {field_name} ToS {tos_value!r} vs "
+            f"MM {mm_value!r}"
+        )
+        label_mismatches.append(msg)
+        if fixture.label_must_match:
+            mismatches.append(msg)
+
+    # No comparable fields at all → visual_partial.
+    if not common_numeric_fields and not common_label_fields:
+        reason_codes = [
+            "thinkorswim_visual_attestation_no_comparable_fields",
+            "thinkorswim_parity_pending",
+        ]
+        if reference_only_observations:
+            diagnostics["reference_only_observations"] = reference_only_observations
+            diagnostics["reference_only_note"] = (
+                "tos_hilo_elite_scalar recorded for operator review; no "
+                "comparable MacMarket field was provided"
+            )
+        if skipped_fields:
+            diagnostics["skipped_fields"] = sorted(set(skipped_fields))
+        return FixtureComparisonResult(
+            fixture_name=fixture.name,
+            symbol=fixture.symbol,
+            timeframe=fixture.timeframe,
+            parity_mode=fixture.parity_mode,
+            status="visual_partial",
+            rows_compared=0,
+            higher_timeframe_source=None,
+            parity_status=None,
+            derived_higher_timeframe=False,
+            field_deltas=deltas,
+            label_mismatches=label_mismatches,
+            mismatches=mismatches,
+            reason_codes=reason_codes,
+            diagnostics=diagnostics,
+            **visual_metadata,
+        )
+
+    status = "visual_attested" if not mismatches else "visual_failed"
+    reason_codes: list[str] = []
+    if status == "visual_attested":
+        reason_codes.append("thinkorswim_visual_attested")
+    else:
+        reason_codes.append("thinkorswim_visual_attestation_failed")
+
+    # Recommended-field advisory codes (don't flip status).
+    provided_fields = set(common_numeric_fields) | set(common_label_fields)
+    for recommended in RECOMMENDED_VISUAL_FIELDS:
+        if recommended not in provided_fields:
+            code = f"thinkorswim_visual_attestation_missing_{recommended}"
+            if code not in reason_codes:
+                reason_codes.append(code)
+    if not (provided_fields & set(RECOMMENDED_HILO_VISUAL_FIELDS)):
+        code = "thinkorswim_visual_attestation_missing_hilo_field"
+        if code not in reason_codes:
+            reason_codes.append(code)
+
+    if reference_only_observations:
+        diagnostics["reference_only_observations"] = reference_only_observations
+        diagnostics["reference_only_note"] = (
+            "tos_hilo_elite_scalar present on the ToS side only — "
+            "recorded for audit, not compared (MacMarket has no "
+            "equivalent unless the MM side declares the same field)"
+        )
+    if skipped_fields:
+        diagnostics["skipped_fields"] = sorted(set(skipped_fields))
+    diagnostics["fields_compared"] = sorted(
+        set(common_numeric_fields) | set(common_label_fields)
+    )
+
+    return FixtureComparisonResult(
+        fixture_name=fixture.name,
+        symbol=fixture.symbol,
+        timeframe=fixture.timeframe,
+        parity_mode=fixture.parity_mode,
+        status=status,
+        rows_compared=1,
+        higher_timeframe_source=None,
+        parity_status=None,
+        derived_higher_timeframe=False,
+        field_deltas=deltas,
+        label_mismatches=label_mismatches,
+        mismatches=mismatches,
+        reason_codes=reason_codes,
+        diagnostics=diagnostics,
+        **visual_metadata,
+    )
 
 
 # ── folder validation ──────────────────────────────────────────────────────
@@ -1312,13 +1775,32 @@ def validate_thinkorswim_fixture_folder(fixture_dir: Path) -> FixtureFolderValid
 
     fixtures_total = len(manifest.fixtures)
     for spec in manifest.fixtures:
-        bars_present = spec.bars_csv.exists()
+        # visual_attestation fixtures never need bars / study CSVs — the
+        # operator-entered ToS vs MM observation pair is the source of
+        # truth. They are always "ready" once the manifest validates.
+        if spec.is_visual_attestation:
+            fixtures_ready += 1
+            fixtures_readiness.append(
+                FixtureReadiness(
+                    fixture_name=spec.name,
+                    symbol=spec.symbol,
+                    timeframe=spec.timeframe,
+                    bars_present=False,
+                    study_present=False,
+                    higher_timeframe_bars_present=None,
+                    ready=True,
+                    missing_files=[],
+                )
+            )
+            continue
+
+        bars_present = spec.bars_csv.exists() if spec.bars_csv is not None else False
         study_present = spec.study_csv.exists() if spec.study_csv is not None else False
         htf_present: bool | None = None
         if spec.higher_timeframe_bars_csv is not None:
             htf_present = spec.higher_timeframe_bars_csv.exists()
         missing: list[str] = []
-        if not bars_present:
+        if spec.bars_csv is not None and not bars_present:
             missing.append(str(spec.bars_csv.name))
         if spec.study_csv is not None and not study_present:
             missing.append(str(spec.study_csv.name))
@@ -1389,28 +1871,36 @@ class ParityReportSummary:
 
     @property
     def mode_counts(self) -> dict[str, dict[str, int]]:
-        """Return per-mode pass/fail/skipped counts.
+        """Return per-mode pass/fail/skipped/partial counts.
 
-        Shape::
-
-            {
-                "visual_observation": {"total": N, "passed": x, "failed": y, "skipped": z},
-                "exported_study_csv": {"total": N, "passed": x, "failed": y, "skipped": z},
-            }
+        ``passed`` collects ``passed`` and ``visual_attested`` so a
+        callers summing ``passed`` see the canonical "all comparable
+        fields agree" tally regardless of mode. ``partial`` collects
+        the ``visual_partial`` status. ``skipped`` collects every
+        other skipped/missing status.
         """
         counts: dict[str, dict[str, int]] = {
-            mode: {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+            mode: {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "partial": 0,
+            }
             for mode in PARITY_MODES
         }
         for result in self.results:
             bucket = counts.setdefault(
-                result.parity_mode, {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+                result.parity_mode,
+                {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "partial": 0},
             )
             bucket["total"] += 1
-            if result.status == "passed":
+            if result.status in ("passed", "visual_attested"):
                 bucket["passed"] += 1
-            elif result.status == "failed":
+            elif result.status in ("failed", "visual_failed"):
                 bucket["failed"] += 1
+            elif result.status == "visual_partial":
+                bucket["partial"] = bucket.get("partial", 0) + 1
             else:
                 bucket["skipped"] += 1
         return counts
@@ -1433,7 +1923,44 @@ class ParityReportSummary:
 
     @property
     def visual_reviewed(self) -> bool:
-        return self.visual_observation_count > 0
+        return self.visual_observation_count > 0 or self.visual_attestation_count > 0
+
+    # ── visual_attestation counts ────────────────────────────────────
+    @property
+    def visual_attestation_count(self) -> int:
+        return self.mode_counts.get("visual_attestation", {}).get("total", 0)
+
+    @property
+    def visual_attestation_passed_count(self) -> int:
+        return self.mode_counts.get("visual_attestation", {}).get("passed", 0)
+
+    @property
+    def visual_attestation_failed_count(self) -> int:
+        return self.mode_counts.get("visual_attestation", {}).get("failed", 0)
+
+    @property
+    def visual_attestation_partial_count(self) -> int:
+        return self.mode_counts.get("visual_attestation", {}).get("partial", 0)
+
+    @property
+    def visual_attestation_status(self) -> str | None:
+        """Mode-level status string for the Settings card.
+
+        - ``visual_attested`` — every visual_attestation fixture passed.
+        - ``visual_failed`` — at least one fixture failed.
+        - ``visual_partial`` — any fixture is partial (no comparable
+          fields) but none failed.
+        - ``None`` — no visual_attestation fixtures present.
+        """
+        if self.visual_attestation_count == 0:
+            return None
+        if self.visual_attestation_failed_count > 0:
+            return "visual_failed"
+        if self.visual_attestation_partial_count > 0:
+            return "visual_partial"
+        if self.visual_attestation_passed_count == self.visual_attestation_count:
+            return "visual_attested"
+        return "visual_partial"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1452,6 +1979,11 @@ class ParityReportSummary:
             "exported_study_csv_count": self.exported_study_csv_count,
             "visual_observation_passed_count": self.visual_observation_passed_count,
             "visual_observation_failed_count": self.visual_observation_failed_count,
+            "visual_attestation_count": self.visual_attestation_count,
+            "visual_attestation_passed_count": self.visual_attestation_passed_count,
+            "visual_attestation_failed_count": self.visual_attestation_failed_count,
+            "visual_attestation_partial_count": self.visual_attestation_partial_count,
+            "visual_attestation_status": self.visual_attestation_status,
             "visual_reviewed": self.visual_reviewed,
             "results": [r.to_dict() for r in self.results],
         }
@@ -1460,6 +1992,7 @@ class ParityReportSummary:
 _MODE_LABEL: dict[str, str] = {
     "exported_study_csv": "exported study CSV",
     "visual_observation": "visual observation",
+    "visual_attestation": "visual attestation (no bars)",
 }
 
 
@@ -1484,7 +2017,14 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
     lines.append("## Mode summary")
     lines.append("")
     visual_counts = summary.mode_counts.get("visual_observation", {})
+    attestation_counts = summary.mode_counts.get("visual_attestation", {})
     exported_counts = summary.mode_counts.get("exported_study_csv", {})
+    lines.append(
+        f"- visual_attestation: {attestation_counts.get('total', 0)} "
+        f"({attestation_counts.get('passed', 0)} passed / "
+        f"{attestation_counts.get('failed', 0)} failed / "
+        f"{attestation_counts.get('partial', 0)} partial)"
+    )
     lines.append(
         f"- visual_observation: {visual_counts.get('total', 0)} "
         f"({visual_counts.get('passed', 0)} passed / "
@@ -1498,6 +2038,10 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
         f"{exported_counts.get('skipped', 0)} skipped)"
     )
     lines.append("")
+    lines.append(
+        "_Visual attestation compares operator-entered ToS and MacMarket rendered chart "
+        "values. It is not exported study-row parity._"
+    )
     lines.append(
         "_Visual observations are operator-entered from rendered Thinkorswim chart labels. "
         "They are auditable but not row-level CSV exports — Thinkorswim does not export "
@@ -1531,7 +2075,15 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
         lines.append(f"## {result.fixture_name} — `{result.status}`")
         lines.append("")
         lines.append(f"- Mode: {_mode_label(result.parity_mode)}")
-        if result.is_visual:
+        if result.parity_mode == "visual_attestation":
+            lines.append(
+                "- Source: operator-entered ToS and MacMarket rendered chart values"
+            )
+            lines.append(
+                "- This is manual visual attestation, not exported study-row parity "
+                "and not computed bars parity."
+            )
+        elif result.is_visual:
             lines.append(
                 "- Source: operator-read Thinkorswim rendered chart labels"
             )
@@ -1555,15 +2107,22 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
         if result.reviewed_at:
             lines.append(f"- Reviewed at: `{result.reviewed_at}`")
         if result.screenshot:
-            lines.append(f"- Screenshot: `{result.screenshot}`")
+            lines.append(f"- Screenshot (ToS): `{result.screenshot}`")
+        if result.macmarket_screenshot:
+            lines.append(f"- Screenshot (MacMarket): `{result.macmarket_screenshot}`")
         if result.screenshot_notes:
             lines.append(f"- Screenshot notes: {result.screenshot_notes}")
         lines.append("")
         if result.field_deltas:
-            label = "Observed" if result.is_visual else "Expected"
-            lines.append(
-                f"| Field | {label} | MacMarket | abs_error | Tolerance | OK? |"
-            )
+            if result.parity_mode == "visual_attestation":
+                lines.append(
+                    "| Field | ToS observed | MacMarket observed | abs_error | Tolerance | OK? |"
+                )
+            else:
+                label = "Observed" if result.is_visual else "Expected"
+                lines.append(
+                    f"| Field | {label} | MacMarket | abs_error | Tolerance | OK? |"
+                )
             lines.append("|---|---:|---:|---:|---:|:---:|")
             for delta in result.field_deltas:
                 ok = "ok" if delta.within_tolerance else "MISS"
@@ -1661,11 +2220,12 @@ def build_thinkorswim_parity_report(
     for spec in manifest.fixtures:
         result = compare_momentum_to_thinkorswim(spec)
         results.append(result)
-        if result.status == "passed":
+        if result.status in ("passed", "visual_attested"):
             passed += 1
-        elif result.status == "failed":
+        elif result.status in ("failed", "visual_failed"):
             failed += 1
         else:
+            # visual_partial and every skipped_* status lands here.
             skipped += 1
 
     summary = ParityReportSummary(
@@ -1702,7 +2262,11 @@ def _scan_manifest_mode_counts(manifest_path: Path) -> dict[str, int]:
     or invalid — callers fall back to the report payload counts when
     a parity report is available.
     """
-    counts = {"visual_observation": 0, "exported_study_csv": 0}
+    counts = {
+        "visual_observation": 0,
+        "exported_study_csv": 0,
+        "visual_attestation": 0,
+    }
     if not manifest_path.exists():
         return counts
     try:
@@ -1779,8 +2343,13 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
     report_mode_counts: dict[str, dict[str, int]] | None = None
     visual_count = manifest_mode_counts.get("visual_observation", 0)
     exported_count = manifest_mode_counts.get("exported_study_csv", 0)
+    attestation_count = manifest_mode_counts.get("visual_attestation", 0)
     visual_passed = 0
     visual_failed = 0
+    attestation_passed = 0
+    attestation_failed = 0
+    attestation_partial = 0
+    attestation_status_from_report: str | None = None
     if isinstance(report_payload, dict):
         raw_mode_counts = report_payload.get("parity_mode_counts")
         if isinstance(raw_mode_counts, dict):
@@ -1793,36 +2362,81 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
                     "passed": int(bucket.get("passed") or 0),
                     "failed": int(bucket.get("failed") or 0),
                     "skipped": int(bucket.get("skipped") or 0),
+                    "partial": int(bucket.get("partial") or 0),
                 }
             report_mode_counts = normalized or None
         if report_mode_counts is not None:
             visual_bucket = report_mode_counts.get("visual_observation", {})
             exported_bucket = report_mode_counts.get("exported_study_csv", {})
+            attestation_bucket = report_mode_counts.get("visual_attestation", {})
             visual_count = visual_bucket.get("total", visual_count)
             exported_count = exported_bucket.get("total", exported_count)
+            attestation_count = attestation_bucket.get("total", attestation_count)
             visual_passed = visual_bucket.get("passed", 0)
             visual_failed = visual_bucket.get("failed", 0)
+            attestation_passed = attestation_bucket.get("passed", 0)
+            attestation_failed = attestation_bucket.get("failed", 0)
+            attestation_partial = attestation_bucket.get("partial", 0)
         else:
             visual_count = report_payload.get("visual_observation_count", visual_count)
             exported_count = report_payload.get("exported_study_csv_count", exported_count)
             visual_passed = int(report_payload.get("visual_observation_passed_count") or 0)
             visual_failed = int(report_payload.get("visual_observation_failed_count") or 0)
+            attestation_count = int(
+                report_payload.get("visual_attestation_count") or attestation_count
+            )
+            attestation_passed = int(
+                report_payload.get("visual_attestation_passed_count") or 0
+            )
+            attestation_failed = int(
+                report_payload.get("visual_attestation_failed_count") or 0
+            )
+            attestation_partial = int(
+                report_payload.get("visual_attestation_partial_count") or 0
+            )
+        attestation_status_from_report = report_payload.get(
+            "visual_attestation_status"
+        ) or None
     parity_mode_counts: dict[str, dict[str, int]] = report_mode_counts or {
         "visual_observation": {
             "total": manifest_mode_counts.get("visual_observation", 0),
             "passed": 0,
             "failed": 0,
             "skipped": 0,
+            "partial": 0,
         },
         "exported_study_csv": {
             "total": manifest_mode_counts.get("exported_study_csv", 0),
             "passed": 0,
             "failed": 0,
             "skipped": 0,
+            "partial": 0,
+        },
+        "visual_attestation": {
+            "total": manifest_mode_counts.get("visual_attestation", 0),
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "partial": 0,
         },
     }
 
+    # Resolve visual_attestation_status from counts when the report
+    # didn't supply it (e.g. pre-report runs).
+    if attestation_status_from_report is None and attestation_count > 0:
+        if attestation_failed > 0:
+            attestation_status_from_report = "visual_failed"
+        elif attestation_partial > 0:
+            attestation_status_from_report = "visual_partial"
+        elif attestation_passed == attestation_count:
+            attestation_status_from_report = "visual_attested"
+        else:
+            attestation_status_from_report = "visual_partial"
+
     visual_only = visual_count > 0 and exported_count == 0
+    attestation_only = (
+        attestation_count > 0 and visual_count == 0 and exported_count == 0
+    )
 
     # Derive workflow status.
     reason_codes: list[str] = []
@@ -1858,8 +2472,18 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
 
     if visual_count > 0:
         reason_codes.append("thinkorswim_visual_parity_observations_available")
-    if visual_only:
+    if attestation_count > 0:
+        reason_codes.append("thinkorswim_visual_attestation_observations_available")
+    if visual_only or attestation_only or (
+        attestation_count > 0 and exported_count == 0
+    ):
         reason_codes.append("thinkorswim_exported_study_csv_unavailable")
+    if attestation_status_from_report == "visual_attested":
+        reason_codes.append("thinkorswim_visual_attested")
+    elif attestation_status_from_report == "visual_failed":
+        reason_codes.append("thinkorswim_visual_attestation_failed")
+    elif attestation_status_from_report == "visual_partial":
+        reason_codes.append("thinkorswim_visual_attestation_partial")
 
     if status == "missing":
         summary_text = "Drop Thinkorswim CSV exports and a manifest.json to begin parity validation."
@@ -1873,11 +2497,18 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
             f"{validation.fixtures_total} fixture(s) staged. Run the parity validator to produce a report."
         )
     elif status == "passed":
-        basis = (
-            "visual / manual observation"
-            if visual_only
-            else ("mixed visual + exported study CSV" if visual_count > 0 else "exported study CSV")
-        )
+        if attestation_only:
+            basis = "visual attestation (no bars)"
+        elif visual_only:
+            basis = "visual / manual observation"
+        elif attestation_count > 0 and visual_count > 0:
+            basis = "mixed visual attestation + visual observation"
+        elif attestation_count > 0:
+            basis = "mixed visual attestation + exported study CSV"
+        elif visual_count > 0:
+            basis = "mixed visual observation + exported study CSV"
+        else:
+            basis = "exported study CSV"
         summary_text = (
             f"Parity passed for {fixtures_passed}/{validation.fixtures_total} fixtures "
             f"(basis: {basis})."
@@ -1909,9 +2540,17 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
         "exported_study_csv_count": exported_count,
         "visual_observation_passed_count": visual_passed,
         "visual_observation_failed_count": visual_failed,
-        "visual_reviewed": visual_count > 0,
+        "visual_attestation_count": attestation_count,
+        "visual_attestation_passed_count": attestation_passed,
+        "visual_attestation_failed_count": attestation_failed,
+        "visual_attestation_partial_count": attestation_partial,
+        "visual_attestation_status": attestation_status_from_report,
+        "visual_reviewed": visual_count > 0 or attestation_count > 0,
         "exported_study_csv_available": exported_count > 0,
     }
+
+
+REFERENCE_ONLY_FIELDS: frozenset[str] = _REFERENCE_ONLY_FIELDS
 
 
 __all__ = [
@@ -1926,8 +2565,10 @@ __all__ = [
     "ParityFixtureSpec",
     "ParityManifest",
     "ParityReportSummary",
+    "RECOMMENDED_HILO_VISUAL_FIELDS",
     "RECOMMENDED_STUDY_NAMES",
     "RECOMMENDED_VISUAL_FIELDS",
+    "REFERENCE_ONLY_FIELDS",
     "REPORT_FILENAME_JSON",
     "REPORT_FILENAME_MD",
     "REPORT_SCHEMA_VERSION",

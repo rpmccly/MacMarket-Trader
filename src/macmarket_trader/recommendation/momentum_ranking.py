@@ -938,6 +938,21 @@ def build_momentum_ranking_status(
         thinkorswim_parity_exported_study_csv_available=bool(
             parity_workflow.get("exported_study_csv_available")
         ),
+        thinkorswim_parity_visual_attestation_count=int(
+            parity_workflow.get("visual_attestation_count") or 0
+        ),
+        thinkorswim_parity_visual_attestation_passed_count=int(
+            parity_workflow.get("visual_attestation_passed_count") or 0
+        ),
+        thinkorswim_parity_visual_attestation_failed_count=int(
+            parity_workflow.get("visual_attestation_failed_count") or 0
+        ),
+        thinkorswim_parity_visual_attestation_partial_count=int(
+            parity_workflow.get("visual_attestation_partial_count") or 0
+        ),
+        thinkorswim_parity_visual_attestation_status=(
+            parity_workflow.get("visual_attestation_status") or None
+        ),
     )
 
 

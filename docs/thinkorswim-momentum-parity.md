@@ -8,8 +8,23 @@ capturing Thinkorswim parity evidence and validating MacMarket's
 Momentum Intelligence calculations against the source Simpler Trading
 studies.
 
-The parity workflow supports two complementary modes:
+The parity workflow supports three complementary modes:
 
+- `visual_attestation` (**recommended default**) — the operator manually
+  reads BOTH the Thinkorswim rendered chart values and the MacMarket
+  rendered chart values for the same bar from screenshots, records
+  both observation sets in `manifest.json` under `tos_observed_latest`
+  and `macmarket_observed_latest`, and the validator compares ToS vs
+  MacMarket directly. **No bars CSV is required** — Thinkorswim
+  cannot export Momentum study rows AND cannot export usable bars for
+  this workflow, so this mode is what makes parity evidence possible
+  at all. Status values: `visual_attested` / `visual_failed` /
+  `visual_partial`.
+- `visual_observation` — the operator reads the Thinkorswim rendered
+  chart labels for a specific bar (no ToS bars export needed), drops
+  a bars CSV alongside so MacMarket can compute its own side, and the
+  validator compares ToS readings against MacMarket's computed
+  payload. Requires `bars_csv`.
 - `exported_study_csv` — the operator drops a Thinkorswim study CSV
   next to the bars CSV. The validator parses the last row of the
   study CSV and compares it against the manifest's `expected_latest`
@@ -17,17 +32,244 @@ The parity workflow supports two complementary modes:
   Momentum study output cannot be exported through stock ToS. This
   mode is preserved for any operator who can capture the study rows
   through a third-party tool, but it is **not the default path**.
-- `visual_observation` — the operator manually reads the rendered
-  Thinkorswim chart labels (total score, label, True Momentum, EMA,
-  HiLo, etc.) for a specific bar and records those values in
-  `manifest.json` under `observed_latest`. Optional screenshot
-  references, reviewer name, and review timestamp give the audit
-  trail a non-OCR, operator-attested receipt.
 
-Visual/manual observations are **the practical replacement** for
-study-row exports given the ToS limitation. They are auditable but
-not row-level CSV exports, and the validator labels them as such on
-every surface.
+Visual attestation is **the practical replacement** for both
+study-row exports and bars-derived parity given the ToS limitations.
+It is auditable (reviewer + ToS screenshot + MacMarket screenshot +
+observed_bar_date) but is not row-level CSV exports, and the
+validator labels it as such on every surface.
+
+## Visual attestation mode — no-bars manual ToS vs MacMarket parity
+
+The recommended workflow today is **visual attestation**:
+
+1. Open the Thinkorswim chart for the symbol you want to attest,
+   set the timeframe and history range, and confirm the active bar.
+2. Open the MacMarket Momentum chart for the same symbol, same
+   timeframe, and the same observed bar.
+3. Save screenshots of both rendered charts using this naming
+   convention so the audit trail is self-documenting:
+   - `visual/<SYMBOL>_<TIMEFRAME>_ToS_<YYYY>_<M>_<D>.png` for the
+     Thinkorswim screenshot.
+   - `visual/<SYMBOL>_<TIMEFRAME>_MM_<YYYY>_<M>_<D>.png` for the
+     MacMarket screenshot.
+   Example: `visual/SPY_1D_ToS_2026_5_13.png` and
+   `visual/SPY_1D_MM_2026_5_13.png`.
+4. Read the rendered chart values off each screenshot — Total Score,
+   Total Label, True Momentum, True Momentum EMA, and any HiLo /
+   trend / momo fields you care about. Capture at least
+   `total_score`, `total_label`, `true_momentum`,
+   `true_momentum_ema`, plus one HiLo field on the MacMarket side.
+5. Record the readings in `manifest.json` under
+   `tos_observed_latest` and `macmarket_observed_latest`, with a
+   `parity_mode` of `"visual_attestation"`, `observed_bar_date`,
+   `reviewer`, `reviewed_at`, and screenshot paths.
+6. Run the validator (see "Validator commands" below).
+
+### Exact example manifest
+
+```json
+{
+  "schema_version": "thinkorswim_momentum_parity.v1",
+  "source": "thinkorswim",
+  "fixtures": [
+    {
+      "name": "SPY_1D_visual_attestation_2026_05_13",
+      "symbol": "SPY",
+      "timeframe": "1D",
+      "parity_mode": "visual_attestation",
+      "observed_bar_date": "2026-05-13",
+      "reviewer": "operator",
+      "reviewed_at": "2026-05-14T13:30:00Z",
+      "tos_screenshot": "visual/SPY_1D_ToS_2026_5_13.png",
+      "macmarket_screenshot": "visual/SPY_1D_MM_2026_5_13.png",
+      "tos_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 72.5563,
+        "true_momentum_ema": 59.2084,
+        "tos_hilo_elite_scalar": 98.1805
+      },
+      "macmarket_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 73.51,
+        "true_momentum_ema": 60.04,
+        "hilo_slowd": 79.15,
+        "hilo_slowd_x": 65.96,
+        "hilo_score": 20,
+        "hilo_thrust_state": "confirmed"
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.5,
+        "true_momentum_ema": 1.5
+      }
+    }
+  ]
+}
+```
+
+### Default visual_attestation tolerances
+
+| Field | Default tolerance |
+|---|---:|
+| `total_score` | 2.0 |
+| `trend_score` | 2.0 |
+| `momo_score` | 2.0 |
+| `true_momentum` | 1.5 |
+| `true_momentum_ema` | 1.5 |
+| `hilo_slowd` | 2.0 |
+| `hilo_slowd_x` | 2.0 |
+| `hilo_score` | 5.0 |
+
+These are wider than the legacy CSV-derived defaults because
+eye-read precision is coarser than CSV-derived precision. Operators
+may override them per-fixture via the `tolerances` block.
+
+### Interpreting visual_attested / visual_failed / visual_partial
+
+- `visual_attested` — every field present in both observations is
+  within tolerance and label rules pass.
+- `visual_failed` — at least one numeric mismatch, or, when
+  `label_must_match: true`, a label mismatch.
+- `visual_partial` — both observation sets exist but no field is
+  present in both sides (nothing comparable). Strict CLI treats
+  this as non-pass.
+- `skipped_missing_observation` — one or both observation maps are
+  empty. The validator never claims attested status when a side is
+  blank.
+
+### ToS HiLo Elite scalar vs MacMarket HiLo fields
+
+`tos_hilo_elite_scalar` is **ToS-only** by default. MacMarket does
+not currently compute a ToS-comparable ST_HiLoElite scalar — the
+MacMarket HiLo panel displays `hilo_slowd` / `hilo_slowd_x` /
+`hilo_thrust_state` / `hilo_score` separately. When the operator
+records `tos_hilo_elite_scalar` only on the ToS side, the validator
+captures it in the report's diagnostics under
+`reference_only_observations` but does not auto-compare it. If both
+sides happen to populate `tos_hilo_elite_scalar`, the validator
+compares them with the configured tolerance. The validator never
+silently compares `tos_hilo_elite_scalar` against `hilo_slowd`.
+
+### Strict mode
+
+`--strict` requires every declared `visual_attestation` fixture to
+pass outright:
+
+- exit 0 when all attestation fixtures are `visual_attested`.
+- non-zero when any fixture is `visual_failed` or `visual_partial`.
+- non-zero when the manifest is missing or invalid.
+- never makes provider, database, recommendation, or order calls.
+
+## HiLo field discipline — SlowD vs ToS HiLo Elite
+
+Operator visual-parity comparisons on SPY / XLK / XLP / XLE surfaced
+a meaningful label mismatch: MacMarket's HiLo panel was previously
+labelled "HiLo Elite", but the underlying value was the rendered
+**stochastic SlowD line** from `compute_hilo_elite` (range 0..100),
+not the ToS-comparable ST_HiLoElite scalar an operator reads off
+Thinkorswim. Concretely:
+
+| Symbol | ToS ST_HiLoElite (read) | MM previously labelled "HiLo Elite" |
+|---|---:|---:|
+| SPY | ~98.18 | ~78.91 (SlowD)                       |
+| XLK | ~97.10 | ~78.26 (SlowD)                       |
+| XLP | closer match | (also SlowD)                    |
+| XLE | closer match | (also SlowD)                    |
+
+To keep parity honest, MacMarket now distinguishes four HiLo surface
+fields explicitly:
+
+- **`hilo_slowd`** — rendered stochastic SlowD value (range 0..100).
+  This is what MacMarket already computes and now labels honestly as
+  "HiLo SlowD" on the chart panel.
+- **`hilo_slowd_x`** — rendered stochastic SlowD_X value. Surfaced
+  as "HiLo SlowD_X".
+- **`tos_hilo_elite_scalar`** — the actual ToS ST_HiLoElite scalar
+  an operator reads from Thinkorswim. **MacMarket does not currently
+  compute this** so the field is always `null` and listed in
+  `unavailable_fields`. The UI never renders a "HiLo Elite" badge
+  unless a real value is present.
+- **`hilo_thrust_state`** — categorical thrust state
+  (Confirmed / Deconfirmed / Neutral). Kept separate.
+- **`hilo_score`** — the composite -30 / 0 / +30 HiLo thrust
+  contribution that feeds the total score. Kept separate.
+
+Operators capturing visual parity can record `tos_hilo_elite_scalar`
+in `observed_latest` so the audit trail preserves the rendered ToS
+reading. The validator treats that field as **reference-only**: it
+appears in the parity report's diagnostics but is never asserted
+against a MacMarket equivalent (because MacMarket does not compute
+one). Recording the operator's reading remains valuable evidence;
+auto-comparing it would force a fabricated MacMarket number, which
+the parity charter forbids.
+
+The `hilo_slowd` and `hilo_slowd_x` fields **are** auto-compared
+against MacMarket's existing SlowD / SlowD_X series, so an operator
+who reads those values off the rendered chart (or a tooltip) can
+score genuine SlowD parity.
+
+### Example SPY visual_observation manifest
+
+```json
+{
+  "schema_version": "thinkorswim_momentum_parity.v1",
+  "source": "thinkorswim",
+  "fixtures": [
+    {
+      "name": "SPY_1D_2026-05-14",
+      "symbol": "SPY",
+      "timeframe": "1D",
+      "parity_mode": "visual_observation",
+      "bars_csv": "SPY_1D_bars.csv",
+      "observed_bar_date": "2026-05-13",
+      "study_timezone": "America/New_York",
+      "comparison_window": 1,
+      "label_must_match": false,
+      "reviewer": "operator",
+      "reviewed_at": "2026-05-14T13:30:00Z",
+      "screenshot": "SPY_1D_2026-05-13_tos.png",
+      "macmarket_screenshot": "SPY_1D_2026-05-13_mm.png",
+      "screenshot_notes": "ToS Score panel + MM Momentum workspace cropped to the same bar.",
+      "notes": "Operator visual parity capture; SlowD reading from ToS tooltip.",
+      "observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 72.5563,
+        "true_momentum_ema": 59.2084,
+        "hilo_slowd": 98.1805,
+        "tos_hilo_elite_scalar": 98.1805
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.0,
+        "true_momentum_ema": 1.0,
+        "hilo_slowd": 5.0
+      }
+    }
+  ]
+}
+```
+
+Note: `tos_hilo_elite_scalar` is recorded for the audit trail. The
+validator will not assert it against MacMarket because MacMarket
+does not currently compute a ToS-comparable scalar.
+
+### Screenshot naming convention
+
+To make the audit trail self-documenting, follow:
+
+```
+<SYMBOL>_<TIMEFRAME>_<YYYY-MM-DD>_tos.png      # rendered ToS chart
+<SYMBOL>_<TIMEFRAME>_<YYYY-MM-DD>_mm.png       # rendered MM chart
+```
+
+Place them next to `manifest.json` and reference them as `screenshot`
+(ToS) and `macmarket_screenshot` (MM) on the fixture entry. The
+validator never opens the images — naming is operator discipline
+only.
 
 ## Visual parity chart polish
 
@@ -112,13 +354,16 @@ studies:
 - **StochasticFull smoothing** uses exponential smoothing matching
   `AverageType.EXPONENTIAL`.
 
-Without real Thinkorswim parity evidence — preferably exported bars
-plus visual/manual study observations because ToS does not export
-study rows — we cannot measure how close our deterministic output is
-to the source studies. The repo therefore ships **no fabricated parity
-values** — the fixture folder is a placeholder until an operator drops
-real bars CSVs and either records visual observations from the ToS
-chart labels or supplies an exported study CSV.
+Without real Thinkorswim visual/manual parity evidence — the
+recommended path is `parity_mode: "visual_attestation"`, which
+records operator-entered ToS and MacMarket rendered chart values
+from screenshots and requires no bars or study CSV — we cannot
+measure how close our deterministic output is to the source studies.
+The repo therefore ships **no fabricated parity values** — the
+fixture folder is a placeholder until an operator drops real
+screenshots and records the corresponding readings (or, when those
+are available, real bars CSVs and visual observations / exported
+study CSVs).
 
 ## Files expected
 

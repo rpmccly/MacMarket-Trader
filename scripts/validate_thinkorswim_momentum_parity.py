@@ -113,12 +113,17 @@ def _print_human_summary(status: dict, summary) -> None:
     if status.get("summary"):
         print(f"  summary           : {status['summary']}")
 
-    # Mode summary (visual observations vs exported study CSVs).
+    # Mode summary (visual attestation / visual observation / exported study CSVs).
     parity_mode_counts = status.get("parity_mode_counts") or {}
     visual_count = status.get("visual_observation_count", 0)
     exported_count = status.get("exported_study_csv_count", 0)
     visual_passed = status.get("visual_observation_passed_count", 0)
     visual_failed = status.get("visual_observation_failed_count", 0)
+    attestation_count = status.get("visual_attestation_count", 0)
+    attestation_passed = status.get("visual_attestation_passed_count", 0)
+    attestation_failed = status.get("visual_attestation_failed_count", 0)
+    attestation_partial = status.get("visual_attestation_partial_count", 0)
+    attestation_status = status.get("visual_attestation_status")
     exported_bucket = (
         parity_mode_counts.get("exported_study_csv", {})
         if isinstance(parity_mode_counts, dict) else {}
@@ -127,6 +132,11 @@ def _print_human_summary(status: dict, summary) -> None:
     exported_failed = exported_bucket.get("failed", 0)
     print("Mode summary:")
     print(
+        f"  visual_attestation: {attestation_count} "
+        f"({attestation_passed} passed / {attestation_failed} failed / "
+        f"{attestation_partial} partial)"
+    )
+    print(
         f"  visual_observation: {visual_count} "
         f"({visual_passed} passed / {visual_failed} failed)"
     )
@@ -134,7 +144,14 @@ def _print_human_summary(status: dict, summary) -> None:
         f"  exported_study_csv: {exported_count} "
         f"({exported_passed} passed / {exported_failed} failed)"
     )
-    if visual_count > 0 and exported_count == 0:
+    if attestation_status:
+        print(f"  visual_attestation status : {attestation_status}")
+    if attestation_count > 0 and visual_count == 0 and exported_count == 0:
+        print(
+            "  parity basis      : visual attestation (operator-entered ToS vs MM; "
+            "no bars required)"
+        )
+    elif visual_count > 0 and exported_count == 0:
         print(
             "  parity basis      : visual / manual ToS observations "
             "(exported study CSV parity unavailable)"
@@ -145,15 +162,34 @@ def _print_human_summary(status: dict, summary) -> None:
             marker = {
                 "passed": "PASS",
                 "failed": "FAIL",
+                "visual_attested": "PASS",
+                "visual_failed": "FAIL",
+                "visual_partial": "PARTIAL",
             }.get(result.status, result.status.upper())
-            mode_label = (
-                "VISUAL" if result.parity_mode == "visual_observation" else "STUDYCSV"
-            )
+            if result.parity_mode == "visual_attestation":
+                mode_label = "ATTEST"
+            elif result.parity_mode == "visual_observation":
+                mode_label = "VISUAL"
+            else:
+                mode_label = "STUDYCSV"
             print(
                 f"  - {result.fixture_name} [{result.symbol} {result.timeframe}] "
                 f"({mode_label}) {marker}"
             )
-            if result.is_visual:
+            if result.parity_mode == "visual_attestation":
+                if result.reviewer:
+                    print(f"      reviewer: {result.reviewer}")
+                if result.observed_bar_date:
+                    print(f"      observed_bar_date: {result.observed_bar_date}")
+                if result.screenshot:
+                    print(f"      tos_screenshot: {result.screenshot}")
+                if result.macmarket_screenshot:
+                    print(f"      macmarket_screenshot: {result.macmarket_screenshot}")
+                print(
+                    "      basis: manual visual attestation - operator-entered ToS "
+                    "vs MacMarket"
+                )
+            elif result.is_visual:
                 if result.reviewer:
                     print(f"      reviewer: {result.reviewer}")
                 if result.observed_bar_date:
@@ -161,17 +197,24 @@ def _print_human_summary(status: dict, summary) -> None:
                 if result.screenshot:
                     print(f"      screenshot: {result.screenshot}")
                 print(
-                    "      basis: manual visual parity — Thinkorswim does not export "
+                    "      basis: manual visual parity - Thinkorswim does not export "
                     "the Momentum study rows"
                 )
             for delta in result.field_deltas:
                 ok = "ok" if delta.within_tolerance else "MISS"
                 # ASCII-only to keep the Windows cp1252 console happy.
-                print(
-                    f"      {delta.field:>20s} expected={delta.expected:>10.4f} "
-                    f"actual={delta.actual:>10.4f} abs_err={delta.abs_error:>8.4f} "
-                    f"tol={delta.tolerance:.2f}  [{ok}]"
-                )
+                if result.parity_mode == "visual_attestation":
+                    print(
+                        f"      {delta.field:>20s} ToS={delta.expected:>10.4f} "
+                        f"MM={delta.actual:>10.4f} abs_err={delta.abs_error:>8.4f} "
+                        f"tol={delta.tolerance:.2f}  [{ok}]"
+                    )
+                else:
+                    print(
+                        f"      {delta.field:>20s} expected={delta.expected:>10.4f} "
+                        f"actual={delta.actual:>10.4f} abs_err={delta.abs_error:>8.4f} "
+                        f"tol={delta.tolerance:.2f}  [{ok}]"
+                    )
             for msg in result.mismatches:
                 print(f"      mismatch: {msg}")
             for msg in result.label_mismatches:
@@ -180,6 +223,11 @@ def _print_human_summary(status: dict, summary) -> None:
         "\nThis validator is research-only. A parity pass does not approve trades, "
         "auto-activate Phase C, or change any ranking math."
     )
+    if attestation_count > 0:
+        print(
+            "Visual attestation compares operator-entered ToS and MacMarket rendered "
+            "chart values. It is not exported study-row parity."
+        )
     if visual_count > 0:
         print(
             "Visual observations are operator-entered from rendered Thinkorswim chart "
@@ -199,6 +247,14 @@ def _resolve_exit_code(status: dict, *, strict: bool) -> int:
         return EXIT_PARTIAL
     if workflow == "failed":
         return EXIT_FAILED
+    # Visual attestation: strict requires every declared fixture to pass
+    # outright. visual_failed or visual_partial flips strict to nonzero
+    # so the operator must investigate before claiming attested status.
+    attestation_status = status.get("visual_attestation_status")
+    if attestation_status == "visual_failed":
+        return EXIT_FAILED
+    if attestation_status == "visual_partial":
+        return EXIT_PARTIAL
     # "ready" and "passed" are both fine under --strict.
     return EXIT_OK
 

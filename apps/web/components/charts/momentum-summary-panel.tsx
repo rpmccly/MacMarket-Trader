@@ -251,6 +251,16 @@ function VisualParityStrip({ payload }: { payload: MomentumChartPayload }) {
           wired into this payload.
         </p>
       ) : null}
+      {snapshot.unavailable_fields.includes("tos_hilo_elite_scalar") ? (
+        <p
+          style={{ margin: 0, fontSize: "0.72rem", color: "var(--op-muted, #7a8999)" }}
+          data-testid="momentum-tos-hilo-elite-unavailable-note"
+        >
+          ToS HiLo Elite scalar unavailable — MacMarket does not compute a
+          ToS-comparable ST_HiLoElite scalar. The HiLo panel currently
+          displays SlowD / SlowD_X / Thrust / Score.
+        </p>
+      ) : null}
     </div>
   );
 }

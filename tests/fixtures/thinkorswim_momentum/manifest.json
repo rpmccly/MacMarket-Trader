@@ -1,0 +1,163 @@
+{
+  "_comment": "Visual/manual parity attestation manifest. ToS does not export Momentum study rows or usable bars for this workflow. This manifest records operator-read ToS values and operator-read MacMarket values from rendered screenshots. The validator should compare ToS vs MM manual observations and/or report visual_attested status; it must not claim exported study-row parity.",
+  "schema_version": "thinkorswim_momentum_visual_attestation.v1",
+  "generated_at": "2026-05-14T00:00:00Z",
+  "source": "thinkorswim_visual",
+  "study_names": [
+    "ST_TrueMomentumScoreSTUDY",
+    "ST_TrueMomentumSTUDY",
+    "ST_HiLoEliteSTUDY"
+  ],
+  "fixtures": [
+    {
+      "name": "SPY_1D_visual_attestation_2026_05_13",
+      "symbol": "SPY",
+      "timeframe": "1D",
+      "parity_mode": "visual_attestation",
+      "observed_bar_date": "2026-05-13",
+      "study_timezone": "America/New_York",
+      "label_must_match": false,
+      "reviewer": "Ry",
+      "reviewed_at": "2026-05-14T00:00:00Z",
+      "tos_screenshot": "visual/SPY_1D_ToS_2026_5_13.png",
+      "macmarket_screenshot": "visual/SPY_1D_MM_2026_5_13.png",
+      "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
+      "notes": "True Momentum/EMA and total score visually aligned. ToS HiLo Elite scalar recorded as ToS-only reference; MM displays HiLo SlowD/SlowD_X/thrust/score separately.",
+      "tos_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 72.5563,
+        "true_momentum_ema": 59.2084,
+        "tos_hilo_elite_scalar": 98.1805
+      },
+      "macmarket_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 73.51,
+        "true_momentum_ema": 60.04,
+        "hilo_slowd": 79.15,
+        "hilo_slowd_x": 65.96,
+        "hilo_score": 20,
+        "hilo_thrust_state": "confirmed"
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.5,
+        "true_momentum_ema": 1.5
+      }
+    },
+    {
+      "name": "XLK_1D_visual_attestation_2026_05_13",
+      "symbol": "XLK",
+      "timeframe": "1D",
+      "parity_mode": "visual_attestation",
+      "observed_bar_date": "2026-05-13",
+      "study_timezone": "America/New_York",
+      "label_must_match": false,
+      "reviewer": "Ry",
+      "reviewed_at": "2026-05-14T00:00:00Z",
+      "tos_screenshot": "visual/XLK_1D_ToS_2026_5_13.png",
+      "macmarket_screenshot": "visual/XLK_1D_MM_2026_5_13.png",
+      "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
+      "notes": "Strong bullish / Max Bull visual parity. ToS HiLo Elite scalar is recorded as ToS-only reference.",
+      "tos_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 81.2468,
+        "true_momentum_ema": 60.3955,
+        "tos_hilo_elite_scalar": 97.0972
+      },
+      "macmarket_observed_latest": {
+        "total_score": 100,
+        "total_label": "Max Bull",
+        "true_momentum": 82.12,
+        "true_momentum_ema": 61.13,
+        "hilo_slowd": 78.55,
+        "hilo_slowd_x": 66.31,
+        "hilo_score": 20,
+        "hilo_thrust_state": "confirmed"
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.5,
+        "true_momentum_ema": 1.5
+      }
+    },
+    {
+      "name": "XLP_1D_visual_attestation_2026_05_13",
+      "symbol": "XLP",
+      "timeframe": "1D",
+      "parity_mode": "visual_attestation",
+      "observed_bar_date": "2026-05-13",
+      "study_timezone": "America/New_York",
+      "label_must_match": false,
+      "reviewer": "Ry",
+      "reviewed_at": "2026-05-14T00:00:00Z",
+      "tos_screenshot": "visual/XLP_1D_ToS_2026_5_13.png",
+      "macmarket_screenshot": "visual/XLP_1D_MM_2026_5_13.png",
+      "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
+      "notes": "True Momentum/EMA visually aligned. Total score/label differs materially: ToS Neutral 35 vs MM Neutral Up +65. Keep as review item, not hidden.",
+      "tos_observed_latest": {
+        "total_score": 35,
+        "total_label": "Neutral",
+        "true_momentum": 57.1283,
+        "true_momentum_ema": 54.4013,
+        "tos_hilo_elite_scalar": 56.383
+      },
+      "macmarket_observed_latest": {
+        "total_score": 65,
+        "total_label": "Neutral Up",
+        "true_momentum": 58.37,
+        "true_momentum_ema": 54.48,
+        "hilo_slowd": 55.01,
+        "hilo_slowd_x": 54.4,
+        "hilo_score": -5,
+        "hilo_thrust_state": "deconfirmed"
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.5,
+        "true_momentum_ema": 1.5
+      }
+    },
+    {
+      "name": "XLE_1D_visual_attestation_2026_05_13",
+      "symbol": "XLE",
+      "timeframe": "1D",
+      "parity_mode": "visual_attestation",
+      "observed_bar_date": "2026-05-13",
+      "study_timezone": "America/New_York",
+      "label_must_match": false,
+      "reviewer": "Ry",
+      "reviewed_at": "2026-05-14T00:00:00Z",
+      "tos_screenshot": "visual/XLE_1D_ToS_2026_5_13.png",
+      "macmarket_screenshot": "visual/XLE_1D_MM_2026_5_13.png",
+      "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
+      "notes": "Neutral / negative total score aligns. True Momentum/EMA visually aligned. ToS HiLo Elite scalar recorded as ToS-only reference.",
+      "tos_observed_latest": {
+        "total_score": -30,
+        "total_label": "Neutral",
+        "true_momentum": 58.6418,
+        "true_momentum_ema": 66.4516,
+        "tos_hilo_elite_scalar": 68.1149
+      },
+      "macmarket_observed_latest": {
+        "total_score": -30,
+        "total_label": "Neutral",
+        "trend_score": -75,
+        "momo_score": 0,
+        "true_momentum": 59.24,
+        "true_momentum_ema": 67.21,
+        "hilo_slowd": 61.48,
+        "hilo_slowd_x": 54.62,
+        "hilo_score": 20,
+        "hilo_thrust_state": "confirmed"
+      },
+      "tolerances": {
+        "total_score": 2,
+        "true_momentum": 1.5,
+        "true_momentum_ema": 1.5
+      }
+    }
+  ]
+}

@@ -525,4 +525,117 @@ describe("MomentumRankingStatusCard", () => {
       expect(lower.includes(forbidden)).toBe(false);
     }
   });
+
+  // ── visual_attestation rendering ─────────────────────────────────────
+
+  it("renders visual_attestation counts and 'Visual attested' status when fixtures pass", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixture_count: 4,
+          thinkorswim_parity_fixtures_ready: 4,
+          thinkorswim_parity_fixtures_passed: 4,
+          thinkorswim_parity_fixtures_failed: 0,
+          thinkorswim_parity_visual_attestation_count: 4,
+          thinkorswim_parity_visual_attestation_passed_count: 4,
+          thinkorswim_parity_visual_attestation_failed_count: 0,
+          thinkorswim_parity_visual_attestation_partial_count: 0,
+          thinkorswim_parity_visual_attestation_status: "visual_attested",
+          thinkorswim_parity_visual_reviewed: true,
+          thinkorswim_parity_report_available: true,
+          thinkorswim_parity_reason_codes: [
+            "thinkorswim_visual_attested",
+            "thinkorswim_visual_attestation_observations_available",
+            "thinkorswim_exported_study_csv_unavailable",
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-attestation-badge"');
+    expect(html).toContain("Visual attestation fixtures: 4");
+    expect(html).toContain("(4 passed)");
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-attestation-status-badge"');
+    expect(html).toContain("Status: Visual attested");
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-attestation-note"');
+    // "MM" or "MacMarket" must appear consistently with the ToS comparison framing.
+    expect(html).toContain("MacMarket (MM)");
+    expect(html).toContain(
+      "Visual attestation compares operator-entered ToS and MacMarket",
+    );
+  });
+
+  it("renders visual_attestation failed status with warning tone", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "failed",
+          thinkorswim_parity_fixture_count: 4,
+          thinkorswim_parity_fixtures_ready: 4,
+          thinkorswim_parity_fixtures_passed: 3,
+          thinkorswim_parity_fixtures_failed: 1,
+          thinkorswim_parity_visual_attestation_count: 4,
+          thinkorswim_parity_visual_attestation_passed_count: 3,
+          thinkorswim_parity_visual_attestation_failed_count: 1,
+          thinkorswim_parity_visual_attestation_status: "visual_failed",
+          thinkorswim_parity_report_available: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Visual attestation fixtures: 4");
+    expect(html).toContain("(3 passed / 1 failed)");
+    expect(html).toContain("Status: Visual failed");
+  });
+
+  it("renders visual_attestation partial status", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "partial",
+          thinkorswim_parity_fixture_count: 1,
+          thinkorswim_parity_fixtures_ready: 1,
+          thinkorswim_parity_visual_attestation_count: 1,
+          thinkorswim_parity_visual_attestation_passed_count: 0,
+          thinkorswim_parity_visual_attestation_failed_count: 0,
+          thinkorswim_parity_visual_attestation_partial_count: 1,
+          thinkorswim_parity_visual_attestation_status: "visual_partial",
+          thinkorswim_parity_report_available: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Visual attestation fixtures: 1");
+    expect(html).toContain("(0 passed / 1 partial)");
+    expect(html).toContain("Status: Visual partial");
+  });
+
+  it("visual_attestation section never carries trade-action / approval / order language", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixture_count: 1,
+          thinkorswim_parity_fixtures_passed: 1,
+          thinkorswim_parity_visual_attestation_count: 1,
+          thinkorswim_parity_visual_attestation_passed_count: 1,
+          thinkorswim_parity_visual_attestation_status: "visual_attested",
+          thinkorswim_parity_report_available: true,
+        })}
+      />,
+    ).toLowerCase();
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "place order",
+    ]) {
+      expect(html.includes(forbidden)).toBe(false);
+    }
+    // A visual-attested pass surfaces the explicit non-activation copy.
+    expect(html).toContain("does not approve");
+    expect(html).toContain("does not auto-activate phase c");
+  });
 });

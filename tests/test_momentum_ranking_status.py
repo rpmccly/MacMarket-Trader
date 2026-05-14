@@ -287,10 +287,17 @@ def test_status_endpoint_returns_shadow_default(monkeypatch) -> None:
     assert payload["env_var"] == "MACMARKET_MOMENTUM_RANKING_MODE"
     assert payload["enabled"] is True
     assert payload["applied_by_default"] is False
-    # Either pending or validated depending on whether parity manifest landed.
+    # Either pending or validated depending on whether parity manifest
+    # landed. ``thinkorswim_fixture_present_pending_validation`` fires
+    # when an operator drops a manifest but no parity-report.json is
+    # present, and ``thinkorswim_fixture_validation_failed`` fires when
+    # the operator's real fixtures include at least one failing
+    # visual_attestation fixture (e.g. a flagged review item).
     assert payload["parity_status"] in {
         "pending_thinkorswim_fixture_validation",
         "validated_against_thinkorswim_fixture",
+        "thinkorswim_fixture_present_pending_validation",
+        "thinkorswim_fixture_validation_failed",
     }
     # Phase B3 guardrails always include the deterministic-context line.
     assert any("does not approve" in g.lower() for g in payload["guardrails"])

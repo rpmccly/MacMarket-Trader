@@ -117,7 +117,19 @@ export type MomentumVisualParitySnapshot = {
   momo_score: number | null;
   true_momentum: number | null;
   true_momentum_ema: number | null;
-  hilo_elite_value: number | null;
+  /**
+   * Rendered stochastic SlowD / SlowD_X (range 0..100). These are
+   * MacMarket's current HiLo panel values — NOT the ToS-comparable
+   * ST_HiLoElite scalar.
+   */
+  hilo_slowd: number | null;
+  hilo_slowd_x: number | null;
+  /**
+   * Operator-readable ToS ST_HiLoElite scalar. MacMarket does not
+   * compute a ToS-comparable scalar today, so this is always ``null``
+   * and listed in ``unavailable_fields``.
+   */
+  tos_hilo_elite_scalar: number | null;
   hilo_thrust_state: MomentumHiloThrustState | null;
   hilo_score: number | null;
   pullback_signal: boolean | null;
@@ -138,7 +150,8 @@ export type MomentumVisualParityPoint = {
   momo_score: number;
   true_momentum: number;
   true_momentum_ema: number;
-  hilo_elite_value: number;
+  hilo_slowd: number;
+  hilo_slowd_x: number;
   hilo_thrust_state: MomentumHiloThrustState;
   hilo_score: number;
   pullback_signal: boolean;

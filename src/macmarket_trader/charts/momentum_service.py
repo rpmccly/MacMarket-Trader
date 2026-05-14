@@ -93,16 +93,22 @@ class MomentumChartService:
                     symbol=symbol,
                     timeframe=timeframe_upper,
                     iv_percent=None,
-                    source_notes=["No chart bars provided."],
+                    tos_hilo_elite_scalar=None,
+                    source_notes=[
+                        "No chart bars provided.",
+                        "MacMarket does not compute a ToS-comparable ST_HiLoElite scalar.",
+                    ],
                     unavailable_fields=[
                         "iv_percent",
+                        "tos_hilo_elite_scalar",
                         "total_score",
                         "total_label",
                         "trend_score",
                         "momo_score",
                         "true_momentum",
                         "true_momentum_ema",
-                        "hilo_elite_value",
+                        "hilo_slowd",
+                        "hilo_slowd_x",
                         "hilo_thrust_state",
                         "hilo_score",
                         "pullback_signal",
@@ -338,7 +344,13 @@ class MomentumChartService:
                     momo_score=score_point.momo_score,
                     true_momentum=score_point.true_momentum,
                     true_momentum_ema=score_point.true_momentum_ema,
-                    hilo_elite_value=hilo_point.slow_d,
+                    # Rendered stochastic SlowD / SlowD_X from MacMarket's
+                    # HiLo Elite port (range 0..100). These are NOT the
+                    # ToS-comparable ST_HiLoElite scalar — that scalar is
+                    # reserved as ``tos_hilo_elite_scalar`` on the parity
+                    # snapshot and remains unavailable.
+                    hilo_slowd=hilo_point.slow_d,
+                    hilo_slowd_x=hilo_point.slow_d_x,
                     hilo_thrust_state=hilo_thrust_state,  # type: ignore[arg-type]
                     hilo_score=score_point.component_breakdown.hilo_thrust,
                     pullback_signal=point_pullback,
@@ -347,18 +359,19 @@ class MomentumChartService:
                 )
             )
 
-        # Latest-bar parity snapshot. IV% is intentionally left as None
-        # because no deterministic IV / IV-percentile source is wired
-        # into the Momentum chart payload yet — surfacing a fabricated
-        # value would break the parity charter.
+        # Latest-bar parity snapshot. IV% and the ToS-comparable
+        # ST_HiLoElite scalar are intentionally left as None because
+        # MacMarket does not currently compute either deterministically
+        # — surfacing a fabricated value would break the parity charter.
         as_of_str: str | None = (
             last_bar.timestamp.isoformat() if last_bar.timestamp else last_bar.date.isoformat()
         )
         latest_parity_point = visual_parity_series[-1] if visual_parity_series else None
-        unavailable_fields: list[str] = ["iv_percent"]
+        unavailable_fields: list[str] = ["iv_percent", "tos_hilo_elite_scalar"]
         source_notes: list[str] = [
             "All visual parity fields come from already-computed Momentum indicator state.",
             "IV% is unavailable because no deterministic IV / IV-percentile source is wired into the Momentum chart payload.",
+            "MacMarket does not compute a ToS-comparable ST_HiLoElite scalar; hilo_slowd / hilo_slowd_x are the rendered stochastic values.",
         ]
         if latest_parity_point is not None:
             visual_parity_snapshot = MomentumVisualParitySnapshot(
@@ -372,7 +385,9 @@ class MomentumChartService:
                 momo_score=latest_parity_point.momo_score,
                 true_momentum=latest_parity_point.true_momentum,
                 true_momentum_ema=latest_parity_point.true_momentum_ema,
-                hilo_elite_value=latest_parity_point.hilo_elite_value,
+                hilo_slowd=latest_parity_point.hilo_slowd,
+                hilo_slowd_x=latest_parity_point.hilo_slowd_x,
+                tos_hilo_elite_scalar=None,
                 hilo_thrust_state=latest_parity_point.hilo_thrust_state,
                 hilo_score=latest_parity_point.hilo_score,
                 pullback_signal=latest_parity_point.pullback_signal,
@@ -388,16 +403,19 @@ class MomentumChartService:
                 symbol=symbol,
                 timeframe=timeframe_upper,
                 iv_percent=None,
+                tos_hilo_elite_scalar=None,
                 source_notes=source_notes,
                 unavailable_fields=[
                     "iv_percent",
+                    "tos_hilo_elite_scalar",
                     "total_score",
                     "total_label",
                     "trend_score",
                     "momo_score",
                     "true_momentum",
                     "true_momentum_ema",
-                    "hilo_elite_value",
+                    "hilo_slowd",
+                    "hilo_slowd_x",
                     "hilo_thrust_state",
                     "hilo_score",
                     "pullback_signal",

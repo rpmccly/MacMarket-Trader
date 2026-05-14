@@ -268,19 +268,38 @@ export function buildTrueMomentumPanelBadges(
   ];
 }
 
-/** Build the HiLo panel badge row from a parity snapshot. */
+/**
+ * Build the HiLo panel badge row from a parity snapshot.
+ *
+ * **HiLo field discipline:** MacMarket currently renders the
+ * stochastic SlowD / SlowD_X lines on the HiLo panel — those are
+ * surfaced as ``HiLo SlowD`` and ``HiLo SlowD_X`` badges so the
+ * label honestly describes what is computed. The ToS-comparable
+ * ST_HiLoElite scalar is a separate operator-reviewed field; it is
+ * surfaced as ``ToS HiLo Elite`` only when a real value is present
+ * on the snapshot. Otherwise it stays absent so the UI never renders
+ * a misleading "HiLo Elite" number.
+ */
 export function buildHiloPanelBadges(
   snapshot: MomentumVisualParitySnapshot | MomentumVisualParityPoint | null | undefined,
 ): VisualParityBadge[] {
   if (!snapshot) {
     return [
       { id: "hilo_state", label: "Thrust", value: "—", tone: "neutral", unavailable: true },
-      { id: "hilo_value", label: "HiLo Elite", value: "—", tone: "neutral", unavailable: true },
+      { id: "hilo_slowd", label: "HiLo SlowD", value: "—", tone: "neutral", unavailable: true },
+      { id: "hilo_slowd_x", label: "HiLo SlowD_X", value: "—", tone: "neutral", unavailable: true },
       { id: "hilo_score", label: "HiLo score", value: "—", tone: "neutral", unavailable: true },
     ];
   }
   const state = snapshot.hilo_thrust_state ?? null;
-  return [
+  const tosScalar =
+    "tos_hilo_elite_scalar" in snapshot ? snapshot.tos_hilo_elite_scalar : null;
+  const unavailable =
+    "unavailable_fields" in snapshot && Array.isArray(snapshot.unavailable_fields)
+      ? snapshot.unavailable_fields
+      : [];
+  const tosUnavailable = tosScalar == null || unavailable.includes("tos_hilo_elite_scalar");
+  const badges: VisualParityBadge[] = [
     {
       id: "hilo_state",
       label: "Thrust",
@@ -289,11 +308,18 @@ export function buildHiloPanelBadges(
       unavailable: state == null,
     },
     {
-      id: "hilo_value",
-      label: "HiLo Elite",
-      value: formatMomentumValue(snapshot.hilo_elite_value),
+      id: "hilo_slowd",
+      label: "HiLo SlowD",
+      value: formatMomentumValue(snapshot.hilo_slowd),
       tone: "neutral",
-      unavailable: snapshot.hilo_elite_value == null,
+      unavailable: snapshot.hilo_slowd == null,
+    },
+    {
+      id: "hilo_slowd_x",
+      label: "HiLo SlowD_X",
+      value: formatMomentumValue(snapshot.hilo_slowd_x),
+      tone: "neutral",
+      unavailable: snapshot.hilo_slowd_x == null,
     },
     {
       id: "hilo_score",
@@ -303,6 +329,19 @@ export function buildHiloPanelBadges(
       unavailable: snapshot.hilo_score == null,
     },
   ];
+  // Only render the ToS HiLo Elite badge when a real value is present.
+  // When MacMarket does not compute it (the default today), we omit
+  // the badge entirely so the UI never lies about parity.
+  if (!tosUnavailable) {
+    badges.push({
+      id: "tos_hilo_elite",
+      label: "ToS HiLo Elite",
+      value: formatMomentumValue(tosScalar),
+      tone: "neutral",
+      unavailable: false,
+    });
+  }
+  return badges;
 }
 
 /** Build the parity-panel summary row used by the snapshot panel. */
@@ -314,12 +353,16 @@ export function buildVisualParityFields(
   }
   const unavailable = snapshot.unavailable_fields;
   const ivUnavailable = snapshot.iv_percent == null || unavailable.includes("iv_percent");
+  const tosUnavailable =
+    snapshot.tos_hilo_elite_scalar == null || unavailable.includes("tos_hilo_elite_scalar");
   return [
     { id: "total_score", label: "Total Score", value: formatMomentumScore(snapshot.total_score), tone: momentumScoreTone(snapshot.total_score), unavailable: snapshot.total_score == null },
     { id: "total_label", label: "Total Label", value: snapshot.total_label ?? "—", tone: totalLabelTone(snapshot.total_label), unavailable: snapshot.total_label == null },
     { id: "true_momentum", label: "True Momentum", value: formatMomentumValue(snapshot.true_momentum), tone: "neutral", unavailable: snapshot.true_momentum == null },
     { id: "true_momentum_ema", label: "True Momentum EMA", value: formatMomentumValue(snapshot.true_momentum_ema), tone: "neutral", unavailable: snapshot.true_momentum_ema == null },
-    { id: "hilo_elite_value", label: "HiLo Elite", value: formatMomentumValue(snapshot.hilo_elite_value), tone: "neutral", unavailable: snapshot.hilo_elite_value == null },
+    { id: "hilo_slowd", label: "HiLo SlowD", value: formatMomentumValue(snapshot.hilo_slowd), tone: "neutral", unavailable: snapshot.hilo_slowd == null },
+    { id: "hilo_slowd_x", label: "HiLo SlowD_X", value: formatMomentumValue(snapshot.hilo_slowd_x), tone: "neutral", unavailable: snapshot.hilo_slowd_x == null },
+    { id: "tos_hilo_elite_scalar", label: "ToS HiLo Elite", value: tosUnavailable ? "—" : formatMomentumValue(snapshot.tos_hilo_elite_scalar), tone: "neutral", unavailable: tosUnavailable },
     { id: "hilo_thrust_state", label: "HiLo thrust", value: thrustStateLabel(snapshot.hilo_thrust_state), tone: thrustStateTone(snapshot.hilo_thrust_state), unavailable: snapshot.hilo_thrust_state == null },
     { id: "hilo_score", label: "HiLo score", value: formatMomentumScore(snapshot.hilo_score), tone: signedTone(snapshot.hilo_score), unavailable: snapshot.hilo_score == null },
     { id: "pullback_signal", label: "Pullback signal", value: snapshot.pullback_signal == null ? "—" : snapshot.pullback_signal ? "Active" : "No", tone: snapshot.pullback_signal ? "warn" : "neutral", unavailable: snapshot.pullback_signal == null },

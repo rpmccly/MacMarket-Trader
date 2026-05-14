@@ -273,7 +273,9 @@ function paritySnapshot(
     momo_score: 60,
     true_momentum: 67.25,
     true_momentum_ema: 61.4,
-    hilo_elite_value: 55.5,
+    hilo_slowd: 78.91,
+    hilo_slowd_x: 76.42,
+    tos_hilo_elite_scalar: null,
     hilo_thrust_state: "bullish",
     hilo_score: 10,
     pullback_signal: false,
@@ -281,7 +283,7 @@ function paritySnapshot(
     no_trade_warning: false,
     iv_percent: null,
     source_notes: ["computed from existing indicator state"],
-    unavailable_fields: ["iv_percent"],
+    unavailable_fields: ["iv_percent", "tos_hilo_elite_scalar"],
     ...overrides,
   };
 }
@@ -299,7 +301,8 @@ function parityPoint(
     momo_score: 60,
     true_momentum: 67.25,
     true_momentum_ema: 61.4,
-    hilo_elite_value: 55.5,
+    hilo_slowd: 78.91,
+    hilo_slowd_x: 76.42,
     hilo_thrust_state: "bullish",
     hilo_score: 10,
     pullback_signal: false,
@@ -378,13 +381,39 @@ describe("buildHiloPanelBadges", () => {
     expect(neutral[0]).toMatchObject({ id: "hilo_state", value: "Neutral", tone: "neutral" });
   });
 
-  it("keeps HiLo scalar value distinct from HiLo score", () => {
-    const badges = buildHiloPanelBadges(paritySnapshot({ hilo_elite_value: 42.5, hilo_score: -5 }));
-    const scalar = badges.find((b) => b.id === "hilo_value");
+  it("renders HiLo SlowD and HiLo SlowD_X as separate badges instead of a misleading 'HiLo Elite' label", () => {
+    const badges = buildHiloPanelBadges(
+      paritySnapshot({ hilo_slowd: 42.5, hilo_slowd_x: 39.1, hilo_score: -5 }),
+    );
+    const slowd = badges.find((b) => b.id === "hilo_slowd");
+    const slowdX = badges.find((b) => b.id === "hilo_slowd_x");
     const score = badges.find((b) => b.id === "hilo_score");
-    expect(scalar?.value).toBe("42.50");
+    expect(slowd?.label).toBe("HiLo SlowD");
+    expect(slowd?.value).toBe("42.50");
+    expect(slowdX?.label).toBe("HiLo SlowD_X");
+    expect(slowdX?.value).toBe("39.10");
     expect(score?.value).toBe("-5");
-    expect(scalar?.id).not.toBe(score?.id);
+    // Each id is distinct so the UI never collapses SlowD and the score
+    // into a single cell.
+    expect(new Set([slowd?.id, slowdX?.id, score?.id]).size).toBe(3);
+  });
+
+  it("never renders a 'HiLo Elite' badge when tos_hilo_elite_scalar is unavailable", () => {
+    const badges = buildHiloPanelBadges(paritySnapshot());
+    const tosBadge = badges.find((b) => b.id === "tos_hilo_elite");
+    expect(tosBadge).toBeUndefined();
+    expect(badges.every((b) => b.label !== "HiLo Elite")).toBe(true);
+  });
+
+  it("renders ToS HiLo Elite badge only when a real value is provided and not flagged unavailable", () => {
+    const badges = buildHiloPanelBadges(
+      paritySnapshot({ tos_hilo_elite_scalar: 98.18, unavailable_fields: ["iv_percent"] }),
+    );
+    const tosBadge = badges.find((b) => b.id === "tos_hilo_elite");
+    expect(tosBadge).toBeDefined();
+    expect(tosBadge?.label).toBe("ToS HiLo Elite");
+    expect(tosBadge?.value).toBe("98.18");
+    expect(tosBadge?.unavailable).toBe(false);
   });
 });
 
@@ -396,7 +425,9 @@ describe("buildVisualParityFields", () => {
     expect(ids).toContain("total_label");
     expect(ids).toContain("true_momentum");
     expect(ids).toContain("true_momentum_ema");
-    expect(ids).toContain("hilo_elite_value");
+    expect(ids).toContain("hilo_slowd");
+    expect(ids).toContain("hilo_slowd_x");
+    expect(ids).toContain("tos_hilo_elite_scalar");
     expect(ids).toContain("hilo_thrust_state");
     expect(ids).toContain("hilo_score");
     expect(ids).toContain("pullback_signal");
@@ -406,10 +437,19 @@ describe("buildVisualParityFields", () => {
     const iv = fields.find((f) => f.id === "iv_percent");
     expect(iv?.value).toBe("—");
     expect(iv?.unavailable).toBe(true);
+    const tos = fields.find((f) => f.id === "tos_hilo_elite_scalar");
+    expect(tos?.value).toBe("—");
+    expect(tos?.unavailable).toBe(true);
+    expect(tos?.label).toBe("ToS HiLo Elite");
   });
 
   it("returns no rows when the snapshot is null", () => {
     expect(buildVisualParityFields(null)).toEqual([]);
+  });
+
+  it("never emits hilo_elite_value (renamed to hilo_slowd / tos_hilo_elite_scalar)", () => {
+    const ids = buildVisualParityFields(paritySnapshot()).map((f) => f.id);
+    expect(ids).not.toContain("hilo_elite_value");
   });
 });
 

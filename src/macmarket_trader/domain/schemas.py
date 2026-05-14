@@ -1391,9 +1391,20 @@ class MomentumVisualParitySnapshot(BaseModel):
     Every field is sourced from already-computed Momentum indicator
     state — no values are recomputed here and no formula changes.
     Missing fields (e.g. ``iv_percent`` when no deterministic IV
-    source exists) come through as ``None`` and are surfaced via
-    ``unavailable_fields`` so the UI can label them rather than
-    fabricating a value.
+    source exists, or ``tos_hilo_elite_scalar`` when MacMarket does
+    not currently compute a ToS-comparable ST_HiLoElite scalar) come
+    through as ``None`` and are surfaced via ``unavailable_fields``
+    so the UI can label them rather than fabricating a value.
+
+    **HiLo field discipline:** ``hilo_slowd`` and ``hilo_slowd_x`` are
+    the rendered stochastic SlowD / SlowD_X lines from MacMarket's
+    HiLo Elite port (range 0..100). ``tos_hilo_elite_scalar`` is a
+    placeholder for the actual ST_HiLoElite scalar an operator reads
+    from Thinkorswim — MacMarket does not compute that scalar today,
+    so the field is always ``None`` and listed in
+    ``unavailable_fields``. ``hilo_thrust_state`` is the categorical
+    thrust state; ``hilo_score`` is the composite -30/0/+30 thrust
+    contribution that feeds the total score.
     """
 
     as_of: str | None = None
@@ -1406,10 +1417,15 @@ class MomentumVisualParitySnapshot(BaseModel):
     momo_score: float | None = None
     true_momentum: float | None = None
     true_momentum_ema: float | None = None
-    # HiLo scalar — most closely corresponds to ToS ST_HiLoElite. This
-    # is the slow-D series value (the rendered chart line) rather than
-    # the categorical thrust state.
-    hilo_elite_value: float | None = None
+    # Rendered stochastic SlowD / SlowD_X (range 0..100). These are the
+    # values MacMarket currently displays on the HiLo panel.
+    hilo_slowd: float | None = None
+    hilo_slowd_x: float | None = None
+    # Placeholder for the operator-read ToS ST_HiLoElite scalar.
+    # MacMarket does not currently compute a ToS-comparable scalar; the
+    # field is always ``None`` and listed in ``unavailable_fields`` so
+    # operator review never sees a misleading "HiLo Elite" number.
+    tos_hilo_elite_scalar: float | None = None
     # Categorical thrust state — kept distinct from the HiLo scalar so
     # the UI never collapses the two into one cell.
     hilo_thrust_state: Literal["bullish", "bearish", "neutral"] | None = None
@@ -1440,7 +1456,8 @@ class MomentumVisualParityPoint(BaseModel):
     momo_score: float
     true_momentum: float
     true_momentum_ema: float
-    hilo_elite_value: float
+    hilo_slowd: float
+    hilo_slowd_x: float
     hilo_thrust_state: Literal["bullish", "bearish", "neutral"]
     hilo_score: int
     pullback_signal: bool
@@ -1595,6 +1612,17 @@ class MomentumRankingStatus(BaseModel):
     thinkorswim_parity_visual_observation_failed_count: int = 0
     thinkorswim_parity_visual_reviewed: bool = False
     thinkorswim_parity_exported_study_csv_available: bool = False
+    # Visual attestation — no-bars ToS-vs-MM operator-entered parity
+    # evidence. ``visual_attestation_status`` is one of
+    # ``visual_attested`` / ``visual_failed`` / ``visual_partial``,
+    # or ``None`` when no attestation fixtures were declared.
+    thinkorswim_parity_visual_attestation_count: int = 0
+    thinkorswim_parity_visual_attestation_passed_count: int = 0
+    thinkorswim_parity_visual_attestation_failed_count: int = 0
+    thinkorswim_parity_visual_attestation_partial_count: int = 0
+    thinkorswim_parity_visual_attestation_status: Literal[
+        "visual_attested", "visual_failed", "visual_partial"
+    ] | None = None
 
 
 class MomentumRankingContribution(BaseModel):

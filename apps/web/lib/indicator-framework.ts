@@ -66,7 +66,12 @@ export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
   { id: "hacolt", label: "HACOLT", category: "haco", defaultEnabled: false },
   { id: "true_momentum", label: "True Momentum", category: "momentum_intelligence", defaultEnabled: false },
   { id: "true_momentum_ema", label: "True Momentum EMA", category: "momentum_intelligence", defaultEnabled: false },
-  { id: "hilo_elite", label: "HiLo Elite", category: "momentum_intelligence", defaultEnabled: false },
+  // ``hilo_elite`` id retained for backward compatibility with any
+  // persisted operator selections; the label is corrected to "HiLo SlowD"
+  // because the underlying value is the stochastic SlowD line, not the
+  // ToS-comparable ST_HiLoElite scalar. See the parity docs for the
+  // full distinction.
+  { id: "hilo_elite", label: "HiLo SlowD (legacy id)", category: "momentum_intelligence", defaultEnabled: false },
   { id: "hilo_slowd", label: "HiLo SlowD", category: "momentum_intelligence", defaultEnabled: false },
   { id: "hilo_slowd_x", label: "HiLo SlowD X", category: "momentum_intelligence", defaultEnabled: false },
   { id: "momentum_score", label: "Momentum Score", category: "momentum_intelligence", defaultEnabled: false },

@@ -121,11 +121,14 @@ Under these values:
 
 ## Outstanding items
 
-1. **Real Thinkorswim parity evidence.** Land measured fixtures in
-   `tests/fixtures/thinkorswim_momentum/` and update `manifest.json`.
-   Capture Thinkorswim parity evidence, preferably exported bars
-   plus visual/manual study observations because ToS does not export
-   study rows. The end-to-end workflow (manifest schema, capture
+1. **Real Thinkorswim visual/manual parity evidence.** Land measured
+   fixtures in `tests/fixtures/thinkorswim_momentum/` and update
+   `manifest.json`. The recommended path today is
+   `parity_mode: "visual_attestation"`, which compares operator-
+   entered ToS rendered values against operator-entered MacMarket
+   rendered values from screenshots — no bars CSV or study CSV is
+   required because Thinkorswim cannot export either for this
+   workflow. The end-to-end workflow (manifest schema, capture
    paths, validator CLI, report interpretation) is documented in
    [`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md).
    The resolved `thinkorswim_parity_workflow_status` is surfaced on

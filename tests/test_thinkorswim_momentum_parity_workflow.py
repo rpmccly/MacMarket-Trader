@@ -574,11 +574,16 @@ def test_canonical_study_fields_are_stable() -> None:
         "hilo_output",
         "trend_score",
         "momo_score",
+        "hilo_slowd",
+        "hilo_slowd_x",
+        "tos_hilo_elite_scalar",
+        "hilo_score",
     )
     assert "total_label" in LABEL_FIELDS
     assert "pullback_signal" in LABEL_FIELDS
     assert "reversal_warning" in LABEL_FIELDS
     assert "no_trade_warning" in LABEL_FIELDS
+    assert "hilo_thrust_state" in LABEL_FIELDS
 
 
 def test_default_tolerances_explicit_and_conservative() -> None:
@@ -1068,4 +1073,540 @@ def test_cli_strict_visual_observation_failure_exits_nonzero(tmp_path: Path) -> 
 
 
 def test_parity_modes_constant_is_stable() -> None:
-    assert set(PARITY_MODES) == {"exported_study_csv", "visual_observation"}
+    assert set(PARITY_MODES) == {
+        "exported_study_csv",
+        "visual_observation",
+        "visual_attestation",
+    }
+
+
+# ── HiLo field discipline (Part A cleanup) ─────────────────────────────────
+
+
+def test_visual_observation_supports_hilo_slowd_separately(tmp_path: Path) -> None:
+    """A visual_observation fixture may compare hilo_slowd against
+    MacMarket's existing SlowD value — passing when MM SlowD is within
+    tolerance of the operator's reading."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars, rows=200)
+    # Compute the SlowD we expect MM to produce, then build a manifest
+    # that asks the validator to compare it. We don't precompute the
+    # number — instead use a very wide tolerance so the test stays green
+    # regardless of the synthetic bars' deterministic output.
+    fixture = {
+        "name": "AAPL_1D_visual_slowd",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "observed_latest": {"total_score": 50, "hilo_slowd": 0.0},
+        "tolerances": {"total_score": 1000, "hilo_slowd": 1000.0},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.parity_mode == "visual_observation"
+    assert "hilo_slowd" in spec.expected_latest
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    # The hilo_slowd delta lands in field_deltas — separate from
+    # hilo_thrust / hilo_output / hilo_score.
+    fields = {d.field for d in result.field_deltas}
+    assert "hilo_slowd" in fields
+
+
+def test_visual_observation_records_tos_hilo_elite_scalar_without_failing(tmp_path: Path) -> None:
+    """tos_hilo_elite_scalar is a reference-only field — MacMarket does
+    not compute it, so the validator records the operator's reading in
+    diagnostics but never fails parity on it."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars, rows=200)
+    fixture = {
+        "name": "AAPL_1D_visual_tos_scalar",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        # Record the ToS scalar (98.18-ish from operator) plus a
+        # tractable numeric the validator will actually assert.
+        "observed_latest": {
+            "total_score": 50,
+            "tos_hilo_elite_scalar": 98.18,
+        },
+        "tolerances": {"total_score": 1000},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    # Reference-only observation is captured in diagnostics — not in
+    # field_deltas or mismatches.
+    ref = result.diagnostics.get("reference_only_observations") or {}
+    assert ref.get("tos_hilo_elite_scalar") == 98.18
+    assert any(d.field == "tos_hilo_elite_scalar" for d in result.field_deltas) is False
+    assert "reference_only_note" in result.diagnostics
+
+
+def test_visual_observation_hilo_slowd_mismatch_fails(tmp_path: Path) -> None:
+    """A genuinely-out-of-tolerance hilo_slowd reading flips the result
+    to failed (proves the new field is asserted, not silently skipped)."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars, rows=200)
+    fixture = {
+        "name": "AAPL_1D_visual_slowd_miss",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "observed_latest": {"total_score": 50, "hilo_slowd": 9999.0},
+        "tolerances": {"total_score": 1000, "hilo_slowd": 0.001},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "failed"
+    assert any("hilo_slowd" in msg for msg in result.mismatches)
+
+
+def test_visual_observation_emits_missing_hilo_field_reason_code_when_no_hilo_capture(
+    tmp_path: Path,
+) -> None:
+    """A visual fixture that captured no HiLo field at all gets an
+    advisory reason code — but does not hard-fail."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    assert "thinkorswim_visual_observation_missing_hilo_field" in result.reason_codes
+
+
+def test_normalize_thinkorswim_columns_recognizes_new_hilo_aliases() -> None:
+    row = {
+        "Date": "2026-05-10",
+        "HiLo SlowD": "78.91",
+        "SlowD_X": "76.42",
+        "ToS HiLo Elite": "98.18",
+    }
+    canonical = normalize_thinkorswim_columns(row, kind="study")
+    assert canonical["hilo_slowd"] == "78.91"
+    assert canonical["hilo_slowd_x"] == "76.42"
+    assert canonical["tos_hilo_elite_scalar"] == "98.18"
+
+
+def test_recommended_hilo_visual_fields_imported_clean() -> None:
+    from macmarket_trader.indicators.thinkorswim_parity import (
+        RECOMMENDED_HILO_VISUAL_FIELDS,
+        REFERENCE_ONLY_FIELDS,
+    )
+    # tos_hilo_elite_scalar must be flagged reference-only because
+    # MacMarket does not compute it.
+    assert "tos_hilo_elite_scalar" in REFERENCE_ONLY_FIELDS
+    # The "at least one HiLo field" recommendation should include both
+    # SlowD-derived options and the ToS scalar so any HiLo capture
+    # satisfies it.
+    assert "hilo_slowd" in RECOMMENDED_HILO_VISUAL_FIELDS
+    assert "hilo_slowd_x" in RECOMMENDED_HILO_VISUAL_FIELDS
+    assert "tos_hilo_elite_scalar" in RECOMMENDED_HILO_VISUAL_FIELDS
+
+
+def test_visual_observation_screenshot_metadata_includes_macmarket_screenshot(tmp_path: Path) -> None:
+    """The fixture spec accepts a ``screenshot`` reference; an optional
+    ``macmarket_screenshot`` and ``screenshot_notes`` are also recorded
+    so the parity audit trail can carry both sides."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        screenshot="SPY_1D_2026-05-10_tos.png",
+        screenshot_notes="ToS chart cropped to True Momentum Score panel.",
+        reviewer="ops",
+        reviewed_at="2026-05-14T13:30:00Z",
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    assert result.screenshot == "SPY_1D_2026-05-10_tos.png"
+    assert result.screenshot_notes == "ToS chart cropped to True Momentum Score panel."
+    assert result.reviewer == "ops"
+
+
+# ── visual_attestation (no-bars) parity ─────────────────────────────────────
+
+
+def _write_visual_attestation_manifest(
+    tmp_path: Path,
+    *,
+    tos_observed_latest: dict | None = None,
+    macmarket_observed_latest: dict | None = None,
+    tolerances: dict | None = None,
+    label_must_match: bool = False,
+    reviewer: str | None = "operator",
+    reviewed_at: str | None = "2026-05-14T13:30:00Z",
+    tos_screenshot: str | None = "visual/SPY_1D_ToS_2026_5_13.png",
+    macmarket_screenshot: str | None = "visual/SPY_1D_MM_2026_5_13.png",
+    observed_bar_date: str | None = "2026-05-13",
+    extra_fixture_overrides: dict | None = None,
+) -> Path:
+    """Write a synthetic visual_attestation manifest (no bars_csv).
+
+    Defaults match the operator's SPY 2026-05-13 capture for easy use
+    in tests. Pass ``tos_observed_latest`` / ``macmarket_observed_latest``
+    to override either side independently.
+    """
+    fixture: dict = {
+        "name": "SPY_1D_visual_attestation_test",
+        "symbol": "SPY",
+        "timeframe": "1D",
+        "parity_mode": "visual_attestation",
+        "label_must_match": label_must_match,
+    }
+    if tos_observed_latest is not None:
+        fixture["tos_observed_latest"] = tos_observed_latest
+    if macmarket_observed_latest is not None:
+        fixture["macmarket_observed_latest"] = macmarket_observed_latest
+    if tolerances is not None:
+        fixture["tolerances"] = tolerances
+    if reviewer is not None:
+        fixture["reviewer"] = reviewer
+    if reviewed_at is not None:
+        fixture["reviewed_at"] = reviewed_at
+    if tos_screenshot is not None:
+        fixture["tos_screenshot"] = tos_screenshot
+    if macmarket_screenshot is not None:
+        fixture["macmarket_screenshot"] = macmarket_screenshot
+    if observed_bar_date is not None:
+        fixture["observed_bar_date"] = observed_bar_date
+    if extra_fixture_overrides:
+        fixture.update(extra_fixture_overrides)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"schema_version": "thinkorswim_momentum_parity.v1", "fixtures": [fixture]}),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def test_visual_attestation_does_not_require_bars_csv(tmp_path: Path) -> None:
+    """A visual_attestation fixture loads cleanly with no bars_csv."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100, "true_momentum": 72.5563},
+        macmarket_observed_latest={"total_score": 100, "true_momentum": 73.51},
+    )
+    manifest = load_thinkorswim_manifest(manifest_path)
+    assert len(manifest.fixtures) == 1
+    spec = manifest.fixtures[0]
+    assert spec.parity_mode == "visual_attestation"
+    assert spec.is_visual_attestation is True
+    assert spec.bars_csv is None
+    # ToS observation pair is parsed into numeric vs label buckets.
+    assert "total_score" in spec.tos_observed_latest
+    assert spec.tos_observed_latest["true_momentum"] == 72.5563
+    assert spec.macmarket_observed_latest["true_momentum"] == 73.51
+
+
+def test_visual_attestation_exact_match_passes(tmp_path: Path) -> None:
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "total_label": "Max Bull",
+            "true_momentum": 72.5563,
+            "true_momentum_ema": 59.2084,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "total_label": "Max Bull",
+            "true_momentum": 73.51,
+            "true_momentum_ema": 60.04,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    assert "thinkorswim_visual_attested" in result.reason_codes
+    fields = {d.field for d in result.field_deltas}
+    assert "total_score" in fields
+    assert "true_momentum" in fields
+    assert "true_momentum_ema" in fields
+
+
+def test_visual_attestation_numeric_mismatch_fails(tmp_path: Path) -> None:
+    """An out-of-tolerance numeric mismatch flips status to visual_failed."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 35, "true_momentum": 57.0},
+        macmarket_observed_latest={"total_score": 65, "true_momentum": 58.0},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_failed"
+    assert "thinkorswim_visual_attestation_failed" in result.reason_codes
+    assert any("total_score" in m for m in result.mismatches)
+
+
+def test_visual_attestation_label_must_match_true_fails_on_label_mismatch(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100, "total_label": "Max Bull"},
+        macmarket_observed_latest={"total_score": 100, "total_label": "Bull"},
+        label_must_match=True,
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_failed"
+    assert any("total_label" in m for m in result.label_mismatches)
+
+
+def test_visual_attestation_label_must_match_false_warns_only(tmp_path: Path) -> None:
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100, "total_label": "Max Bull"},
+        macmarket_observed_latest={"total_score": 100, "total_label": "Bull"},
+        label_must_match=False,
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    assert result.label_mismatches  # warning recorded
+    assert not result.mismatches  # numeric mismatches block — label only warns
+
+
+def test_visual_attestation_records_tos_hilo_elite_scalar_but_does_not_compare_to_slowd(
+    tmp_path: Path,
+) -> None:
+    """tos_hilo_elite_scalar is recorded in the report's reference_only
+    block when it appears only on the ToS side — never auto-compared
+    against MacMarket's hilo_slowd."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "tos_hilo_elite_scalar": 98.1805,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "hilo_slowd": 79.15,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    fields = {d.field for d in result.field_deltas}
+    assert "tos_hilo_elite_scalar" not in fields
+    assert "hilo_slowd" not in fields  # only on MM side, no ToS counterpart
+    ref = result.diagnostics.get("reference_only_observations") or {}
+    assert "tos_only" in ref
+    assert ref["tos_only"]["tos_hilo_elite_scalar"] == 98.1805
+
+
+def test_visual_attestation_comparing_tos_hilo_elite_to_itself_works(tmp_path: Path) -> None:
+    """When both sides provide tos_hilo_elite_scalar, the validator
+    compares them symmetrically using the configured tolerance."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "tos_hilo_elite_scalar": 98.1805,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "tos_hilo_elite_scalar": 98.20,
+        },
+        tolerances={"tos_hilo_elite_scalar": 1.0},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    fields = {d.field for d in result.field_deltas}
+    assert "tos_hilo_elite_scalar" in fields
+
+
+def test_visual_attestation_no_comparable_fields_is_visual_partial(tmp_path: Path) -> None:
+    """When neither side shares any field, the result is visual_partial
+    (strict CLI treats this as non-pass)."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"hilo_slowd": 79.15},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_partial"
+    assert "thinkorswim_visual_attestation_no_comparable_fields" in result.reason_codes
+
+
+def test_visual_attestation_missing_observation_skips(tmp_path: Path) -> None:
+    """Both observation maps are required — a manifest that declares
+    only the ToS side is rejected at load time."""
+    fixture = {
+        "name": "skip_case",
+        "symbol": "SPY",
+        "timeframe": "1D",
+        "parity_mode": "visual_attestation",
+        "tos_observed_latest": {"total_score": 100},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    with pytest.raises(ParityFixtureError):
+        load_thinkorswim_manifest(manifest_path)
+
+
+def test_visual_attestation_screenshot_metadata_in_result(tmp_path: Path) -> None:
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+        reviewer="Ry",
+        reviewed_at="2026-05-14T13:30:00Z",
+        tos_screenshot="visual/SPY_1D_ToS_2026_5_13.png",
+        macmarket_screenshot="visual/SPY_1D_MM_2026_5_13.png",
+        observed_bar_date="2026-05-13",
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    assert result.reviewer == "Ry"
+    assert result.observed_bar_date == "2026-05-13"
+    assert result.screenshot == "visual/SPY_1D_ToS_2026_5_13.png"
+    assert result.macmarket_screenshot == "visual/SPY_1D_MM_2026_5_13.png"
+
+
+def test_visual_attestation_markdown_report_includes_screenshots_and_caveat(
+    tmp_path: Path,
+) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100, "total_label": "Max Bull"},
+        macmarket_observed_latest={"total_score": 100, "total_label": "Max Bull"},
+        reviewer="Ry",
+        tos_screenshot="visual/SPY_1D_ToS_2026_5_13.png",
+        macmarket_screenshot="visual/SPY_1D_MM_2026_5_13.png",
+    )
+    summary = build_thinkorswim_parity_report(tmp_path, write=True)
+    md = (tmp_path / REPORT_FILENAME_MD).read_text(encoding="utf-8")
+    assert "visual_attestation" in md
+    assert "visual/SPY_1D_ToS_2026_5_13.png" in md
+    assert "visual/SPY_1D_MM_2026_5_13.png" in md
+    # Caveat phrasing from prompt section 6.
+    assert "Visual attestation compares operator-entered ToS and MacMarket" in md
+    # Mode summary line lists visual_attestation explicitly.
+    assert "visual_attestation:" in md
+    assert summary.visual_attestation_count == 1
+    assert summary.visual_attestation_passed_count == 1
+
+
+def test_visual_attestation_json_report_carries_mode_summary(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+    )
+    summary = build_thinkorswim_parity_report(tmp_path, write=True)
+    payload = json.loads((tmp_path / REPORT_FILENAME_JSON).read_text(encoding="utf-8"))
+    assert payload["visual_attestation_count"] == 1
+    assert payload["visual_attestation_passed_count"] == 1
+    assert payload["visual_attestation_failed_count"] == 0
+    assert payload["visual_attestation_status"] == "visual_attested"
+    mode_counts = payload["parity_mode_counts"]["visual_attestation"]
+    assert mode_counts["total"] == 1
+    assert mode_counts["passed"] == 1
+    result0 = payload["results"][0]
+    assert result0["parity_mode"] == "visual_attestation"
+
+
+def test_visual_attestation_status_builder_mode_counts(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+    )
+    build_thinkorswim_parity_report(tmp_path, write=True)
+    status = build_thinkorswim_momentum_parity_status(tmp_path)
+    assert status["visual_attestation_count"] == 1
+    assert status["visual_attestation_passed_count"] == 1
+    assert status["visual_attestation_status"] == "visual_attested"
+    assert "thinkorswim_visual_attestation_observations_available" in status["reason_codes"]
+    assert "thinkorswim_visual_attested" in status["reason_codes"]
+
+
+def test_cli_strict_passes_for_passing_visual_attestation(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "true_momentum": 72.5563,
+            "true_momentum_ema": 59.2084,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 73.51,
+            "true_momentum_ema": 60.04,
+        },
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "visual_attestation:" in completed.stdout
+
+
+def test_cli_strict_fails_for_failing_visual_attestation(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 35, "total_label": "Neutral"},
+        macmarket_observed_latest={"total_score": 65, "total_label": "Neutral Up"},
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+
+
+def test_cli_non_strict_does_not_exit_nonzero_for_visual_partial(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"hilo_slowd": 79.15},
+    )
+    completed = _run_cli("--fixture-dir", str(tmp_path), "--write-report")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "visual_attestation" in completed.stdout
+
+
+def test_cli_strict_fails_for_visual_partial(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"hilo_slowd": 79.15},
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+
+
+def test_visual_attestation_module_has_no_provider_or_order_imports() -> None:
+    """The parity module must not pull provider, DB, or order modules."""
+    import macmarket_trader.indicators.thinkorswim_parity as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    for symbol in (
+        "macmarket_trader.execution",
+        "macmarket_trader.replay.engine",
+        "macmarket_trader.recommendation.service",
+        "macmarket_trader.data.providers",
+        "paper_order",
+        "approve_recommendation",
+    ):
+        assert symbol not in source, (
+            f"parity module must not reference {symbol!r}"
+        )

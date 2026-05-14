@@ -42,7 +42,9 @@ function snapshot(overrides: Partial<MomentumVisualParitySnapshot> = {}): Moment
     momo_score: 60,
     true_momentum: 67.25,
     true_momentum_ema: 61.4,
-    hilo_elite_value: 55.5,
+    hilo_slowd: 78.91,
+    hilo_slowd_x: 76.42,
+    tos_hilo_elite_scalar: null,
     hilo_thrust_state: "bullish",
     hilo_score: 10,
     pullback_signal: false,
@@ -50,7 +52,7 @@ function snapshot(overrides: Partial<MomentumVisualParitySnapshot> = {}): Moment
     no_trade_warning: false,
     iv_percent: null,
     source_notes: [],
-    unavailable_fields: ["iv_percent"],
+    unavailable_fields: ["iv_percent", "tos_hilo_elite_scalar"],
     ...overrides,
   };
 }
@@ -66,7 +68,8 @@ function point(overrides: Partial<MomentumVisualParityPoint> = {}): MomentumVisu
     momo_score: 60,
     true_momentum: 67.25,
     true_momentum_ema: 61.4,
-    hilo_elite_value: 55.5,
+    hilo_slowd: 78.91,
+    hilo_slowd_x: 76.42,
     hilo_thrust_state: "bullish",
     hilo_score: 10,
     pullback_signal: false,
@@ -146,14 +149,32 @@ describe("TrueMomentumPanelStatusBadges", () => {
 });
 
 describe("HiloPanelStatusBadges", () => {
-  it("renders Confirmed thrust + HiLo Elite scalar + HiLo score for bullish state", () => {
+  it("renders Confirmed thrust, HiLo SlowD / SlowD_X, and HiLo score for bullish state — never a misleading 'HiLo Elite'", () => {
     const html = renderToStaticMarkup(<HiloPanelStatusBadges snapshot={snapshot()} />);
     expect(html).toContain("Thrust");
     expect(html).toContain("Confirmed");
-    expect(html).toContain("HiLo Elite");
-    expect(html).toContain("55.50");
+    expect(html).toContain("HiLo SlowD");
+    expect(html).toContain("HiLo SlowD_X");
+    expect(html).toContain("78.91");
+    expect(html).toContain("76.42");
     expect(html).toContain("HiLo score");
     expect(html).toContain("+10");
+    // Misleading "HiLo Elite" badge must not appear when MacMarket has
+    // no ToS-comparable scalar.
+    expect(html).not.toContain(">HiLo Elite<");
+  });
+
+  it("renders ToS HiLo Elite badge when tos_hilo_elite_scalar is populated", () => {
+    const html = renderToStaticMarkup(
+      <HiloPanelStatusBadges
+        snapshot={snapshot({
+          tos_hilo_elite_scalar: 98.18,
+          unavailable_fields: ["iv_percent"],
+        })}
+      />,
+    );
+    expect(html).toContain("ToS HiLo Elite");
+    expect(html).toContain("98.18");
   });
 
   it("renders Deconfirmed for bearish thrust", () => {
@@ -171,10 +192,11 @@ describe("HiloPanelStatusBadges", () => {
     expect(html).toContain("Neutral");
   });
 
-  it("keeps the HiLo Elite scalar visually separate from the HiLo score", () => {
+  it("keeps the HiLo SlowD scalar visually separate from the HiLo score", () => {
     const html = renderToStaticMarkup(<HiloPanelStatusBadges snapshot={snapshot()} />);
     // The two ids are rendered as separate badge testids.
-    expect(html).toContain('data-testid="hilo-panel-status-badges-hilo_value"');
+    expect(html).toContain('data-testid="hilo-panel-status-badges-hilo_slowd"');
+    expect(html).toContain('data-testid="hilo-panel-status-badges-hilo_slowd_x"');
     expect(html).toContain('data-testid="hilo-panel-status-badges-hilo_score"');
   });
 });

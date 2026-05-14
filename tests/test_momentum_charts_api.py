@@ -284,7 +284,9 @@ def test_momentum_chart_payload_includes_visual_parity_snapshot() -> None:
         "momo_score",
         "true_momentum",
         "true_momentum_ema",
-        "hilo_elite_value",
+        "hilo_slowd",
+        "hilo_slowd_x",
+        "tos_hilo_elite_scalar",
         "hilo_thrust_state",
         "hilo_score",
         "pullback_signal",
@@ -301,8 +303,15 @@ def test_momentum_chart_payload_includes_visual_parity_snapshot() -> None:
     # IV% is unavailable — never fabricated.
     assert snapshot["iv_percent"] is None
     assert "iv_percent" in snapshot["unavailable_fields"]
-    # HiLo scalar and thrust state are kept distinct.
-    assert isinstance(snapshot["hilo_elite_value"], (int, float))
+    # ToS-comparable HiLo Elite scalar is unavailable — MacMarket does
+    # not currently compute it, so the field stays null and the badge
+    # never lies about parity.
+    assert snapshot["tos_hilo_elite_scalar"] is None
+    assert "tos_hilo_elite_scalar" in snapshot["unavailable_fields"]
+    # SlowD / SlowD_X are kept distinct from the thrust state and the
+    # composite HiLo score.
+    assert isinstance(snapshot["hilo_slowd"], (int, float))
+    assert isinstance(snapshot["hilo_slowd_x"], (int, float))
     assert snapshot["hilo_thrust_state"] in {"bullish", "bearish", "neutral"}
     # Symbol/timeframe echo the request.
     assert snapshot["symbol"] == "SPY"
@@ -479,6 +488,58 @@ def test_momentum_chart_visual_parity_with_longer_history_range() -> None:
     assert len(payload["visual_parity_series"]) == len(payload["candles"])
     assert payload["history_range"] == "1Y"
     assert payload["visual_parity_snapshot"] is not None
+
+
+def test_momentum_chart_payload_separates_hilo_slowd_from_tos_scalar() -> None:
+    """HiLo cleanup contract: ``hilo_slowd`` and ``hilo_slowd_x`` carry
+    the rendered stochastic values, ``tos_hilo_elite_scalar`` stays
+    null + listed in unavailable_fields, and the legacy
+    ``hilo_elite_value`` key never appears on the payload."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    payload = response.json()
+    snapshot = payload["visual_parity_snapshot"]
+    # New field discipline.
+    assert "hilo_slowd" in snapshot
+    assert "hilo_slowd_x" in snapshot
+    assert "tos_hilo_elite_scalar" in snapshot
+    assert snapshot["tos_hilo_elite_scalar"] is None
+    assert "tos_hilo_elite_scalar" in snapshot["unavailable_fields"]
+    # The misleading legacy key is gone — no "hilo_elite_value" on the
+    # payload (catches accidental backslide).
+    assert "hilo_elite_value" not in snapshot
+    for point in payload["visual_parity_series"]:
+        assert "hilo_slowd" in point
+        assert "hilo_slowd_x" in point
+        assert "hilo_elite_value" not in point
+    # SlowD and SlowD_X also remain on their dedicated chart lines.
+    assert payload["hilo_slowd_line"]
+    assert payload["hilo_slowd_x_line"]
+
+
+def test_momentum_chart_payload_hilo_slowd_matches_existing_slowd_line() -> None:
+    """The visual parity ``hilo_slowd`` field for the last bar matches
+    the last point of the existing ``hilo_slowd_line`` series — proves
+    the new field is sourced from the same already-computed value the
+    chart line uses."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    payload = response.json()
+    snapshot = payload["visual_parity_snapshot"]
+    last_slowd = payload["hilo_slowd_line"][-1]["value"]
+    last_slowd_x = payload["hilo_slowd_x_line"][-1]["value"]
+    assert snapshot["hilo_slowd"] == last_slowd
+    assert snapshot["hilo_slowd_x"] == last_slowd_x
 
 
 def test_momentum_chart_empty_bars_returns_safe_parity_payload() -> None:

@@ -54,8 +54,9 @@ export type MomentumRankingStatus = {
   // not export the Momentum study rows. These fields never gate
   // approval, sizing, or routing — they are operator readiness only.
   thinkorswim_parity_mode_counts?: {
-    visual_observation?: { total: number; passed: number; failed: number; skipped: number };
-    exported_study_csv?: { total: number; passed: number; failed: number; skipped: number };
+    visual_observation?: { total: number; passed: number; failed: number; skipped: number; partial?: number };
+    exported_study_csv?: { total: number; passed: number; failed: number; skipped: number; partial?: number };
+    visual_attestation?: { total: number; passed: number; failed: number; skipped: number; partial?: number };
   } | null;
   thinkorswim_parity_visual_observation_count?: number;
   thinkorswim_parity_exported_study_csv_count?: number;
@@ -63,6 +64,20 @@ export type MomentumRankingStatus = {
   thinkorswim_parity_visual_observation_failed_count?: number;
   thinkorswim_parity_visual_reviewed?: boolean;
   thinkorswim_parity_exported_study_csv_available?: boolean;
+  // Visual attestation — no-bars ToS-vs-MM operator-entered parity
+  // evidence. Surfaces alongside the existing visual_observation
+  // counts. ``visual_attestation_status`` is one of
+  // ``visual_attested`` / ``visual_failed`` / ``visual_partial`` /
+  // ``null`` (when no attestation fixtures declared).
+  thinkorswim_parity_visual_attestation_count?: number;
+  thinkorswim_parity_visual_attestation_passed_count?: number;
+  thinkorswim_parity_visual_attestation_failed_count?: number;
+  thinkorswim_parity_visual_attestation_partial_count?: number;
+  thinkorswim_parity_visual_attestation_status?:
+    | "visual_attested"
+    | "visual_failed"
+    | "visual_partial"
+    | null;
 };
 
 /**

@@ -11,7 +11,7 @@ const BUCKETS: Array<{
   { key: "price", label: "Price overlays", hint: "Overlays that share the main price pane.", categories: ["trend", "volatility", "structure"] },
   { key: "lower", label: "Lower panels", hint: "Separate scales for compact volume and RSI context.", categories: ["momentum", "volume"] },
   { key: "context", label: "HACO context", hint: "Dedicated HACO/HACOLT context strips.", categories: ["haco"] },
-  { key: "momentum_intelligence", label: "Momentum Intelligence", hint: "True Momentum, HiLo Elite, and composite score strips. Deterministic context only — never trade approval.", categories: ["momentum_intelligence"] },
+  { key: "momentum_intelligence", label: "Momentum Intelligence", hint: "True Momentum, HiLo SlowD / SlowD_X, and composite score strips. Deterministic context only — never trade approval.", categories: ["momentum_intelligence"] },
 ];
 
 export function IndicatorSelector({

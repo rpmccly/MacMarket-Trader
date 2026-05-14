@@ -141,16 +141,21 @@ computed indicator state.
 - `visual_parity_snapshot` — normalized latest-bar parity status.
   Fields: `as_of`, `symbol`, `timeframe`, `history_range`,
   `total_score`, `total_label`, `trend_score`, `momo_score`,
-  `true_momentum`, `true_momentum_ema`, `hilo_elite_value`,
-  `hilo_thrust_state`, `hilo_score`, `pullback_signal`,
-  `reversal_warning`, `no_trade_warning`, `iv_percent`,
-  `source_notes`, `unavailable_fields`. The HiLo scalar
-  (`hilo_elite_value`, the rendered SlowD line) is kept distinct
-  from the categorical `hilo_thrust_state` so the UI never collapses
-  the two. `iv_percent` is intentionally `None` and listed in
-  `unavailable_fields` because no deterministic IV / IV-percentile
-  source is wired into the Momentum chart payload yet — fabricating
-  one would break the parity charter.
+  `true_momentum`, `true_momentum_ema`, `hilo_slowd`, `hilo_slowd_x`,
+  `tos_hilo_elite_scalar`, `hilo_thrust_state`, `hilo_score`,
+  `pullback_signal`, `reversal_warning`, `no_trade_warning`,
+  `iv_percent`, `source_notes`, `unavailable_fields`. **HiLo field
+  discipline:** `hilo_slowd` / `hilo_slowd_x` are the rendered
+  stochastic SlowD / SlowD_X lines MacMarket already computes (range
+  0..100). `tos_hilo_elite_scalar` is reserved for the actual ToS
+  ST_HiLoElite scalar an operator reads from Thinkorswim —
+  MacMarket does not currently compute that scalar, so it is always
+  `None` and listed in `unavailable_fields`. `hilo_thrust_state` is
+  the categorical thrust state; `hilo_score` is the composite
+  -30/0/+30 thrust contribution. `iv_percent` is also intentionally
+  `None` and listed in `unavailable_fields` because no deterministic
+  IV / IV-percentile source is wired into the Momentum chart payload
+  yet — fabricating either value would break the parity charter.
 - `visual_parity_series` — per-bar parity snapshots aligned to the
   candle time axis so the frontend can look up status by hovered
   bar. Latest-bar status is also derivable from the last entry.
@@ -312,22 +317,27 @@ no recommendation approval changes.
 - Recommendation approval, sizing, paper-order, options preview, replay, and
   HACO/HACOLT behaviors are unchanged.
 - `parity_status` continues to default to
-  `pending_thinkorswim_fixture_validation` until Thinkorswim parity
-  evidence — preferably exported bars plus visual/manual study
-  observations because ToS does not export study rows — lands.
-  Derived higher-timeframe behavior remains explicitly labeled.
+  `pending_thinkorswim_fixture_validation` until Thinkorswim
+  visual/manual parity evidence (typically `parity_mode:
+  "visual_attestation"`, which records operator-entered ToS and
+  MacMarket rendered chart values from screenshots — no bars or
+  study CSV required because ToS does not export either for this
+  workflow) lands. Derived higher-timeframe behavior remains
+  explicitly labeled.
 
 ---
 
 ## Thinkorswim parity fixtures
 
-Operator-supplied Thinkorswim parity evidence — preferably exported bars plus
-visual/manual study observations because ToS does not export study rows — is
-the only authoritative way to validate that MacMarket's deterministic ports of
+Operator-supplied Thinkorswim visual/manual parity evidence is the only
+authoritative way to validate that MacMarket's deterministic ports of
 `ST_TrueMomentumScoreSTUDY`, `ST_TrueMomentumSTUDY`, and `ST_HiLoEliteSTUDY`
-actually agree with the source studies. The repo ships the **infrastructure**
-for this validation but not the data itself — no fabricated parity values are
-committed.
+actually agree with the source studies. The recommended path today is
+`parity_mode: "visual_attestation"`, which records operator-entered ToS
+and MacMarket rendered chart values from screenshots — no bars CSV or
+study CSV required because ToS does not export either for this
+workflow. The repo ships the **infrastructure** for this validation but
+not the data itself — no fabricated parity values are committed.
 
 The structured operator workflow (manifest schema, export checklist,
 validator CLI, report interpretation, how it gates Phase C) lives in
@@ -373,10 +383,13 @@ Each entry in `manifest.json` lists:
 | `name` | yes | unique label; appears in test failures |
 | `symbol` | yes | normalized to upper-case |
 | `timeframe` | yes | one of `1D`, `4H`, `1H` |
-| `bars_csv` | yes | OHLCV CSV path relative to the fixture directory |
+| `parity_mode` | optional | `"exported_study_csv"` (default), `"visual_observation"`, or `"visual_attestation"`. Inferred from manifest shape when omitted. |
+| `bars_csv` | required except in `visual_attestation` mode | OHLCV CSV path relative to the fixture directory. **Not required** for `visual_attestation`, which compares operator-entered ToS and MacMarket readings directly without computing on bars. |
 | `study_csv` | optional | per-bar Thinkorswim study export; cross-checked when present |
 | `higher_timeframe_bars_csv` | optional | when present, the test asserts `higher_timeframe_source == "provided_higher_timeframe_bars"` |
-| `expected_latest` | yes | operator-supplied values for the latest bar; only known study fields are accepted |
+| `expected_latest` | required in `exported_study_csv` | operator-supplied values for the latest bar; only known study fields are accepted |
+| `observed_latest` | required in `visual_observation` | operator-supplied values for the bar visually observed in ToS |
+| `tos_observed_latest` + `macmarket_observed_latest` | required in `visual_attestation` | operator-supplied values read from each rendered chart; compared directly |
 | `tolerances` | yes (mapping; entries optional) | per-field absolute tolerances; default `1.0` if a field is missing |
 
 Known study fields: `total_score`, `true_momentum`, `true_momentum_ema`,

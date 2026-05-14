@@ -95,6 +95,12 @@ const REASON_LABELS: Record<string, string> = {
   thinkorswim_visual_observation_missing: "Visual observation not yet recorded",
   thinkorswim_exported_study_csv_unavailable:
     "Exported study CSV parity unavailable / not provided",
+  // Visual attestation (no-bars ToS-vs-MM) reason codes.
+  thinkorswim_visual_attested: "Visual attestation passed",
+  thinkorswim_visual_attestation_failed: "Visual attestation failed",
+  thinkorswim_visual_attestation_partial: "Visual attestation partial",
+  thinkorswim_visual_attestation_observations_available:
+    "Visual attestation observations available",
 };
 
 function reasonLabel(code: string): string {
@@ -410,7 +416,26 @@ function ThinkorswimParityWorkflowSection({
   const visualFailed = status.thinkorswim_parity_visual_observation_failed_count ?? 0;
   const visualReviewed = status.thinkorswim_parity_visual_reviewed === true;
   const exportedAvailable = status.thinkorswim_parity_exported_study_csv_available === true;
+  const attestationCount = status.thinkorswim_parity_visual_attestation_count ?? 0;
+  const attestationPassed = status.thinkorswim_parity_visual_attestation_passed_count ?? 0;
+  const attestationFailed = status.thinkorswim_parity_visual_attestation_failed_count ?? 0;
+  const attestationPartial = status.thinkorswim_parity_visual_attestation_partial_count ?? 0;
+  const attestationStatus = status.thinkorswim_parity_visual_attestation_status ?? null;
   const visualOnly = visualCount > 0 && exportedCount === 0;
+  const attestationOnly =
+    attestationCount > 0 && visualCount === 0 && exportedCount === 0;
+  const attestationStatusLabel = (() => {
+    if (attestationStatus === "visual_attested") return "Visual attested";
+    if (attestationStatus === "visual_failed") return "Visual failed";
+    if (attestationStatus === "visual_partial") return "Visual partial";
+    return null;
+  })();
+  const attestationStatusTone: "good" | "warn" | "neutral" = (() => {
+    if (attestationStatus === "visual_attested") return "good";
+    if (attestationStatus === "visual_failed") return "warn";
+    if (attestationStatus === "visual_partial") return "warn";
+    return "neutral";
+  })();
 
   return (
     <div
@@ -457,6 +482,28 @@ function ThinkorswimParityWorkflowSection({
         data-testid="thinkorswim-parity-mode-counts"
       >
         <StatusBadge
+          tone={attestationStatusTone}
+          data-testid="thinkorswim-parity-visual-attestation-badge"
+        >
+          Visual attestation fixtures: {attestationCount}
+          {attestationCount > 0 ? (
+            <>
+              {" "}
+              ({attestationPassed} passed
+              {attestationFailed > 0 ? ` / ${attestationFailed} failed` : ""}
+              {attestationPartial > 0 ? ` / ${attestationPartial} partial` : ""})
+            </>
+          ) : null}
+        </StatusBadge>
+        {attestationStatusLabel ? (
+          <StatusBadge
+            tone={attestationStatusTone}
+            data-testid="thinkorswim-parity-visual-attestation-status-badge"
+          >
+            Status: {attestationStatusLabel}
+          </StatusBadge>
+        ) : null}
+        <StatusBadge
           tone={visualReviewed ? (visualFailed > 0 ? "warn" : "good") : "neutral"}
           data-testid="thinkorswim-parity-visual-observation-badge"
         >
@@ -471,7 +518,7 @@ function ThinkorswimParityWorkflowSection({
         >
           Exported study CSVs: {exportedCount}
         </StatusBadge>
-        {visualReviewed ? (
+        {visualReviewed || attestationCount > 0 ? (
           <StatusBadge tone="neutral" data-testid="thinkorswim-parity-visual-reviewed-badge">
             Visual reviewed
           </StatusBadge>
@@ -487,6 +534,16 @@ function ThinkorswimParityWorkflowSection({
           </StatusBadge>
         ) : null}
       </div>
+
+      {attestationCount > 0 ? (
+        <p
+          style={{ ...NOTE_STYLE, margin: 0 }}
+          data-testid="thinkorswim-parity-visual-attestation-note"
+        >
+          Visual attestation compares operator-entered ToS and MacMarket (MM) rendered chart values
+          because Thinkorswim does not export Momentum study rows or usable bars for this workflow.
+        </p>
+      ) : null}
 
       {visualReviewed ? (
         <p

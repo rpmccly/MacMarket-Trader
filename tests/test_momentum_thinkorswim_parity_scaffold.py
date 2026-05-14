@@ -80,6 +80,13 @@ def test_thinkorswim_parity_fixture(fixture_name: str, fixture: Any) -> None:
     """Compare the deterministic payload's latest snapshot against the operator-supplied expected values."""
     helper = _load_helper()
 
+    # visual_attestation fixtures have no bars CSV and no MacMarket
+    # computation — the dedicated workflow test
+    # (test_thinkorswim_momentum_parity_workflow.py) covers that mode.
+    # Skip them here so this scaffold remains a bars-driven harness.
+    if getattr(fixture, "parity_mode", None) == "visual_attestation":
+        pytest.skip("visual_attestation has no bars CSV — covered by the parity-workflow test")
+
     bars = helper.load_bars_csv(fixture.bars_csv)
     htf_bars = (
         helper.load_bars_csv(fixture.higher_timeframe_bars_csv)
