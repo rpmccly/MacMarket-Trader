@@ -578,6 +578,10 @@ def test_canonical_study_fields_are_stable() -> None:
         "hilo_slowd_x",
         "tos_hilo_elite_scalar",
         "hilo_score",
+        "true_momentum_score",
+        "atr_bias",
+        "macd_bias",
+        "ma_bias",
     )
     assert "total_label" in LABEL_FIELDS
     assert "pullback_signal" in LABEL_FIELDS
@@ -1610,3 +1614,463 @@ def test_visual_attestation_module_has_no_provider_or_order_imports() -> None:
         assert symbol not in source, (
             f"parity module must not reference {symbol!r}"
         )
+
+
+# ── visual_attestation price + composite diagnostics ───────────────────────
+
+
+def test_visual_attestation_close_price_within_tolerance_does_not_flag(tmp_path: Path) -> None:
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "true_momentum": 72.5563,
+            "true_momentum_ema": 59.2084,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 73.51,
+            "true_momentum_ema": 60.04,
+        },
+        extra_fixture_overrides={
+            "tos_observed_price": {"open": 587.10, "high": 590.05, "low": 585.40, "close": 588.72},
+            "macmarket_observed_price": {"open": 587.10, "high": 590.05, "low": 585.40, "close": 588.73},
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    assert result.price_close_delta is not None
+    assert result.price_close_delta <= result.price_close_tolerance
+    assert result.diagnostic_flags["price_context_mismatch"] is False
+    assert "visual_attestation_price_context_mismatch" not in result.reason_codes
+
+
+def test_visual_attestation_close_price_mismatch_emits_price_context_reason_code(
+    tmp_path: Path,
+) -> None:
+    """When ToS / MacMarket close prices differ beyond tolerance, the
+    validator emits the price_context_mismatch reason code but keeps
+    the result attested when oscillator + composite pass."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "true_momentum": 72.5563,
+            "true_momentum_ema": 59.2084,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 73.51,
+            "true_momentum_ema": 60.04,
+        },
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.96},
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    assert result.diagnostic_flags["price_context_mismatch"] is True
+    assert "visual_attestation_price_context_mismatch" in result.reason_codes
+    assert "bar_context_mismatch" in result.diagnostic_classification
+
+
+def test_visual_attestation_close_price_tolerance_override_via_manifest(tmp_path: Path) -> None:
+    """Operators can widen the close-price tolerance via tolerances.close."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+        tolerances={"close": 1.0},
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.96},
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.price_close_tolerance == 1.0
+    assert result.diagnostic_flags["price_context_mismatch"] is False
+
+
+def test_visual_attestation_oscillator_aligned_composite_mismatch_xlp_pattern(
+    tmp_path: Path,
+) -> None:
+    """The XLP-style pattern: True Momentum oscillator agrees but the
+    composite total_score does not. The diagnostic classification
+    captures ``oscillator_aligned`` and ``composite_mismatch``."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 65,
+            "true_momentum": 58.0,
+            "true_momentum_ema": 54.45,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_failed"
+    assert result.diagnostic_flags["oscillator_aligned"] is True
+    assert result.diagnostic_flags["oscillator_failed"] is False
+    assert result.diagnostic_flags["composite_score_failed"] is True
+    assert "oscillator_aligned" in result.diagnostic_classification
+    assert "composite_mismatch" in result.diagnostic_classification
+    # The composite-mismatch diagnostic note surfaces in diagnostics.
+    note = result.diagnostics.get("composite_mismatch_note", "")
+    assert "Oscillator fields passed" in note
+
+
+def test_visual_attestation_mm_component_sum_is_reported(tmp_path: Path) -> None:
+    """When all five MM composite components are provided, the
+    validator reports their sum and the ToS - MM-sum delta."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100, "true_momentum": 70.0, "true_momentum_ema": 60.0},
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 70.5,
+            "true_momentum_ema": 60.3,
+            "true_momentum_score": 35,
+            "hilo_score": 20,
+            "atr_bias": 10,
+            "macd_bias": 5,
+            "ma_bias": 30,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    # 35 + 20 + 10 + 5 + 30 = 100
+    assert result.mm_component_sum == 100.0
+    attr = result.composite_score_attribution
+    assert attr["mm_component_sum"] == 100.0
+    assert attr["mm_total_score"] == 100.0
+    assert attr["tos_total_score"] == 100.0
+    assert attr["mm_total_score_minus_component_sum"] == 0.0
+    assert attr["tos_total_score_minus_mm_component_sum"] == 0.0
+
+
+def test_visual_attestation_tos_missing_components_does_not_fail(tmp_path: Path) -> None:
+    """ToS missing component fields is fine — the validator records
+    them as 'not observed' instead of assuming a formula."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.5,
+            "true_momentum_ema": 54.4,
+            "true_momentum_score": 5,
+            "hilo_score": 0,
+            "atr_bias": 0,
+            "macd_bias": 0,
+            "ma_bias": 30,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    # ToS did not supply component fields — recorded as "not observed".
+    assert "tos_total_score" in result.composite_score_attribution
+    # MacMarket components sum to 35.
+    assert result.mm_component_sum == 35.0
+
+
+def test_visual_attestation_tos_hilo_elite_scalar_remains_reference_only(tmp_path: Path) -> None:
+    """tos_hilo_elite_scalar present only on ToS side is recorded in
+    reference_only_observations and never compared to MM HiLo SlowD."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "tos_hilo_elite_scalar": 98.1805,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "hilo_slowd": 79.15,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_attested"
+    ref = result.diagnostics.get("reference_only_observations") or {}
+    assert ref["tos_only"]["tos_hilo_elite_scalar"] == 98.1805
+    fields = {d.field for d in result.field_deltas}
+    assert "tos_hilo_elite_scalar" not in fields
+    assert "hilo_slowd" not in fields
+    assert result.diagnostic_flags["reference_only_hilo_scalar_present"] is True
+
+
+def test_visual_attestation_report_markdown_includes_composite_attribution_section(
+    tmp_path: Path,
+) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 65,
+            "true_momentum": 58.0,
+            "true_momentum_ema": 54.45,
+            "true_momentum_score": 15,
+            "hilo_score": -5,
+            "atr_bias": 5,
+            "macd_bias": 5,
+            "ma_bias": 25,
+        },
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.96},
+        },
+    )
+    build_thinkorswim_parity_report(tmp_path, write=True)
+    md = (tmp_path / REPORT_FILENAME_MD).read_text(encoding="utf-8")
+    assert "### Composite score attribution" in md
+    assert "MacMarket composite components" in md
+    assert "MM component sum" in md
+    assert "Price context" in md
+    assert "Diagnostic flags" in md
+    assert "oscillator_aligned" in md
+    assert "composite_mismatch" in md
+    assert "bar_context_mismatch" in md
+
+
+def test_visual_attestation_report_json_includes_diagnostics(tmp_path: Path) -> None:
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 65,
+            "true_momentum": 58.0,
+            "true_momentum_ema": 54.45,
+            "true_momentum_score": 15,
+            "hilo_score": -5,
+            "atr_bias": 5,
+            "macd_bias": 5,
+            "ma_bias": 25,
+        },
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.96},
+        },
+    )
+    build_thinkorswim_parity_report(tmp_path, write=True)
+    payload = json.loads((tmp_path / REPORT_FILENAME_JSON).read_text(encoding="utf-8"))
+    result0 = payload["results"][0]
+    assert result0["mm_component_sum"] == 45.0
+    assert result0["tos_total_score"] == 35.0
+    assert result0["mm_total_score"] == 65.0
+    assert result0["tos_observed_price"] == {"close": 84.72}
+    assert result0["macmarket_observed_price"] == {"close": 84.96}
+    assert result0["price_close_delta"] is not None
+    assert result0["price_close_tolerance"] is not None
+    assert result0["diagnostic_flags"]["oscillator_aligned"] is True
+    assert result0["diagnostic_flags"]["oscillator_failed"] is False
+    assert result0["diagnostic_flags"]["composite_score_failed"] is True
+    assert result0["diagnostic_flags"]["price_context_mismatch"] is True
+    assert "oscillator_aligned" in result0["diagnostic_classification"]
+    assert "composite_mismatch" in result0["diagnostic_classification"]
+    assert "bar_context_mismatch" in result0["diagnostic_classification"]
+
+
+def test_visual_attestation_strict_still_fails_when_total_score_fails(tmp_path: Path) -> None:
+    """Even with oscillator aligned + composite attribution diagnostic,
+    strict mode still exits non-zero when total_score fails."""
+    _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 65,
+            "true_momentum": 58.0,
+            "true_momentum_ema": 54.45,
+        },
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+
+
+def test_visual_attestation_default_close_tolerance_is_010(tmp_path: Path) -> None:
+    """The default close-price tolerance is 0.10 (not 0.05).
+
+    Drives the prompt's "Default close tolerance: 0.10 unless fixture
+    overrides" contract — 0.08 delta lands inside the default and the
+    fixture must NOT flag price context mismatch.
+    """
+    from macmarket_trader.indicators.thinkorswim_parity import (
+        DEFAULT_PRICE_CLOSE_TOLERANCE,
+    )
+
+    assert DEFAULT_PRICE_CLOSE_TOLERANCE == 0.10
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.80},
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.price_close_tolerance == 0.10
+    assert result.diagnostic_flags["price_context_mismatch"] is False
+
+
+def test_visual_attestation_strict_price_context_fails_on_close_mismatch(
+    tmp_path: Path,
+) -> None:
+    """When ``strict_price_context: true`` is set on the fixture, a
+    close-price mismatch flips the result to visual_failed even if the
+    oscillator + composite fields agree."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "true_momentum": 72.5563,
+            "true_momentum_ema": 59.2084,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 73.51,
+            "true_momentum_ema": 60.04,
+        },
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72},
+            "macmarket_observed_price": {"close": 84.96},
+            "strict_price_context": True,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.strict_price_context is True
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_failed"
+    assert result.diagnostic_flags["price_context_mismatch"] is True
+    assert "visual_attestation_price_context_mismatch" in result.reason_codes
+    assert "thinkorswim_visual_attestation_failed" in result.reason_codes
+    # The strict-price mismatch surfaces as an explicit mismatch entry.
+    assert any("strict_price_context" in m for m in result.mismatches)
+
+
+def test_visual_attestation_oscillator_failed_flag_when_oscillator_diverges(
+    tmp_path: Path,
+) -> None:
+    """When the True Momentum oscillator fields are compared but fail
+    tolerance, the flag pair surfaces as
+    ``oscillator_aligned: False`` + ``oscillator_failed: True``."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 100,
+            "true_momentum": 30.0,
+            "true_momentum_ema": 30.0,
+        },
+        macmarket_observed_latest={
+            "total_score": 100,
+            "true_momentum": 90.0,
+            "true_momentum_ema": 90.0,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "visual_failed"
+    assert result.diagnostic_flags["oscillator_aligned"] is False
+    assert result.diagnostic_flags["oscillator_failed"] is True
+    assert "oscillator_mismatch" in result.diagnostic_classification
+
+
+def test_visual_attestation_oscillator_flags_false_when_not_compared(tmp_path: Path) -> None:
+    """If neither true_momentum nor true_momentum_ema is on both sides,
+    both oscillator flags remain False (not compared)."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.diagnostic_flags["oscillator_aligned"] is False
+    assert result.diagnostic_flags["oscillator_failed"] is False
+
+
+def test_visual_attestation_composite_mismatch_note_mentions_ma_bias(
+    tmp_path: Path,
+) -> None:
+    """The composite-mismatch operator note must mention
+    'MA bias inclusion' so the operator immediately knows where to
+    look first when oscillator passes but total_score diverges."""
+    manifest_path = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={
+            "total_score": 35,
+            "true_momentum": 57.1283,
+            "true_momentum_ema": 54.4013,
+        },
+        macmarket_observed_latest={
+            "total_score": 65,
+            "true_momentum": 58.0,
+            "true_momentum_ema": 54.45,
+        },
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    note = result.diagnostics.get("composite_mismatch_note", "")
+    assert "MA bias inclusion" in note
+
+
+def test_visual_attestation_price_block_rejects_unknown_keys(tmp_path: Path) -> None:
+    """Price-context blocks must contain only open/high/low/close keys."""
+    bars_required_off_attestation = _write_visual_attestation_manifest(
+        tmp_path,
+        tos_observed_latest={"total_score": 100},
+        macmarket_observed_latest={"total_score": 100},
+        extra_fixture_overrides={
+            "tos_observed_price": {"close": 84.72, "wat": 1.0},
+        },
+    )
+    with pytest.raises(ParityFixtureError):
+        load_thinkorswim_manifest(bars_required_off_attestation)
+
+
+def test_visual_attestation_price_block_rejects_outside_attestation_mode(tmp_path: Path) -> None:
+    """tos_observed_price / macmarket_observed_price only valid in
+    visual_attestation mode."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    fixture = {
+        "name": "AAPL_1D",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "observed_latest": {"total_score": 50},
+        "tolerances": {"total_score": 1000},
+        "tos_observed_price": {"close": 100.0},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    with pytest.raises(ParityFixtureError):
+        load_thinkorswim_manifest(manifest_path)

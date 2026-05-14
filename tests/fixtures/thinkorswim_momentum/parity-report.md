@@ -1,7 +1,7 @@
 # Thinkorswim Momentum parity report
 
 - Fixture directory: `C:\Users\ryanm\OneDrive\Documents\GitHub\MacMarket-Trader\tests\fixtures\thinkorswim_momentum`
-- Generated at: `2026-05-14T17:51:17.108152+00:00`
+- Generated at: `2026-05-14T20:37:06.787357+00:00`
 - Manifest present: `True`
 - Manifest valid: `True`
 - Fixtures total: 4
@@ -53,6 +53,27 @@ _This report is operator readiness context only. It does not approve, reject, si
 | `true_momentum` | 72.5563 | 73.5100 | 0.9537 | 1.5 | ok |
 | `true_momentum_ema` | 59.2084 | 60.0400 | 0.8316 | 1.5 | ok |
 
+### Composite score attribution
+
+_MacMarket composite components were not provided; component-sum attribution skipped._
+
+Total score reconciliation:
+
+| Source | total_score |
+|---|---:|
+| ToS observed | 100.0 |
+| MacMarket observed | 100.0 |
+
+Diagnostic flags:
+- `composite_score_failed`: False
+- `label_mismatch`: False
+- `oscillator_aligned`: True
+- `oscillator_failed`: False
+- `price_context_mismatch`: False
+- `reference_only_hilo_scalar_present`: True
+
+Classification: `oscillator_aligned`
+
 Diagnostics:
 - `mode`: visual_attestation
 - `source`: operator-read Thinkorswim and MacMarket rendered chart labels
@@ -62,6 +83,9 @@ Diagnostics:
 - `reference_only_note`: tos_hilo_elite_scalar present on the ToS side only — recorded for audit, not compared (MacMarket has no equivalent unless the MM side declares the same field)
 - `skipped_fields`: ['hilo_score', 'hilo_slowd', 'hilo_slowd_x', 'hilo_thrust_state']
 - `fields_compared`: ['total_label', 'total_score', 'true_momentum', 'true_momentum_ema']
+- `diagnostic_flags`: {'oscillator_aligned': True, 'oscillator_failed': False, 'composite_score_failed': False, 'price_context_mismatch': False, 'label_mismatch': False, 'reference_only_hilo_scalar_present': True}
+- `diagnostic_classification`: ['oscillator_aligned']
+- `composite_score_attribution`: {'mm_components': 'not observed', 'tos_total_score': 100.0, 'mm_total_score': 100.0}
 
 ## XLK_1D_visual_attestation_2026_05_13 — `visual_attested`
 
@@ -86,6 +110,27 @@ Diagnostics:
 | `true_momentum` | 81.2468 | 82.1200 | 0.8732 | 1.5 | ok |
 | `true_momentum_ema` | 60.3955 | 61.1300 | 0.7345 | 1.5 | ok |
 
+### Composite score attribution
+
+_MacMarket composite components were not provided; component-sum attribution skipped._
+
+Total score reconciliation:
+
+| Source | total_score |
+|---|---:|
+| ToS observed | 100.0 |
+| MacMarket observed | 100.0 |
+
+Diagnostic flags:
+- `composite_score_failed`: False
+- `label_mismatch`: False
+- `oscillator_aligned`: True
+- `oscillator_failed`: False
+- `price_context_mismatch`: False
+- `reference_only_hilo_scalar_present`: True
+
+Classification: `oscillator_aligned`
+
 Diagnostics:
 - `mode`: visual_attestation
 - `source`: operator-read Thinkorswim and MacMarket rendered chart labels
@@ -95,6 +140,9 @@ Diagnostics:
 - `reference_only_note`: tos_hilo_elite_scalar present on the ToS side only — recorded for audit, not compared (MacMarket has no equivalent unless the MM side declares the same field)
 - `skipped_fields`: ['hilo_score', 'hilo_slowd', 'hilo_slowd_x', 'hilo_thrust_state']
 - `fields_compared`: ['total_label', 'total_score', 'true_momentum', 'true_momentum_ema']
+- `diagnostic_flags`: {'oscillator_aligned': True, 'oscillator_failed': False, 'composite_score_failed': False, 'price_context_mismatch': False, 'label_mismatch': False, 'reference_only_hilo_scalar_present': True}
+- `diagnostic_classification`: ['oscillator_aligned']
+- `composite_score_attribution`: {'mm_components': 'not observed', 'tos_total_score': 100.0, 'mm_total_score': 100.0}
 
 ## XLP_1D_visual_attestation_2026_05_13 — `visual_failed`
 
@@ -116,14 +164,35 @@ Diagnostics:
 | Field | ToS observed | MacMarket observed | abs_error | Tolerance | OK? |
 |---|---:|---:|---:|---:|:---:|
 | `total_score` | 35.0 | 65.0000 | 30.0000 | 2.0 | MISS |
-| `true_momentum` | 57.1283 | 58.3700 | 1.2417 | 1.5 | ok |
-| `true_momentum_ema` | 54.4013 | 54.4800 | 0.0787 | 1.5 | ok |
+| `true_momentum` | 57.1283 | 58.0000 | 0.8717 | 1.5 | ok |
+| `true_momentum_ema` | 54.4013 | 54.4500 | 0.0487 | 1.5 | ok |
 
 Label / flag mismatches:
 - XLP_1D_visual_attestation_2026_05_13 attestation: total_label ToS 'Neutral' vs MM 'Neutral Up'
 
 Numeric mismatches:
 - XLP_1D_visual_attestation_2026_05_13 attestation: total_score ToS 35.0 vs MM 65.0000 differ by 30.0000 (tol 2.0)
+
+### Composite score attribution
+
+_MacMarket composite components were not provided; component-sum attribution skipped._
+
+Total score reconciliation:
+
+| Source | total_score |
+|---|---:|
+| ToS observed | 35.0 |
+| MacMarket observed | 65.0 |
+
+Diagnostic flags:
+- `composite_score_failed`: True
+- `label_mismatch`: True
+- `oscillator_aligned`: True
+- `oscillator_failed`: False
+- `price_context_mismatch`: False
+- `reference_only_hilo_scalar_present`: True
+
+Classification: `oscillator_aligned`, `composite_mismatch`
 
 Diagnostics:
 - `mode`: visual_attestation
@@ -132,8 +201,12 @@ Diagnostics:
 - `observed_bar_date`: 2026-05-13
 - `reference_only_observations`: {'tos_only': {'tos_hilo_elite_scalar': 56.383}}
 - `reference_only_note`: tos_hilo_elite_scalar present on the ToS side only — recorded for audit, not compared (MacMarket has no equivalent unless the MM side declares the same field)
-- `skipped_fields`: ['hilo_score', 'hilo_slowd', 'hilo_slowd_x', 'hilo_thrust_state']
+- `skipped_fields`: ['hilo_score', 'hilo_slowd', 'hilo_slowd_x', 'hilo_thrust_state', 'momo_score', 'trend_score']
 - `fields_compared`: ['total_label', 'total_score', 'true_momentum', 'true_momentum_ema']
+- `diagnostic_flags`: {'oscillator_aligned': True, 'oscillator_failed': False, 'composite_score_failed': True, 'price_context_mismatch': False, 'label_mismatch': True, 'reference_only_hilo_scalar_present': True}
+- `diagnostic_classification`: ['oscillator_aligned', 'composite_mismatch']
+- `composite_score_attribution`: {'mm_components': 'not observed', 'tos_total_score': 35.0, 'mm_total_score': 65.0}
+- `composite_mismatch_note`: Oscillator fields passed, but total score differs. Review composite component weights, MA bias inclusion, or observed score source.
 
 ## XLE_1D_visual_attestation_2026_05_13 — `visual_attested`
 
@@ -158,6 +231,27 @@ Diagnostics:
 | `true_momentum` | 58.6418 | 59.2400 | 0.5982 | 1.5 | ok |
 | `true_momentum_ema` | 66.4516 | 67.2100 | 0.7584 | 1.5 | ok |
 
+### Composite score attribution
+
+_MacMarket composite components were not provided; component-sum attribution skipped._
+
+Total score reconciliation:
+
+| Source | total_score |
+|---|---:|
+| ToS observed | -30.0 |
+| MacMarket observed | -30.0 |
+
+Diagnostic flags:
+- `composite_score_failed`: False
+- `label_mismatch`: False
+- `oscillator_aligned`: True
+- `oscillator_failed`: False
+- `price_context_mismatch`: False
+- `reference_only_hilo_scalar_present`: True
+
+Classification: `oscillator_aligned`
+
 Diagnostics:
 - `mode`: visual_attestation
 - `source`: operator-read Thinkorswim and MacMarket rendered chart labels
@@ -167,4 +261,7 @@ Diagnostics:
 - `reference_only_note`: tos_hilo_elite_scalar present on the ToS side only — recorded for audit, not compared (MacMarket has no equivalent unless the MM side declares the same field)
 - `skipped_fields`: ['hilo_score', 'hilo_slowd', 'hilo_slowd_x', 'hilo_thrust_state', 'momo_score', 'trend_score']
 - `fields_compared`: ['total_label', 'total_score', 'true_momentum', 'true_momentum_ema']
+- `diagnostic_flags`: {'oscillator_aligned': True, 'oscillator_failed': False, 'composite_score_failed': False, 'price_context_mismatch': False, 'label_mismatch': False, 'reference_only_hilo_scalar_present': True}
+- `diagnostic_classification`: ['oscillator_aligned']
+- `composite_score_attribution`: {'mm_components': 'not observed', 'tos_total_score': -30.0, 'mm_total_score': -30.0}
 

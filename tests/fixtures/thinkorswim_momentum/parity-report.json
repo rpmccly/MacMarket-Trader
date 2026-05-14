@@ -1,7 +1,7 @@
 {
   "schema_version": "thinkorswim_momentum_parity_report.v1",
   "fixture_dir": "C:\\Users\\ryanm\\OneDrive\\Documents\\GitHub\\MacMarket-Trader\\tests\\fixtures\\thinkorswim_momentum",
-  "generated_at": "2026-05-14T17:51:17.108152+00:00",
+  "generated_at": "2026-05-14T20:37:06.787357+00:00",
   "manifest_present": true,
   "manifest_valid": true,
   "fixtures_total": 4,
@@ -107,14 +107,53 @@
           "total_score",
           "true_momentum",
           "true_momentum_ema"
-        ]
+        ],
+        "diagnostic_flags": {
+          "oscillator_aligned": true,
+          "oscillator_failed": false,
+          "composite_score_failed": false,
+          "price_context_mismatch": false,
+          "label_mismatch": false,
+          "reference_only_hilo_scalar_present": true
+        },
+        "diagnostic_classification": [
+          "oscillator_aligned"
+        ],
+        "composite_score_attribution": {
+          "mm_components": "not observed",
+          "tos_total_score": 100.0,
+          "mm_total_score": 100.0
+        }
       },
       "observed_bar_date": "2026-05-13",
       "screenshot": "visual/SPY_1D_ToS_2026_5_13.png",
       "macmarket_screenshot": "visual/SPY_1D_MM_2026_5_13.png",
       "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
       "reviewer": "Ry",
-      "reviewed_at": "2026-05-14T00:00:00+00:00"
+      "reviewed_at": "2026-05-14T00:00:00+00:00",
+      "tos_observed_price": {},
+      "macmarket_observed_price": {},
+      "price_close_delta": null,
+      "price_close_tolerance": null,
+      "mm_component_sum": null,
+      "mm_total_score": 100.0,
+      "tos_total_score": 100.0,
+      "composite_score_attribution": {
+        "mm_components": "not observed",
+        "tos_total_score": 100.0,
+        "mm_total_score": 100.0
+      },
+      "diagnostic_flags": {
+        "oscillator_aligned": true,
+        "oscillator_failed": false,
+        "composite_score_failed": false,
+        "price_context_mismatch": false,
+        "label_mismatch": false,
+        "reference_only_hilo_scalar_present": true
+      },
+      "diagnostic_classification": [
+        "oscillator_aligned"
+      ]
     },
     {
       "fixture_name": "XLK_1D_visual_attestation_2026_05_13",
@@ -180,14 +219,53 @@
           "total_score",
           "true_momentum",
           "true_momentum_ema"
-        ]
+        ],
+        "diagnostic_flags": {
+          "oscillator_aligned": true,
+          "oscillator_failed": false,
+          "composite_score_failed": false,
+          "price_context_mismatch": false,
+          "label_mismatch": false,
+          "reference_only_hilo_scalar_present": true
+        },
+        "diagnostic_classification": [
+          "oscillator_aligned"
+        ],
+        "composite_score_attribution": {
+          "mm_components": "not observed",
+          "tos_total_score": 100.0,
+          "mm_total_score": 100.0
+        }
       },
       "observed_bar_date": "2026-05-13",
       "screenshot": "visual/XLK_1D_ToS_2026_5_13.png",
       "macmarket_screenshot": "visual/XLK_1D_MM_2026_5_13.png",
       "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
       "reviewer": "Ry",
-      "reviewed_at": "2026-05-14T00:00:00+00:00"
+      "reviewed_at": "2026-05-14T00:00:00+00:00",
+      "tos_observed_price": {},
+      "macmarket_observed_price": {},
+      "price_close_delta": null,
+      "price_close_tolerance": null,
+      "mm_component_sum": null,
+      "mm_total_score": 100.0,
+      "tos_total_score": 100.0,
+      "composite_score_attribution": {
+        "mm_components": "not observed",
+        "tos_total_score": 100.0,
+        "mm_total_score": 100.0
+      },
+      "diagnostic_flags": {
+        "oscillator_aligned": true,
+        "oscillator_failed": false,
+        "composite_score_failed": false,
+        "price_context_mismatch": false,
+        "label_mismatch": false,
+        "reference_only_hilo_scalar_present": true
+      },
+      "diagnostic_classification": [
+        "oscillator_aligned"
+      ]
     },
     {
       "fixture_name": "XLP_1D_visual_attestation_2026_05_13",
@@ -211,16 +289,16 @@
         {
           "field": "true_momentum",
           "expected": 57.1283,
-          "actual": 58.37,
-          "abs_error": 1.2416999999999945,
+          "actual": 58.0,
+          "abs_error": 0.871699999999997,
           "tolerance": 1.5,
           "within_tolerance": true
         },
         {
           "field": "true_momentum_ema",
           "expected": 54.4013,
-          "actual": 54.48,
-          "abs_error": 0.07869999999999777,
+          "actual": 54.45,
+          "abs_error": 0.04870000000000374,
           "tolerance": 1.5,
           "within_tolerance": true
         }
@@ -250,21 +328,65 @@
           "hilo_score",
           "hilo_slowd",
           "hilo_slowd_x",
-          "hilo_thrust_state"
+          "hilo_thrust_state",
+          "momo_score",
+          "trend_score"
         ],
         "fields_compared": [
           "total_label",
           "total_score",
           "true_momentum",
           "true_momentum_ema"
-        ]
+        ],
+        "diagnostic_flags": {
+          "oscillator_aligned": true,
+          "oscillator_failed": false,
+          "composite_score_failed": true,
+          "price_context_mismatch": false,
+          "label_mismatch": true,
+          "reference_only_hilo_scalar_present": true
+        },
+        "diagnostic_classification": [
+          "oscillator_aligned",
+          "composite_mismatch"
+        ],
+        "composite_score_attribution": {
+          "mm_components": "not observed",
+          "tos_total_score": 35.0,
+          "mm_total_score": 65.0
+        },
+        "composite_mismatch_note": "Oscillator fields passed, but total score differs. Review composite component weights, MA bias inclusion, or observed score source."
       },
       "observed_bar_date": "2026-05-13",
       "screenshot": "visual/XLP_1D_ToS_2026_5_13.png",
       "macmarket_screenshot": "visual/XLP_1D_MM_2026_5_13.png",
       "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
       "reviewer": "Ry",
-      "reviewed_at": "2026-05-14T00:00:00+00:00"
+      "reviewed_at": "2026-05-14T00:00:00+00:00",
+      "tos_observed_price": {},
+      "macmarket_observed_price": {},
+      "price_close_delta": null,
+      "price_close_tolerance": null,
+      "mm_component_sum": null,
+      "mm_total_score": 65.0,
+      "tos_total_score": 35.0,
+      "composite_score_attribution": {
+        "mm_components": "not observed",
+        "tos_total_score": 35.0,
+        "mm_total_score": 65.0
+      },
+      "diagnostic_flags": {
+        "oscillator_aligned": true,
+        "oscillator_failed": false,
+        "composite_score_failed": true,
+        "price_context_mismatch": false,
+        "label_mismatch": true,
+        "reference_only_hilo_scalar_present": true
+      },
+      "diagnostic_classification": [
+        "oscillator_aligned",
+        "composite_mismatch"
+      ]
     },
     {
       "fixture_name": "XLE_1D_visual_attestation_2026_05_13",
@@ -332,14 +454,53 @@
           "total_score",
           "true_momentum",
           "true_momentum_ema"
-        ]
+        ],
+        "diagnostic_flags": {
+          "oscillator_aligned": true,
+          "oscillator_failed": false,
+          "composite_score_failed": false,
+          "price_context_mismatch": false,
+          "label_mismatch": false,
+          "reference_only_hilo_scalar_present": true
+        },
+        "diagnostic_classification": [
+          "oscillator_aligned"
+        ],
+        "composite_score_attribution": {
+          "mm_components": "not observed",
+          "tos_total_score": -30.0,
+          "mm_total_score": -30.0
+        }
       },
       "observed_bar_date": "2026-05-13",
       "screenshot": "visual/XLE_1D_ToS_2026_5_13.png",
       "macmarket_screenshot": "visual/XLE_1D_MM_2026_5_13.png",
       "screenshot_notes": "ToS and MM rendered chart visual/manual comparison. No ToS study-row CSV or bars CSV available.",
       "reviewer": "Ry",
-      "reviewed_at": "2026-05-14T00:00:00+00:00"
+      "reviewed_at": "2026-05-14T00:00:00+00:00",
+      "tos_observed_price": {},
+      "macmarket_observed_price": {},
+      "price_close_delta": null,
+      "price_close_tolerance": null,
+      "mm_component_sum": null,
+      "mm_total_score": -30.0,
+      "tos_total_score": -30.0,
+      "composite_score_attribution": {
+        "mm_components": "not observed",
+        "tos_total_score": -30.0,
+        "mm_total_score": -30.0
+      },
+      "diagnostic_flags": {
+        "oscillator_aligned": true,
+        "oscillator_failed": false,
+        "composite_score_failed": false,
+        "price_context_mismatch": false,
+        "label_mismatch": false,
+        "reference_only_hilo_scalar_present": true
+      },
+      "diagnostic_classification": [
+        "oscillator_aligned"
+      ]
     }
   ]
 }

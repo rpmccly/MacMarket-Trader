@@ -153,6 +153,123 @@ sides happen to populate `tos_hilo_elite_scalar`, the validator
 compares them with the configured tolerance. The validator never
 silently compares `tos_hilo_elite_scalar` against `hilo_slowd`.
 
+### Price/bar context (optional, strongly recommended)
+
+Capture an OHLC block on each side when possible:
+
+```json
+"tos_observed_price":       {"open": 84.10, "high": 84.83, "low": 83.92, "close": 84.72},
+"macmarket_observed_price": {"open": 84.10, "high": 84.85, "low": 83.95, "close": 84.96}
+```
+
+Rules:
+
+- Optional fields. Either side may omit them.
+- When both sides supply `close`, the validator compares with
+  tolerance `tolerances.close` (default **0.10** for ETFs/equities).
+- A mismatch adds the reason code
+  `visual_attestation_price_context_mismatch` and the diagnostic
+  `bar_context_mismatch` to the report. By default this does **not**
+  flip the result to failed — if the oscillator/composite fields
+  pass, the validator prefers a warning and surfaces the price
+  divergence clearly so the operator can recapture against the same
+  bar.
+- Set `strict_price_context: true` on the fixture to flip the result
+  to `visual_failed` when the close mismatches. Use this when the
+  operator's intent is to attest both numbers came from the exact
+  same bar; leave it `false` (default) when the operator wants a
+  warning + audit trail without failing the parity comparison.
+- **If the ToS and MacMarket close differ, parity is not
+  apples-to-apples.** Always check the price context before widening
+  any tolerance.
+
+### Composite score attribution (optional, helpful when total_score differs)
+
+When MacMarket shows the composite breakdown, capture every
+component on the MacMarket side:
+
+```json
+"macmarket_observed_latest": {
+  "total_score": 65,
+  "true_momentum_score": 15,
+  "hilo_score": -5,
+  "atr_bias": 5,
+  "macd_bias": 5,
+  "ma_bias": 25
+  // ... usual fields ...
+}
+```
+
+The validator reconstructs MacMarket's component sum:
+
+```
+mm_component_sum =
+  true_momentum_score + hilo_score + atr_bias + macd_bias + ma_bias
+```
+
+and adds a **Composite score attribution** table to the report:
+
+- MacMarket component sum vs reported `total_score`.
+- ToS observed `total_score` vs MacMarket component sum.
+- Diagnostic note when oscillator fields pass but the total_score
+  differs: *"Oscillator fields passed, but total score differs.
+  Review composite component weights, MA bias inclusion, or observed
+  score source."*
+
+ToS rarely exposes the full component breakdown. When ToS only
+provides top-level `total_score`, the validator records it as
+`tos_total_score` and does **not** assume ToS's component formula.
+
+### Diagnostic flags + classification
+
+Every visual_attestation result includes operator-readable
+diagnostics:
+
+| Flag | Meaning |
+|---|---|
+| `oscillator_aligned` | True Momentum + EMA were both compared and both within tolerance |
+| `oscillator_failed` | True Momentum + EMA were compared and at least one failed |
+| `composite_score_failed` | `total_score` failed |
+| `price_context_mismatch` | `close` differs beyond tolerance |
+| `label_mismatch` | At least one label differed |
+| `reference_only_hilo_scalar_present` | ToS `tos_hilo_elite_scalar` recorded with no MM equivalent |
+
+Both `oscillator_aligned` and `oscillator_failed` are `False` when
+the oscillator fields were not on both sides at all (so the operator
+does not have to read "False" as "compared but failed" vs "not
+compared").
+
+The accompanying `diagnostic_classification` bucket list combines
+these into operator-friendly labels: `oscillator_aligned`,
+`oscillator_mismatch`, `composite_mismatch`, `bar_context_mismatch`,
+and `label_mismatch_only`.
+
+### Example: XLP-style classification
+
+XLP (2026-05-13) is the canonical "oscillator aligned, composite
+mismatch" case:
+
+- ToS reads `total_score: 35` / `Neutral`, `true_momentum: 57.1283`,
+  `true_momentum_ema: 54.4013`.
+- MacMarket reads `total_score: 65` / `Neutral Up`,
+  `true_momentum: 58.00`, `true_momentum_ema: 54.45`.
+
+The True Momentum oscillator + EMA fields pass within tolerance, but
+the composite `total_score` and `total_label` diverge. The validator
+classifies the result as `oscillator_aligned`, `composite_mismatch`
+and surfaces the Composite score attribution diagnostic — the
+operator's next step is to review composite weight inputs (MM
+`true_momentum_score`, `hilo_score`, `atr_bias`, `macd_bias`,
+`ma_bias` — pay particular attention to MA bias inclusion) or the
+observed score source, **not** to widen the tolerance. **Do not
+widen tolerance until price context and components are checked.**
+
+Also check the price context: a ToS close around 84.72 versus a
+MacMarket close around 84.96 is a `bar_context_mismatch` candidate
+that may itself explain the score divergence. Capture
+`tos_observed_price.close` + `macmarket_observed_price.close` on the
+fixture and rerun before adjusting anything else.
+
 ### Strict mode
 
 `--strict` requires every declared `visual_attestation` fixture to

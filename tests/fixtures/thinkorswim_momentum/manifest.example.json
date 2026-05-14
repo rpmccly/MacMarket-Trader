@@ -10,7 +10,7 @@
   ],
   "fixtures": [
     {
-      "_comment": "EXAMPLE — visual_attestation mode. No bars_csv or study_csv is required. Operator records ToS rendered chart values AND MacMarket rendered chart values from screenshots. The validator compares ToS vs MM directly. Replace placeholder numbers and screenshot paths with real captures before relying on the parity report.",
+      "_comment": "EXAMPLE — visual_attestation mode. No bars_csv or study_csv is required. Operator records ToS rendered chart values AND MacMarket rendered chart values from screenshots, optional OHLC price context (so apples-to-apples comparisons are explicit), and the MM composite score breakdown when it is visible on the MM chart. Default close tolerance is 0.10; override via tolerances.close. Set strict_price_context: true to make a close-price mismatch flip the fixture to visual_failed; default is false (price mismatch reports as a warning only). Replace placeholder numbers and screenshot paths with real captures before relying on the parity report.",
       "name": "SPY_1D_visual_attestation_example",
       "symbol": "SPY",
       "timeframe": "1D",
@@ -24,6 +24,18 @@
       "macmarket_screenshot": "visual/SPY_1D_MM_2026_5_13.png",
       "screenshot_notes": "Placeholder reference only — capture both rendered charts cropped to the True Momentum Score panel.",
       "notes": "Placeholder visual attestation. Replace ToS and MM values with the actual numbers read off the rendered chart labels.",
+      "tos_observed_price": {
+        "open": 587.10,
+        "high": 590.05,
+        "low": 585.40,
+        "close": 588.72
+      },
+      "macmarket_observed_price": {
+        "open": 587.10,
+        "high": 590.05,
+        "low": 585.40,
+        "close": 588.72
+      },
       "tos_observed_latest": {
         "total_score": 100,
         "total_label": "Max Bull",
@@ -34,17 +46,25 @@
       "macmarket_observed_latest": {
         "total_score": 100,
         "total_label": "Max Bull",
+        "trend_score": 100,
+        "momo_score": 100,
         "true_momentum": 73.51,
         "true_momentum_ema": 60.04,
+        "true_momentum_score": 35,
         "hilo_slowd": 79.15,
         "hilo_slowd_x": 65.96,
         "hilo_score": 20,
+        "atr_bias": 10,
+        "macd_bias": 5,
+        "ma_bias": 30,
         "hilo_thrust_state": "confirmed"
       },
+      "strict_price_context": false,
       "tolerances": {
         "total_score": 2,
         "true_momentum": 1.5,
-        "true_momentum_ema": 1.5
+        "true_momentum_ema": 1.5,
+        "close": 0.10
       }
     },
     {

@@ -79,7 +79,38 @@ STUDY_FIELDS: tuple[str, ...] = (
     # ``hilo_output`` (legacy alias) and from the categorical
     # ``hilo_thrust_state`` label.
     "hilo_score",
+    # Composite component fields the operator reads off MacMarket's
+    # MomentumScoreSnapshot when diagnosing visual_attestation
+    # discrepancies. These are the building blocks of the composite
+    # total score (true_momentum_score + hilo_score + atr_bias +
+    # macd_bias + ma_bias = MM component sum). Compared per-field on
+    # visual_attestation only when both sides supply them.
+    "true_momentum_score",
+    "atr_bias",
+    "macd_bias",
+    "ma_bias",
 )
+
+# Canonical MacMarket composite-score components. The validator sums
+# these on the MacMarket side (when all are present in
+# ``macmarket_observed_latest``) to surface a composite-attribution
+# diagnostic. Order matches the Phase A1 composite formula in
+# ``docs/momentum-intelligence-layer.md``.
+MM_COMPOSITE_COMPONENT_FIELDS: tuple[str, ...] = (
+    "true_momentum_score",
+    "hilo_score",
+    "atr_bias",
+    "macd_bias",
+    "ma_bias",
+)
+
+# Default visual_attestation close-price tolerance. Operator overrides
+# via ``tolerances.close`` per fixture. The default is intentionally
+# conservative — visual reads off a chart can drift by a few cents per
+# pixel; a price-context mismatch beyond this default flags the fixture
+# as not apples-to-apples (warning by default; a strict fail only fires
+# when ``strict_price_context`` is set on the fixture).
+DEFAULT_PRICE_CLOSE_TOLERANCE: float = 0.10
 
 # Reference-only study fields: operators can record observed values
 # for these (so the audit trail captures the rendered ToS reading),
@@ -371,6 +402,19 @@ class ParityFixtureSpec:
     tos_observed_labels: Mapping[str, str]
     macmarket_observed_latest: Mapping[str, float]
     macmarket_observed_labels: Mapping[str, str]
+    # Optional OHLC price context for visual_attestation diagnostics.
+    # Each mapping carries any subset of {open, high, low, close}.
+    # When both sides supply ``close``, the validator compares with
+    # tolerance ``tolerances.close`` (default
+    # :data:`DEFAULT_PRICE_CLOSE_TOLERANCE`).
+    tos_observed_price: Mapping[str, float]
+    macmarket_observed_price: Mapping[str, float]
+    # When True, a close-price mismatch flips the visual_attestation
+    # result to ``visual_failed`` even if every other field passed.
+    # Default False — most operators want price context surfaced as a
+    # warning while the oscillator / composite parity comparison still
+    # makes the call.
+    strict_price_context: bool
     raw: Mapping[str, Any]
 
     @property
@@ -436,6 +480,13 @@ DEFAULT_VISUAL_ATTESTATION_TOLERANCES: Mapping[str, float] = {
     "tos_hilo_elite_scalar": 2.0,
     "hilo_thrust": 5.0,
     "hilo_output": 5.0,
+    # Composite component defaults (each is an integer-ish weighted
+    # contribution). Operators may tighten via ``tolerances`` per
+    # fixture.
+    "true_momentum_score": 5.0,
+    "atr_bias": 5.0,
+    "macd_bias": 5.0,
+    "ma_bias": 5.0,
 }
 
 # Allowed timeframe tokens.
@@ -465,9 +516,15 @@ def _coerce_tolerances(raw: Any, fixture_name: str) -> dict[str, float]:
         raise ParityFixtureError(
             f"fixture {fixture_name!r} tolerances must be a mapping"
         )
+    # Price-context tolerance keys accepted alongside the canonical
+    # study fields. ``close`` is the primary one (default 0.05 for
+    # ETFs/equities); the OHLC siblings are accepted so operators can
+    # tighten any of them per fixture without splitting the tolerances
+    # block.
+    price_tolerance_keys = {"close", "open", "high", "low"}
     out: dict[str, float] = {}
     for key, value in raw.items():
-        if key not in STUDY_FIELDS:
+        if key not in STUDY_FIELDS and key not in price_tolerance_keys:
             raise ParityFixtureError(
                 f"fixture {fixture_name!r} tolerance for unknown field {key!r}"
             )
@@ -492,6 +549,39 @@ def resolve_tolerance(
     if field in DEFAULT_TOLERANCES:
         return float(DEFAULT_TOLERANCES[field])
     return float(default_tolerance)
+
+
+_PRICE_CONTEXT_FIELDS: frozenset[str] = frozenset({"open", "high", "low", "close"})
+
+
+def _coerce_price_context(
+    raw: Any, fixture_name: str, side: str
+) -> dict[str, float]:
+    """Validate a ``tos_observed_price`` / ``macmarket_observed_price``
+    block. Returns ``{}`` when the manifest does not supply one; raises
+    :class:`ParityFixtureError` when the operator provided a malformed
+    block (unknown key, non-numeric value, etc).
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ParityFixtureError(
+            f"fixture {fixture_name!r} {side} must be an object with OHLC fields"
+        )
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if key not in _PRICE_CONTEXT_FIELDS:
+            raise ParityFixtureError(
+                f"fixture {fixture_name!r} {side} key {key!r} is not "
+                "one of open / high / low / close"
+            )
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ParityFixtureError(
+                f"fixture {fixture_name!r} {side}.{key} is not numeric: {value!r}"
+            ) from exc
+    return out
 
 
 def _split_expected(raw: Mapping[str, Any], fixture_name: str) -> tuple[dict[str, float], dict[str, str]]:
@@ -651,6 +741,9 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
         # Parse the visual_attestation observation pair when the mode
         # uses them. Either side may omit fields; the comparison engine
         # skips fields not present in both observations.
+        tos_price_raw = entry.get("tos_observed_price")
+        macmarket_price_raw = entry.get("macmarket_observed_price")
+        strict_price_context = bool(entry.get("strict_price_context", False))
         if parity_mode == "visual_attestation":
             if not isinstance(tos_observed_raw, dict) or not tos_observed_raw:
                 raise ParityFixtureError(
@@ -664,15 +757,27 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 )
             tos_numeric, tos_labels = _split_expected(tos_observed_raw, name)
             mm_numeric, mm_labels = _split_expected(macmarket_observed_raw, name)
+            tos_price = _coerce_price_context(tos_price_raw, name, "tos_observed_price")
+            mm_price = _coerce_price_context(
+                macmarket_price_raw, name, "macmarket_observed_price"
+            )
         else:
             tos_numeric = {}
             tos_labels = {}
             mm_numeric = {}
             mm_labels = {}
+            tos_price = {}
+            mm_price = {}
             if tos_observed_raw is not None or macmarket_observed_raw is not None:
                 raise ParityFixtureError(
                     f"fixture {name!r} declares tos_observed_latest / "
                     "macmarket_observed_latest but parity_mode is not "
+                    "'visual_attestation'"
+                )
+            if tos_price_raw is not None or macmarket_price_raw is not None:
+                raise ParityFixtureError(
+                    f"fixture {name!r} declares tos_observed_price / "
+                    "macmarket_observed_price but parity_mode is not "
                     "'visual_attestation'"
                 )
 
@@ -766,6 +871,9 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 tos_observed_labels=tos_labels,
                 macmarket_observed_latest=mm_numeric,
                 macmarket_observed_labels=mm_labels,
+                tos_observed_price=tos_price,
+                macmarket_observed_price=mm_price,
+                strict_price_context=strict_price_context,
                 raw=entry,
             )
         )
@@ -1029,6 +1137,32 @@ class FixtureComparisonResult:
     screenshot_notes: str | None = None
     reviewer: str | None = None
     reviewed_at: str | None = None
+    # ── visual_attestation price + composite diagnostics ────────────
+    # Operator-entered OHLC blocks (when supplied).
+    tos_observed_price: dict[str, float] = field(default_factory=dict)
+    macmarket_observed_price: dict[str, float] = field(default_factory=dict)
+    # Close-price comparison. ``price_close_delta`` is the absolute
+    # difference; ``price_close_tolerance`` is the tolerance used.
+    price_close_delta: float | None = None
+    price_close_tolerance: float | None = None
+    # MacMarket composite-component sum (when all components present)
+    # alongside the ToS total_score reading. ``mm_total_score_minus_sum``
+    # captures the bookkeeping difference between MM's reported
+    # ``total_score`` and its component sum (should be ~0 unless the
+    # operator misread one component or an intraday penalty applies).
+    mm_component_sum: float | None = None
+    tos_total_score: float | None = None
+    mm_total_score: float | None = None
+    composite_score_attribution: dict[str, Any] = field(default_factory=dict)
+    # Diagnostic surfaces operators can read at a glance.
+    # ``diagnostic_flags`` is the boolean matrix
+    # (oscillator_passed / composite_score_failed / price_context_mismatch
+    # / label_mismatch / reference_only_hilo_scalar_present).
+    # ``diagnostic_classification`` is the human-friendly bucket list
+    # (oscillator_aligned / composite_mismatch / bar_context_mismatch /
+    # label_mismatch_only).
+    diagnostic_flags: dict[str, bool] = field(default_factory=dict)
+    diagnostic_classification: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -1070,6 +1204,16 @@ class FixtureComparisonResult:
             "screenshot_notes": self.screenshot_notes,
             "reviewer": self.reviewer,
             "reviewed_at": self.reviewed_at,
+            "tos_observed_price": dict(self.tos_observed_price),
+            "macmarket_observed_price": dict(self.macmarket_observed_price),
+            "price_close_delta": self.price_close_delta,
+            "price_close_tolerance": self.price_close_tolerance,
+            "mm_component_sum": self.mm_component_sum,
+            "mm_total_score": self.mm_total_score,
+            "tos_total_score": self.tos_total_score,
+            "composite_score_attribution": dict(self.composite_score_attribution),
+            "diagnostic_flags": dict(self.diagnostic_flags),
+            "diagnostic_classification": list(self.diagnostic_classification),
         }
 
 
@@ -1666,6 +1810,160 @@ def _compare_visual_attestation(
         set(common_numeric_fields) | set(common_label_fields)
     )
 
+    # ── Price context + composite attribution diagnostics ───────────
+    tos_price = dict(fixture.tos_observed_price)
+    mm_price = dict(fixture.macmarket_observed_price)
+    price_close_delta: float | None = None
+    price_close_tolerance: float | None = None
+    price_context_mismatch = False
+    if "close" in tos_price and "close" in mm_price:
+        price_close_tolerance = float(
+            fixture.tolerances.get("close", DEFAULT_PRICE_CLOSE_TOLERANCE)
+        )
+        price_close_delta = abs(float(tos_price["close"]) - float(mm_price["close"]))
+        if price_close_delta > price_close_tolerance:
+            price_context_mismatch = True
+            reason_codes.append("visual_attestation_price_context_mismatch")
+
+    # MacMarket component sum (when every component is present on the
+    # MM side). ToS top-level total_score is recorded as-is; the
+    # validator does NOT assume ToS's component formula.
+    mm_components_present = all(
+        component in mm_numeric for component in MM_COMPOSITE_COMPONENT_FIELDS
+    )
+    mm_component_sum: float | None = None
+    if mm_components_present:
+        mm_component_sum = float(
+            sum(mm_numeric[component] for component in MM_COMPOSITE_COMPONENT_FIELDS)
+        )
+
+    mm_total_score = (
+        float(mm_numeric["total_score"]) if "total_score" in mm_numeric else None
+    )
+    tos_total_score = (
+        float(tos_numeric["total_score"]) if "total_score" in tos_numeric else None
+    )
+
+    composite_attribution: dict[str, Any] = {}
+    if mm_components_present:
+        composite_attribution["mm_components"] = {
+            component: float(mm_numeric[component])
+            for component in MM_COMPOSITE_COMPONENT_FIELDS
+        }
+        composite_attribution["mm_component_sum"] = mm_component_sum
+    elif "macmarket_observed_latest" in fixture.raw:
+        composite_attribution["mm_components"] = "not observed"
+    if tos_total_score is not None:
+        composite_attribution["tos_total_score"] = tos_total_score
+    else:
+        composite_attribution["tos_total_score"] = "not observed"
+    if mm_total_score is not None:
+        composite_attribution["mm_total_score"] = mm_total_score
+    if (
+        mm_component_sum is not None
+        and mm_total_score is not None
+    ):
+        composite_attribution["mm_total_score_minus_component_sum"] = (
+            mm_total_score - mm_component_sum
+        )
+    if (
+        mm_component_sum is not None
+        and tos_total_score is not None
+    ):
+        composite_attribution["tos_total_score_minus_mm_component_sum"] = (
+            tos_total_score - mm_component_sum
+        )
+
+    # Diagnostic flags + classification — operator-readable summary of
+    # why a visual_attestation comparison succeeded or failed.
+    oscillator_fields = {"true_momentum", "true_momentum_ema"}
+    oscillator_deltas = [d for d in deltas if d.field in oscillator_fields]
+    oscillator_compared = bool(oscillator_deltas)
+    oscillator_within_tol = oscillator_compared and all(
+        d.within_tolerance for d in oscillator_deltas
+    )
+    oscillator_failed_flag = oscillator_compared and not oscillator_within_tol
+    total_score_delta = next(
+        (d for d in deltas if d.field == "total_score"), None
+    )
+    composite_score_failed = bool(
+        total_score_delta is not None
+        and not total_score_delta.within_tolerance
+    )
+    label_mismatch_flag = bool(label_mismatches)
+    reference_only_hilo_scalar_present = "tos_only" in reference_only_observations
+
+    diagnostic_flags: dict[str, bool] = {
+        # ``oscillator_aligned`` is True only when both oscillator
+        # fields (true_momentum + true_momentum_ema) were compared and
+        # both fell inside tolerance. ``oscillator_failed`` is True when
+        # the oscillator fields were compared and at least one failed
+        # — kept as a separate flag so callers don't have to read False
+        # as "compared but failed" vs "not compared at all".
+        "oscillator_aligned": oscillator_within_tol,
+        "oscillator_failed": oscillator_failed_flag,
+        "composite_score_failed": composite_score_failed,
+        "price_context_mismatch": price_context_mismatch,
+        "label_mismatch": label_mismatch_flag,
+        "reference_only_hilo_scalar_present": reference_only_hilo_scalar_present,
+    }
+
+    classification: list[str] = []
+    if oscillator_within_tol:
+        classification.append("oscillator_aligned")
+    if oscillator_failed_flag:
+        classification.append("oscillator_mismatch")
+    if composite_score_failed:
+        classification.append("composite_mismatch")
+    if price_context_mismatch:
+        classification.append("bar_context_mismatch")
+    if (
+        label_mismatch_flag
+        and not composite_score_failed
+        and oscillator_within_tol
+        and not fixture.label_must_match
+    ):
+        classification.append("label_mismatch_only")
+
+    diagnostics["diagnostic_flags"] = diagnostic_flags
+    diagnostics["diagnostic_classification"] = classification
+    diagnostics["composite_score_attribution"] = composite_attribution
+    if tos_price or mm_price:
+        diagnostics["price_context"] = {
+            "tos_observed_price": tos_price,
+            "macmarket_observed_price": mm_price,
+            "close_delta": price_close_delta,
+            "close_tolerance": price_close_tolerance,
+            "strict_price_context": fixture.strict_price_context,
+        }
+    if oscillator_within_tol and composite_score_failed:
+        diagnostics["composite_mismatch_note"] = (
+            "Oscillator fields passed, but total score differs. Review "
+            "composite component weights, MA bias inclusion, or observed "
+            "score source."
+        )
+
+    # Strict price context: when set on the fixture and the close
+    # prices differ beyond tolerance, the result flips to visual_failed
+    # even if every other field passed. Default behavior keeps the
+    # warning surfaced via reason_codes / classification only.
+    if (
+        price_context_mismatch
+        and fixture.strict_price_context
+        and status == "visual_attested"
+    ):
+        status = "visual_failed"
+        if "thinkorswim_visual_attested" in reason_codes:
+            reason_codes.remove("thinkorswim_visual_attested")
+        if "thinkorswim_visual_attestation_failed" not in reason_codes:
+            reason_codes.append("thinkorswim_visual_attestation_failed")
+        mismatches.append(
+            f"{fixture.name} attestation: close ToS "
+            f"{tos_price.get('close')} vs MM {mm_price.get('close')} "
+            f"differ by {price_close_delta} (tol {price_close_tolerance}) "
+            "and strict_price_context is set"
+        )
+
     return FixtureComparisonResult(
         fixture_name=fixture.name,
         symbol=fixture.symbol,
@@ -1681,6 +1979,16 @@ def _compare_visual_attestation(
         mismatches=mismatches,
         reason_codes=reason_codes,
         diagnostics=diagnostics,
+        tos_observed_price=tos_price,
+        macmarket_observed_price=mm_price,
+        price_close_delta=price_close_delta,
+        price_close_tolerance=price_close_tolerance,
+        mm_component_sum=mm_component_sum,
+        mm_total_score=mm_total_score,
+        tos_total_score=tos_total_score,
+        composite_score_attribution=composite_attribution,
+        diagnostic_flags=diagnostic_flags,
+        diagnostic_classification=classification,
         **visual_metadata,
     )
 
@@ -2141,12 +2449,127 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
             for msg in result.mismatches:
                 lines.append(f"- {msg}")
             lines.append("")
+        if result.parity_mode == "visual_attestation":
+            lines.extend(_render_visual_attestation_attribution(result))
         if result.diagnostics:
             lines.append("Diagnostics:")
             for k, v in result.diagnostics.items():
                 lines.append(f"- `{k}`: {v}")
             lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _render_visual_attestation_attribution(
+    result: FixtureComparisonResult,
+) -> list[str]:
+    """Render the visual_attestation Composite score attribution
+    section (Markdown). Always returns a list of lines suitable to
+    extend the report builder's output — possibly empty when neither
+    price context nor composite components were captured.
+    """
+    has_price = bool(result.tos_observed_price or result.macmarket_observed_price)
+    has_components = bool(
+        result.composite_score_attribution
+        or result.mm_component_sum is not None
+        or result.tos_total_score is not None
+    )
+    if not has_price and not has_components and not result.diagnostic_flags:
+        return []
+    lines: list[str] = ["### Composite score attribution"]
+    lines.append("")
+    if has_price:
+        tos = result.tos_observed_price or {}
+        mm = result.macmarket_observed_price or {}
+        lines.append("Price context:")
+        lines.append("")
+        lines.append("| Field | ToS observed | MacMarket observed |")
+        lines.append("|---|---:|---:|")
+        for ohlc in ("open", "high", "low", "close"):
+            if ohlc in tos or ohlc in mm:
+                tos_v = f"{tos[ohlc]:.4f}" if ohlc in tos else "—"
+                mm_v = f"{mm[ohlc]:.4f}" if ohlc in mm else "—"
+                lines.append(f"| `{ohlc}` | {tos_v} | {mm_v} |")
+        if result.price_close_delta is not None:
+            lines.append(
+                f"| `close_delta` | {result.price_close_delta:.4f} | "
+                f"tolerance {result.price_close_tolerance} |"
+            )
+        lines.append("")
+        if result.diagnostic_flags.get("price_context_mismatch"):
+            lines.append(
+                "_Price context mismatch: ToS close and MacMarket close differ by "
+                "more than the configured tolerance. Parity may not be "
+                "apples-to-apples until the same bar/price is captured._"
+            )
+            lines.append("")
+
+    if has_components:
+        attr = result.composite_score_attribution or {}
+        components = attr.get("mm_components")
+        if isinstance(components, dict):
+            lines.append("MacMarket composite components:")
+            lines.append("")
+            lines.append("| Component | MM value |")
+            lines.append("|---|---:|")
+            for component in MM_COMPOSITE_COMPONENT_FIELDS:
+                value = components.get(component)
+                if isinstance(value, (int, float)):
+                    lines.append(f"| `{component}` | {value} |")
+                else:
+                    lines.append(f"| `{component}` | not observed |")
+            if result.mm_component_sum is not None:
+                lines.append(
+                    f"| **MM component sum** | **{result.mm_component_sum}** |"
+                )
+            lines.append("")
+        elif components == "not observed":
+            lines.append(
+                "_MacMarket composite components were not provided; "
+                "component-sum attribution skipped._"
+            )
+            lines.append("")
+        if result.tos_total_score is not None or result.mm_total_score is not None:
+            lines.append("Total score reconciliation:")
+            lines.append("")
+            lines.append("| Source | total_score |")
+            lines.append("|---|---:|")
+            if result.tos_total_score is not None:
+                lines.append(f"| ToS observed | {result.tos_total_score} |")
+            else:
+                lines.append("| ToS observed | not observed |")
+            if result.mm_total_score is not None:
+                lines.append(f"| MacMarket observed | {result.mm_total_score} |")
+            if result.mm_component_sum is not None:
+                lines.append(
+                    f"| MacMarket component sum | {result.mm_component_sum} |"
+                )
+                if result.tos_total_score is not None:
+                    lines.append(
+                        f"| Δ (ToS − MM sum) | "
+                        f"{result.tos_total_score - result.mm_component_sum} |"
+                    )
+            lines.append("")
+        if result.diagnostic_flags.get(
+            "oscillator_passed"
+        ) and result.diagnostic_flags.get("composite_score_failed"):
+            lines.append(
+                "_Oscillator fields passed, but total score differs. Review "
+                "composite component weights or observed score source._"
+            )
+            lines.append("")
+
+    if result.diagnostic_flags:
+        lines.append("Diagnostic flags:")
+        for flag, value in sorted(result.diagnostic_flags.items()):
+            lines.append(f"- `{flag}`: {bool(value)}")
+        lines.append("")
+    if result.diagnostic_classification:
+        lines.append(
+            "Classification: "
+            + ", ".join(f"`{c}`" for c in result.diagnostic_classification)
+        )
+        lines.append("")
+    return lines
 
 
 def build_thinkorswim_parity_report(
