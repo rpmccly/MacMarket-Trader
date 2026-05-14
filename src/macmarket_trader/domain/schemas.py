@@ -1496,6 +1496,18 @@ class MomentumRankingStatus(BaseModel):
     thinkorswim_parity_last_report_generated_at: str | None = None
     thinkorswim_parity_summary: str | None = None
     thinkorswim_parity_reason_codes: list[str] = Field(default_factory=list)
+    # Visual / manual observation parity mode surface. The validator
+    # accepts manually-transcribed ToS chart-label values as parity
+    # evidence because Thinkorswim does not export the Momentum study
+    # rows. These fields are operator readiness only — they never gate
+    # approval, sizing, or routing.
+    thinkorswim_parity_mode_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    thinkorswim_parity_visual_observation_count: int = 0
+    thinkorswim_parity_exported_study_csv_count: int = 0
+    thinkorswim_parity_visual_observation_passed_count: int = 0
+    thinkorswim_parity_visual_observation_failed_count: int = 0
+    thinkorswim_parity_visual_reviewed: bool = False
+    thinkorswim_parity_exported_study_csv_available: bool = False
 
 
 class MomentumRankingContribution(BaseModel):

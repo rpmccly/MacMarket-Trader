@@ -121,10 +121,12 @@ Under these values:
 
 ## Outstanding items
 
-1. **Real Thinkorswim parity fixtures.** Land measured fixtures in
+1. **Real Thinkorswim parity evidence.** Land measured fixtures in
    `tests/fixtures/thinkorswim_momentum/` and update `manifest.json`.
-   The end-to-end workflow (manifest schema, exports, validator CLI,
-   report interpretation) is documented in
+   Capture Thinkorswim parity evidence, preferably exported bars
+   plus visual/manual study observations because ToS does not export
+   study rows. The end-to-end workflow (manifest schema, capture
+   paths, validator CLI, report interpretation) is documented in
    [`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md).
    The resolved `thinkorswim_parity_workflow_status` is surfaced on
    `MomentumRankingStatus` and rendered in the Settings card.
@@ -137,8 +139,10 @@ Under these values:
    preview-evidence bundle workflow are implemented and disabled by
    default. **Active Phase C strategy generation should wait for the
    accumulated B8 outcome evidence corpus, the real Thinkorswim parity
-   review, and explicit operator authorization before any active
-   Phase C is enabled.**
+   review (visual/manual observations are the accepted operator-
+   reviewed substitute given ToS does not export study rows), and
+   explicit operator authorization before any active Phase C is
+   enabled.**
 4. **Possible Thinkorswim review for XLY / XLE / XLV differences**
    before Phase C activation.
 

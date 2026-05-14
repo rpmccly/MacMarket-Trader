@@ -112,13 +112,58 @@ def _print_human_summary(status: dict, summary) -> None:
         print(f"  report (Markdown) : {status['report_markdown_path']}")
     if status.get("summary"):
         print(f"  summary           : {status['summary']}")
+
+    # Mode summary (visual observations vs exported study CSVs).
+    parity_mode_counts = status.get("parity_mode_counts") or {}
+    visual_count = status.get("visual_observation_count", 0)
+    exported_count = status.get("exported_study_csv_count", 0)
+    visual_passed = status.get("visual_observation_passed_count", 0)
+    visual_failed = status.get("visual_observation_failed_count", 0)
+    exported_bucket = (
+        parity_mode_counts.get("exported_study_csv", {})
+        if isinstance(parity_mode_counts, dict) else {}
+    )
+    exported_passed = exported_bucket.get("passed", 0)
+    exported_failed = exported_bucket.get("failed", 0)
+    print("Mode summary:")
+    print(
+        f"  visual_observation: {visual_count} "
+        f"({visual_passed} passed / {visual_failed} failed)"
+    )
+    print(
+        f"  exported_study_csv: {exported_count} "
+        f"({exported_passed} passed / {exported_failed} failed)"
+    )
+    if visual_count > 0 and exported_count == 0:
+        print(
+            "  parity basis      : visual / manual ToS observations "
+            "(exported study CSV parity unavailable)"
+        )
+
     if summary is not None:
         for result in summary.results:
             marker = {
                 "passed": "PASS",
                 "failed": "FAIL",
             }.get(result.status, result.status.upper())
-            print(f"  - {result.fixture_name} [{result.symbol} {result.timeframe}] {marker}")
+            mode_label = (
+                "VISUAL" if result.parity_mode == "visual_observation" else "STUDYCSV"
+            )
+            print(
+                f"  - {result.fixture_name} [{result.symbol} {result.timeframe}] "
+                f"({mode_label}) {marker}"
+            )
+            if result.is_visual:
+                if result.reviewer:
+                    print(f"      reviewer: {result.reviewer}")
+                if result.observed_bar_date:
+                    print(f"      observed_bar_date: {result.observed_bar_date}")
+                if result.screenshot:
+                    print(f"      screenshot: {result.screenshot}")
+                print(
+                    "      basis: manual visual parity — Thinkorswim does not export "
+                    "the Momentum study rows"
+                )
             for delta in result.field_deltas:
                 ok = "ok" if delta.within_tolerance else "MISS"
                 # ASCII-only to keep the Windows cp1252 console happy.
@@ -135,6 +180,11 @@ def _print_human_summary(status: dict, summary) -> None:
         "\nThis validator is research-only. A parity pass does not approve trades, "
         "auto-activate Phase C, or change any ranking math."
     )
+    if visual_count > 0:
+        print(
+            "Visual observations are operator-entered from rendered Thinkorswim chart "
+            "labels. They are auditable but not row-level CSV exports."
+        )
 
 
 def _resolve_exit_code(status: dict, *, strict: bool) -> int:

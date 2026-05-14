@@ -88,6 +88,13 @@ const REASON_LABELS: Record<string, string> = {
   thinkorswim_parity_passed: "Thinkorswim parity passed",
   thinkorswim_parity_failed: "Thinkorswim parity failed",
   thinkorswim_parity_partial: "Thinkorswim parity partial",
+  // Visual / manual observation parity reason codes.
+  thinkorswim_visual_parity_passed: "Visual parity passed",
+  thinkorswim_visual_parity_failed: "Visual parity failed",
+  thinkorswim_visual_parity_observations_available: "Visual parity observations available",
+  thinkorswim_visual_observation_missing: "Visual observation not yet recorded",
+  thinkorswim_exported_study_csv_unavailable:
+    "Exported study CSV parity unavailable / not provided",
 };
 
 function reasonLabel(code: string): string {
@@ -397,6 +404,13 @@ function ThinkorswimParityWorkflowSection({
   const reasonCodes = status.thinkorswim_parity_reason_codes ?? [];
   const summary = status.thinkorswim_parity_summary ?? null;
   const reportPath = status.thinkorswim_parity_report_path ?? null;
+  const visualCount = status.thinkorswim_parity_visual_observation_count ?? 0;
+  const exportedCount = status.thinkorswim_parity_exported_study_csv_count ?? 0;
+  const visualPassed = status.thinkorswim_parity_visual_observation_passed_count ?? 0;
+  const visualFailed = status.thinkorswim_parity_visual_observation_failed_count ?? 0;
+  const visualReviewed = status.thinkorswim_parity_visual_reviewed === true;
+  const exportedAvailable = status.thinkorswim_parity_exported_study_csv_available === true;
+  const visualOnly = visualCount > 0 && exportedCount === 0;
 
   return (
     <div
@@ -435,6 +449,64 @@ function ThinkorswimParityWorkflowSection({
           <StatusBadge tone="warn">Failed: {fixturesFailed}</StatusBadge>
         ) : null}
       </div>
+
+      <div
+        className="op-row"
+        style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}
+        aria-label="Thinkorswim parity mode counts"
+        data-testid="thinkorswim-parity-mode-counts"
+      >
+        <StatusBadge
+          tone={visualReviewed ? (visualFailed > 0 ? "warn" : "good") : "neutral"}
+          data-testid="thinkorswim-parity-visual-observation-badge"
+        >
+          Visual observations: {visualCount}
+          {visualReviewed ? (
+            <> ({visualPassed} passed{visualFailed > 0 ? ` / ${visualFailed} failed` : ""})</>
+          ) : null}
+        </StatusBadge>
+        <StatusBadge
+          tone={exportedAvailable ? "neutral" : "neutral"}
+          data-testid="thinkorswim-parity-exported-study-csv-badge"
+        >
+          Exported study CSVs: {exportedCount}
+        </StatusBadge>
+        {visualReviewed ? (
+          <StatusBadge tone="neutral" data-testid="thinkorswim-parity-visual-reviewed-badge">
+            Visual reviewed
+          </StatusBadge>
+        ) : null}
+        {workflow === "passed" && visualReviewed ? (
+          <StatusBadge tone="good" data-testid="thinkorswim-parity-visual-passed-badge">
+            Visual parity passed
+          </StatusBadge>
+        ) : null}
+        {workflow === "failed" && visualFailed > 0 ? (
+          <StatusBadge tone="warn" data-testid="thinkorswim-parity-visual-failed-badge">
+            Visual parity failed
+          </StatusBadge>
+        ) : null}
+      </div>
+
+      {visualReviewed ? (
+        <p
+          style={{ ...NOTE_STYLE, margin: 0 }}
+          data-testid="thinkorswim-parity-visual-mode-note"
+        >
+          Visual/manual ToS observations are accepted because Thinkorswim does not export the Momentum study rows.
+          Observations are operator-entered from rendered Thinkorswim chart labels and are auditable but not row-level CSV exports.
+        </p>
+      ) : null}
+
+      {visualOnly ? (
+        <p
+          style={{ ...NOTE_STYLE, margin: 0 }}
+          data-testid="thinkorswim-parity-exported-csv-unavailable-note"
+        >
+          Exported study CSV parity unavailable / not provided. The visual/manual observation set is the parity basis for this run.
+        </p>
+      ) : null}
+
       {summary ? (
         <p
           style={{ ...NOTE_STYLE, margin: 0 }}
@@ -476,9 +548,9 @@ function ThinkorswimParityWorkflowSection({
         style={{ ...NOTE_STYLE, margin: 0 }}
         data-testid="thinkorswim-parity-operator-hint"
       >
-        Export Thinkorswim study CSVs and run{" "}
+        Record ToS chart label values (or drop a study CSV when available) and run{" "}
         <code>python scripts/validate_thinkorswim_momentum_parity.py --write-report</code>{" "}
-        to update this status. A parity pass does not approve, reject, size, or route trades, and does not auto-activate Phase C.
+        to update this status. A visual parity pass does not approve, reject, size, or route trades, and does not auto-activate Phase C.
       </p>
     </div>
   );

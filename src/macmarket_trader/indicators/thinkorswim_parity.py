@@ -256,6 +256,22 @@ def parse_date(value: Any) -> date_cls | None:
 # ── manifest schema ─────────────────────────────────────────────────────────
 
 
+PARITY_MODES: tuple[str, ...] = ("exported_study_csv", "visual_observation")
+
+# Subset of canonical study/label fields the operator is *strongly
+# recommended* to capture from a Thinkorswim rendered chart label when
+# they record a visual observation. The validator does not fail the
+# fixture when these are missing — it surfaces reason codes so the
+# operator can decide whether to widen their visual capture or accept
+# the partial review.
+RECOMMENDED_VISUAL_FIELDS: tuple[str, ...] = (
+    "total_score",
+    "total_label",
+    "true_momentum",
+    "true_momentum_ema",
+)
+
+
 @dataclass(frozen=True)
 class ParityFixtureSpec:
     """Validated single-fixture entry from ``manifest.json``."""
@@ -263,6 +279,7 @@ class ParityFixtureSpec:
     name: str
     symbol: str
     timeframe: str
+    parity_mode: str
     bars_csv: Path
     study_csv: Path | None
     higher_timeframe_bars_csv: Path | None
@@ -273,7 +290,24 @@ class ParityFixtureSpec:
     comparison_window: int
     study_timezone: str
     notes: str | None
+    # ── visual_observation mode fields ────────────────────────────────
+    # Operators capture ToS values manually from a rendered chart. The
+    # validator never falls back to the study CSV in visual mode — the
+    # observation is the source of truth.
+    observed_bar_date: date_cls | None
+    screenshot: str | None
+    screenshot_notes: str | None
+    reviewer: str | None
+    reviewed_at: datetime | None
     raw: Mapping[str, Any]
+
+    @property
+    def is_visual(self) -> bool:
+        return self.parity_mode == "visual_observation"
+
+    @property
+    def is_exported_study_csv(self) -> bool:
+        return self.parity_mode == "exported_study_csv"
 
 
 @dataclass(frozen=True)
@@ -435,12 +469,53 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 f"{sorted(_ALLOWED_TIMEFRAMES)} (got {timeframe!r})"
             )
 
-        expected = entry.get("expected_latest", {})
-        if not isinstance(expected, dict) or not expected:
+        # ``observed_latest`` is the canonical key for visual_observation
+        # mode; ``expected_latest`` is the legacy/exported-study-csv key.
+        # When both are present, prefer ``observed_latest`` and report it
+        # as a manifest validation error so operators don't double-source.
+        observed_raw = entry.get("observed_latest")
+        expected_raw = entry.get("expected_latest")
+        if observed_raw is not None and expected_raw is not None:
             raise ParityFixtureError(
-                f"fixture {name!r} must include a non-empty expected_latest mapping"
+                f"fixture {name!r} declares both 'expected_latest' and "
+                "'observed_latest' — use one (observed_latest for visual_observation)"
             )
-        numeric_expected, label_expected = _split_expected(expected, name)
+        captured_raw = observed_raw if observed_raw is not None else expected_raw
+
+        # Resolve parity_mode. Explicit value wins; otherwise infer from
+        # the manifest shape (backward compatible).
+        explicit_mode_raw = entry.get("parity_mode")
+        if explicit_mode_raw is not None:
+            parity_mode = str(explicit_mode_raw).strip().lower()
+            if parity_mode not in PARITY_MODES:
+                raise ParityFixtureError(
+                    f"fixture {name!r} parity_mode must be one of "
+                    f"{list(PARITY_MODES)} (got {explicit_mode_raw!r})"
+                )
+        else:
+            study_csv_present = entry.get("study_csv") is not None
+            observed_present = observed_raw is not None
+            if observed_present:
+                parity_mode = "visual_observation"
+            elif study_csv_present:
+                parity_mode = "exported_study_csv"
+            else:
+                # Backward compatibility: legacy manifests that only
+                # carry ``expected_latest`` and no study CSV still load
+                # as exported_study_csv mode. The validator simply has
+                # no row-level study CSV to cross-check.
+                parity_mode = "exported_study_csv"
+
+        if not isinstance(captured_raw, dict):
+            captured_raw = {}
+
+        if parity_mode == "exported_study_csv" and not captured_raw:
+            raise ParityFixtureError(
+                f"fixture {name!r} (exported_study_csv) must include a "
+                "non-empty expected_latest mapping"
+            )
+
+        numeric_expected, label_expected = _split_expected(captured_raw, name)
         tolerances = _coerce_tolerances(entry.get("tolerances"), name)
 
         study_csv = entry.get("study_csv")
@@ -460,11 +535,38 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
         label_must_match = bool(entry.get("label_must_match", False))
         study_timezone = str(entry.get("study_timezone", "America/New_York"))
 
+        # Visual observation metadata fields (optional in all modes; the
+        # report only renders them when present).
+        observed_bar_date_raw = entry.get("observed_bar_date") or entry.get("bar_date")
+        observed_bar_date = parse_date(observed_bar_date_raw) if observed_bar_date_raw is not None else None
+        if observed_bar_date_raw is not None and observed_bar_date is None:
+            raise ParityFixtureError(
+                f"fixture {name!r} observed_bar_date {observed_bar_date_raw!r} is not parseable"
+            )
+
+        screenshot_raw = entry.get("screenshot")
+        screenshot = str(screenshot_raw).strip() if isinstance(screenshot_raw, str) and screenshot_raw.strip() else None
+        screenshot_notes_raw = entry.get("screenshot_notes")
+        screenshot_notes = (
+            str(screenshot_notes_raw).strip()
+            if isinstance(screenshot_notes_raw, str) and screenshot_notes_raw.strip()
+            else None
+        )
+        reviewer_raw = entry.get("reviewer")
+        reviewer = str(reviewer_raw).strip() if isinstance(reviewer_raw, str) and reviewer_raw.strip() else None
+        reviewed_at_raw = entry.get("reviewed_at")
+        reviewed_at = parse_datetime(reviewed_at_raw) if reviewed_at_raw is not None else None
+        if reviewed_at_raw is not None and reviewed_at is None:
+            raise ParityFixtureError(
+                f"fixture {name!r} reviewed_at {reviewed_at_raw!r} is not parseable"
+            )
+
         specs.append(
             ParityFixtureSpec(
                 name=name,
                 symbol=str(entry["symbol"]).strip().upper(),
                 timeframe=timeframe,
+                parity_mode=parity_mode,
                 bars_csv=(base_dir / str(entry["bars_csv"])).resolve(),
                 study_csv=(base_dir / str(study_csv)).resolve() if study_csv else None,
                 higher_timeframe_bars_csv=(
@@ -477,6 +579,11 @@ def load_thinkorswim_manifest(manifest_path: Path) -> ParityManifest:
                 comparison_window=comparison_window,
                 study_timezone=study_timezone,
                 notes=notes,
+                observed_bar_date=observed_bar_date,
+                screenshot=screenshot,
+                screenshot_notes=screenshot_notes,
+                reviewer=reviewer,
+                reviewed_at=reviewed_at,
                 raw=entry,
             )
         )
@@ -705,12 +812,24 @@ class FieldDelta:
 
 @dataclass
 class FixtureComparisonResult:
-    """Result of running MacMarket Momentum against a single fixture."""
+    """Result of running MacMarket Momentum against a single fixture.
+
+    ``parity_mode`` records which fixture mode the result came from:
+
+    - ``exported_study_csv`` — operator supplied a Thinkorswim study CSV
+      (or an ``expected_latest`` block derived from one). Numeric deltas
+      are validated against tolerances; the study CSV last row is used
+      as an optional cross-check.
+    - ``visual_observation`` — operator manually transcribed values from
+      a rendered Thinkorswim chart label. The validator never auto-loads
+      a study CSV in this mode; the observation is the source of truth.
+    """
 
     fixture_name: str
     symbol: str
     timeframe: str
-    status: str  # passed | failed | skipped_missing_data | skipped_not_enough_history | skipped_manifest_missing
+    parity_mode: str
+    status: str
     rows_compared: int
     higher_timeframe_source: str | None
     parity_status: str | None
@@ -720,16 +839,28 @@ class FixtureComparisonResult:
     mismatches: list[str] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    # Optional visual-observation metadata. Echoed into the report so
+    # the audit trail records the operator + screenshot + observed bar.
+    observed_bar_date: str | None = None
+    screenshot: str | None = None
+    screenshot_notes: str | None = None
+    reviewer: str | None = None
+    reviewed_at: str | None = None
 
     @property
     def passed(self) -> bool:
         return self.status == "passed"
+
+    @property
+    def is_visual(self) -> bool:
+        return self.parity_mode == "visual_observation"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "fixture_name": self.fixture_name,
             "symbol": self.symbol,
             "timeframe": self.timeframe,
+            "parity_mode": self.parity_mode,
             "status": self.status,
             "rows_compared": self.rows_compared,
             "higher_timeframe_source": self.higher_timeframe_source,
@@ -750,6 +881,11 @@ class FixtureComparisonResult:
             "mismatches": list(self.mismatches),
             "reason_codes": list(self.reason_codes),
             "diagnostics": dict(self.diagnostics),
+            "observed_bar_date": self.observed_bar_date,
+            "screenshot": self.screenshot,
+            "screenshot_notes": self.screenshot_notes,
+            "reviewer": self.reviewer,
+            "reviewed_at": self.reviewed_at,
         }
 
 
@@ -774,7 +910,44 @@ def compare_momentum_to_thinkorswim(
     settles trades. It only computes the deterministic Momentum
     payload and reports whether it agrees with the operator-supplied
     Thinkorswim values within tolerance.
+
+    Two modes are supported:
+
+    - ``exported_study_csv`` — the operator dropped a Thinkorswim study
+      CSV. The validator parses the CSV's last row and cross-checks it
+      against the manifest's ``expected_latest`` block.
+    - ``visual_observation`` — the operator manually transcribed
+      Thinkorswim's rendered chart labels into the manifest's
+      ``observed_latest``/``expected_latest`` block. The validator never
+      auto-loads a study CSV in this mode (Thinkorswim does not export
+      the Momentum study rows) and surfaces explicit reason codes
+      labelling the comparison basis as visual/manual.
     """
+    visual_metadata = _visual_metadata_for_result(fixture)
+
+    if fixture.is_visual and not fixture.expected_latest and not fixture.expected_labels:
+        return FixtureComparisonResult(
+            fixture_name=fixture.name,
+            symbol=fixture.symbol,
+            timeframe=fixture.timeframe,
+            parity_mode=fixture.parity_mode,
+            status="skipped_missing_observation",
+            rows_compared=0,
+            higher_timeframe_source=None,
+            parity_status=None,
+            derived_higher_timeframe=False,
+            reason_codes=[
+                "thinkorswim_visual_observation_missing",
+                "thinkorswim_parity_pending",
+            ],
+            diagnostics={
+                "mode": "visual_observation",
+                "source": "operator-read Thinkorswim rendered chart labels",
+                "note": "no observed values recorded yet",
+            },
+            **visual_metadata,
+        )
+
     if bars is None:
         try:
             bars = parse_thinkorswim_bars_csv(fixture.bars_csv)
@@ -783,6 +956,7 @@ def compare_momentum_to_thinkorswim(
                 fixture_name=fixture.name,
                 symbol=fixture.symbol,
                 timeframe=fixture.timeframe,
+                parity_mode=fixture.parity_mode,
                 status="skipped_missing_data",
                 rows_compared=0,
                 higher_timeframe_source=None,
@@ -790,6 +964,7 @@ def compare_momentum_to_thinkorswim(
                 derived_higher_timeframe=False,
                 reason_codes=["thinkorswim_fixture_files_missing"],
                 diagnostics={"error": str(exc)},
+                **visual_metadata,
             )
 
     htf_bars = higher_timeframe_bars
@@ -801,6 +976,7 @@ def compare_momentum_to_thinkorswim(
                 fixture_name=fixture.name,
                 symbol=fixture.symbol,
                 timeframe=fixture.timeframe,
+                parity_mode=fixture.parity_mode,
                 status="skipped_missing_data",
                 rows_compared=0,
                 higher_timeframe_source=None,
@@ -808,6 +984,7 @@ def compare_momentum_to_thinkorswim(
                 derived_higher_timeframe=False,
                 reason_codes=["thinkorswim_fixture_files_missing"],
                 diagnostics={"error": str(exc)},
+                **visual_metadata,
             )
 
     if not bars:
@@ -815,6 +992,7 @@ def compare_momentum_to_thinkorswim(
             fixture_name=fixture.name,
             symbol=fixture.symbol,
             timeframe=fixture.timeframe,
+            parity_mode=fixture.parity_mode,
             status="skipped_not_enough_history",
             rows_compared=0,
             higher_timeframe_source=None,
@@ -822,6 +1000,7 @@ def compare_momentum_to_thinkorswim(
             derived_higher_timeframe=False,
             reason_codes=["thinkorswim_fixture_validation_failed"],
             diagnostics={"error": "bars CSV produced zero rows"},
+            **visual_metadata,
         )
 
     # Lazy import to keep the module light when called purely for status.
@@ -841,6 +1020,7 @@ def compare_momentum_to_thinkorswim(
             fixture_name=fixture.name,
             symbol=fixture.symbol,
             timeframe=fixture.timeframe,
+            parity_mode=fixture.parity_mode,
             status="skipped_not_enough_history",
             rows_compared=0,
             higher_timeframe_source=payload.higher_timeframe_source,
@@ -848,6 +1028,7 @@ def compare_momentum_to_thinkorswim(
             derived_higher_timeframe=payload.higher_timeframe_source != "provided_higher_timeframe_bars",
             reason_codes=["thinkorswim_fixture_validation_failed"],
             diagnostics={"error": "payload.latest_snapshot is None"},
+            **visual_metadata,
         )
 
     actual: dict[str, float] = {
@@ -859,6 +1040,33 @@ def compare_momentum_to_thinkorswim(
         "trend_score": float(snapshot.trend_score),
         "momo_score": float(snapshot.momo_score),
     }
+
+    diagnostics: dict[str, Any] = {
+        "bars_loaded": len(list(bars)),
+        "comparison_window_requested": fixture.comparison_window,
+        "mode": fixture.parity_mode,
+    }
+    if fixture.is_visual:
+        diagnostics["source"] = "operator-read Thinkorswim rendered chart labels"
+        diagnostics["parity_basis"] = (
+            "manual visual parity — Thinkorswim does not export the Momentum study rows"
+        )
+
+    # Align to observed_bar_date when provided. We always compare the
+    # latest snapshot; an aligned bar that does not match the operator's
+    # observed bar surfaces as a diagnostic so the operator can re-slice
+    # the bars CSV. We never silently switch which bar we evaluate.
+    bars_sorted = sorted(bars, key=lambda b: b.date)
+    latest_bar_date = bars_sorted[-1].date if bars_sorted else None
+    if fixture.observed_bar_date is not None and latest_bar_date is not None:
+        diagnostics["observed_bar_date"] = fixture.observed_bar_date.isoformat()
+        diagnostics["latest_bar_date"] = latest_bar_date.isoformat()
+        if latest_bar_date != fixture.observed_bar_date:
+            diagnostics["observed_bar_date_alignment"] = (
+                "observed_bar_date does not match the bars CSV last row — "
+                "re-slice the bars CSV so the last row matches the visually "
+                "observed Thinkorswim bar"
+            )
 
     deltas: list[FieldDelta] = []
     mismatches: list[str] = []
@@ -911,14 +1119,22 @@ def compare_momentum_to_thinkorswim(
                     mismatches.append(msg)
 
     # Optional cross-check against the operator's study CSV last row.
+    # Only honored in ``exported_study_csv`` mode. Visual observations
+    # do not consult a study CSV because Thinkorswim does not export the
+    # Momentum study output.
     study_rows_loaded: list[Mapping[str, Any]] = list(study_rows) if study_rows is not None else []
-    if not study_rows_loaded and fixture.study_csv is not None and fixture.study_csv.exists():
+    if (
+        fixture.is_exported_study_csv
+        and not study_rows_loaded
+        and fixture.study_csv is not None
+        and fixture.study_csv.exists()
+    ):
         try:
             study_rows_loaded = parse_thinkorswim_study_csv(fixture.study_csv)
         except ParityFixtureError as exc:
             mismatches.append(f"{fixture.name} study CSV: {exc}")
 
-    if study_rows_loaded:
+    if fixture.is_exported_study_csv and study_rows_loaded:
         latest = latest_study_row(study_rows_loaded)
         study_subset = {
             key: float(value)
@@ -942,14 +1158,24 @@ def compare_momentum_to_thinkorswim(
     reason_codes: list[str]
     if status == "passed":
         reason_codes = ["thinkorswim_parity_passed"]
+        if fixture.is_visual:
+            reason_codes.append("thinkorswim_visual_parity_passed")
     else:
         reason_codes = ["thinkorswim_parity_failed"]
+        if fixture.is_visual:
+            reason_codes.append("thinkorswim_visual_parity_failed")
 
-    diagnostics: dict[str, Any] = {
-        "bars_loaded": len(list(bars)),
-        "study_rows_loaded": len(study_rows_loaded),
-        "comparison_window_requested": fixture.comparison_window,
-    }
+    # Recommended-field reason codes for visual mode (advisory only —
+    # they never flip the status to failed).
+    if fixture.is_visual:
+        provided_fields = set(fixture.expected_latest) | set(fixture.expected_labels)
+        for recommended in RECOMMENDED_VISUAL_FIELDS:
+            if recommended not in provided_fields:
+                code = f"thinkorswim_visual_observation_missing_{recommended}"
+                if code not in reason_codes:
+                    reason_codes.append(code)
+
+    diagnostics["study_rows_loaded"] = len(study_rows_loaded)
     if fixture.notes:
         diagnostics["notes"] = fixture.notes
     if derived_htf and fixture.timeframe == "1W":
@@ -962,6 +1188,7 @@ def compare_momentum_to_thinkorswim(
         fixture_name=fixture.name,
         symbol=fixture.symbol,
         timeframe=fixture.timeframe,
+        parity_mode=fixture.parity_mode,
         status=status,
         rows_compared=rows_compared,
         higher_timeframe_source=payload.higher_timeframe_source,
@@ -972,7 +1199,27 @@ def compare_momentum_to_thinkorswim(
         mismatches=mismatches,
         reason_codes=reason_codes,
         diagnostics=diagnostics,
+        **visual_metadata,
     )
+
+
+def _visual_metadata_for_result(fixture: ParityFixtureSpec) -> dict[str, Any]:
+    """Return the visual-observation metadata kwargs for a result.
+
+    Always returns string-or-None values so the dict can be unpacked
+    into :class:`FixtureComparisonResult` regardless of mode.
+    """
+    return {
+        "observed_bar_date": (
+            fixture.observed_bar_date.isoformat() if fixture.observed_bar_date else None
+        ),
+        "screenshot": fixture.screenshot,
+        "screenshot_notes": fixture.screenshot_notes,
+        "reviewer": fixture.reviewer,
+        "reviewed_at": (
+            fixture.reviewed_at.isoformat() if fixture.reviewed_at else None
+        ),
+    }
 
 
 # ── folder validation ──────────────────────────────────────────────────────
@@ -1140,6 +1387,54 @@ class ParityReportSummary:
             return "partial"
         return "passed"
 
+    @property
+    def mode_counts(self) -> dict[str, dict[str, int]]:
+        """Return per-mode pass/fail/skipped counts.
+
+        Shape::
+
+            {
+                "visual_observation": {"total": N, "passed": x, "failed": y, "skipped": z},
+                "exported_study_csv": {"total": N, "passed": x, "failed": y, "skipped": z},
+            }
+        """
+        counts: dict[str, dict[str, int]] = {
+            mode: {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+            for mode in PARITY_MODES
+        }
+        for result in self.results:
+            bucket = counts.setdefault(
+                result.parity_mode, {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+            )
+            bucket["total"] += 1
+            if result.status == "passed":
+                bucket["passed"] += 1
+            elif result.status == "failed":
+                bucket["failed"] += 1
+            else:
+                bucket["skipped"] += 1
+        return counts
+
+    @property
+    def visual_observation_count(self) -> int:
+        return self.mode_counts.get("visual_observation", {}).get("total", 0)
+
+    @property
+    def exported_study_csv_count(self) -> int:
+        return self.mode_counts.get("exported_study_csv", {}).get("total", 0)
+
+    @property
+    def visual_observation_passed_count(self) -> int:
+        return self.mode_counts.get("visual_observation", {}).get("passed", 0)
+
+    @property
+    def visual_observation_failed_count(self) -> int:
+        return self.mode_counts.get("visual_observation", {}).get("failed", 0)
+
+    @property
+    def visual_reviewed(self) -> bool:
+        return self.visual_observation_count > 0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
@@ -1152,8 +1447,24 @@ class ParityReportSummary:
             "fixtures_failed": self.fixtures_failed,
             "fixtures_skipped": self.fixtures_skipped,
             "overall_status": self.overall_status,
+            "parity_mode_counts": self.mode_counts,
+            "visual_observation_count": self.visual_observation_count,
+            "exported_study_csv_count": self.exported_study_csv_count,
+            "visual_observation_passed_count": self.visual_observation_passed_count,
+            "visual_observation_failed_count": self.visual_observation_failed_count,
+            "visual_reviewed": self.visual_reviewed,
             "results": [r.to_dict() for r in self.results],
         }
+
+
+_MODE_LABEL: dict[str, str] = {
+    "exported_study_csv": "exported study CSV",
+    "visual_observation": "visual observation",
+}
+
+
+def _mode_label(parity_mode: str) -> str:
+    return _MODE_LABEL.get(parity_mode, parity_mode)
 
 
 def _render_report_markdown(summary: ParityReportSummary) -> str:
@@ -1170,6 +1481,29 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
     lines.append(f"- Fixtures skipped: {summary.fixtures_skipped}")
     lines.append(f"- Overall status: `{summary.overall_status}`")
     lines.append("")
+    lines.append("## Mode summary")
+    lines.append("")
+    visual_counts = summary.mode_counts.get("visual_observation", {})
+    exported_counts = summary.mode_counts.get("exported_study_csv", {})
+    lines.append(
+        f"- visual_observation: {visual_counts.get('total', 0)} "
+        f"({visual_counts.get('passed', 0)} passed / "
+        f"{visual_counts.get('failed', 0)} failed / "
+        f"{visual_counts.get('skipped', 0)} skipped)"
+    )
+    lines.append(
+        f"- exported_study_csv: {exported_counts.get('total', 0)} "
+        f"({exported_counts.get('passed', 0)} passed / "
+        f"{exported_counts.get('failed', 0)} failed / "
+        f"{exported_counts.get('skipped', 0)} skipped)"
+    )
+    lines.append("")
+    lines.append(
+        "_Visual observations are operator-entered from rendered Thinkorswim chart labels. "
+        "They are auditable but not row-level CSV exports — Thinkorswim does not export "
+        "the Momentum study output._"
+    )
+    lines.append("")
     lines.append(
         "_This report is operator readiness context only. It does not approve, "
         "reject, size, or route trades, and a parity pass does not auto-activate "
@@ -1179,9 +1513,31 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
     if not summary.results:
         lines.append("No fixture results — drop Thinkorswim CSV exports and rerun.")
         return "\n".join(lines) + "\n"
+
+    # Fixture summary table.
+    lines.append("## Fixture summary")
+    lines.append("")
+    lines.append("| Fixture | Symbol | Timeframe | Mode | Bar | Status |")
+    lines.append("|---|---|---|---|---|---|")
+    for result in summary.results:
+        bar_cell = result.observed_bar_date or "—"
+        lines.append(
+            f"| `{result.fixture_name}` | `{result.symbol}` | `{result.timeframe}` | "
+            f"`{result.parity_mode}` | `{bar_cell}` | `{result.status}` |"
+        )
+    lines.append("")
+
     for result in summary.results:
         lines.append(f"## {result.fixture_name} — `{result.status}`")
         lines.append("")
+        lines.append(f"- Mode: {_mode_label(result.parity_mode)}")
+        if result.is_visual:
+            lines.append(
+                "- Source: operator-read Thinkorswim rendered chart labels"
+            )
+            lines.append(
+                "- This is manual visual parity, not exported study-row parity."
+            )
         lines.append(f"- Symbol: `{result.symbol}`")
         lines.append(f"- Timeframe: `{result.timeframe}`")
         lines.append(f"- Rows compared: {result.rows_compared}")
@@ -1192,9 +1548,22 @@ def _render_report_markdown(summary: ParityReportSummary) -> str:
                 "rather than supplied as a separate weekly Thinkorswim export."
             )
         lines.append(f"- Parity status: `{result.parity_status}`")
+        if result.observed_bar_date:
+            lines.append(f"- Observed bar date: `{result.observed_bar_date}`")
+        if result.reviewer:
+            lines.append(f"- Reviewer: {result.reviewer}")
+        if result.reviewed_at:
+            lines.append(f"- Reviewed at: `{result.reviewed_at}`")
+        if result.screenshot:
+            lines.append(f"- Screenshot: `{result.screenshot}`")
+        if result.screenshot_notes:
+            lines.append(f"- Screenshot notes: {result.screenshot_notes}")
         lines.append("")
         if result.field_deltas:
-            lines.append("| Field | Expected | Actual | abs_error | Tolerance | OK? |")
+            label = "Observed" if result.is_visual else "Expected"
+            lines.append(
+                f"| Field | {label} | MacMarket | abs_error | Tolerance | OK? |"
+            )
             lines.append("|---|---:|---:|---:|---:|:---:|")
             for delta in result.field_deltas:
                 ok = "ok" if delta.within_tolerance else "MISS"
@@ -1270,6 +1639,7 @@ def build_thinkorswim_parity_report(
                     fixture_name="<manifest>",
                     symbol="",
                     timeframe="",
+                    parity_mode="exported_study_csv",
                     status="skipped_manifest_missing",
                     rows_compared=0,
                     higher_timeframe_source=None,
@@ -1326,6 +1696,27 @@ def _write_report_files(fixture_dir: Path, summary: ParityReportSummary) -> tupl
 # ── status builder ─────────────────────────────────────────────────────────
 
 
+def _scan_manifest_mode_counts(manifest_path: Path) -> dict[str, int]:
+    """Cheap helper: count declared parity_mode per fixture without
+    running indicator math. Returns zeros when the manifest is missing
+    or invalid — callers fall back to the report payload counts when
+    a parity report is available.
+    """
+    counts = {"visual_observation": 0, "exported_study_csv": 0}
+    if not manifest_path.exists():
+        return counts
+    try:
+        manifest = load_thinkorswim_manifest(manifest_path)
+    except ParityFixtureError:
+        return counts
+    for spec in manifest.fixtures:
+        if spec.parity_mode in counts:
+            counts[spec.parity_mode] += 1
+        else:
+            counts[spec.parity_mode] = counts.get(spec.parity_mode, 0) + 1
+    return counts
+
+
 def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any]:
     """Read-only status helper for the Settings card.
 
@@ -1342,6 +1733,15 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
     - ``passed``  — last parity report says every fixture passed.
     - ``failed``  — last parity report flagged at least one failure.
     - ``pending`` — legacy fallback when none of the above apply.
+
+    Visual-observation fields surfaced for the Settings card:
+
+    - ``parity_mode_counts``                 — per-mode pass/fail/skipped totals.
+    - ``visual_observation_count``           — total visual-observation fixtures.
+    - ``exported_study_csv_count``           — total exported-study-CSV fixtures.
+    - ``visual_observation_passed_count``    — visual fixtures that passed.
+    - ``visual_observation_failed_count``    — visual fixtures that failed.
+    - ``visual_reviewed``                    — at least one visual observation declared.
     """
     fixture_dir = Path(fixture_dir)
     validation = validate_thinkorswim_fixture_folder(fixture_dir)
@@ -1370,6 +1770,60 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
             fixtures_skipped = report_payload.get("fixtures_skipped")
             overall_status_from_report = report_payload.get("overall_status")
 
+    # Resolve per-mode counts. Prefer the report (post-run, authoritative)
+    # over the manifest scan (pre-run, declared mode only). When neither
+    # is available, fall back to zeros so the Settings card can still
+    # render a coherent shape.
+    manifest_path = fixture_dir / "manifest.json"
+    manifest_mode_counts = _scan_manifest_mode_counts(manifest_path)
+    report_mode_counts: dict[str, dict[str, int]] | None = None
+    visual_count = manifest_mode_counts.get("visual_observation", 0)
+    exported_count = manifest_mode_counts.get("exported_study_csv", 0)
+    visual_passed = 0
+    visual_failed = 0
+    if isinstance(report_payload, dict):
+        raw_mode_counts = report_payload.get("parity_mode_counts")
+        if isinstance(raw_mode_counts, dict):
+            normalized: dict[str, dict[str, int]] = {}
+            for mode, bucket in raw_mode_counts.items():
+                if not isinstance(bucket, dict):
+                    continue
+                normalized[str(mode)] = {
+                    "total": int(bucket.get("total") or 0),
+                    "passed": int(bucket.get("passed") or 0),
+                    "failed": int(bucket.get("failed") or 0),
+                    "skipped": int(bucket.get("skipped") or 0),
+                }
+            report_mode_counts = normalized or None
+        if report_mode_counts is not None:
+            visual_bucket = report_mode_counts.get("visual_observation", {})
+            exported_bucket = report_mode_counts.get("exported_study_csv", {})
+            visual_count = visual_bucket.get("total", visual_count)
+            exported_count = exported_bucket.get("total", exported_count)
+            visual_passed = visual_bucket.get("passed", 0)
+            visual_failed = visual_bucket.get("failed", 0)
+        else:
+            visual_count = report_payload.get("visual_observation_count", visual_count)
+            exported_count = report_payload.get("exported_study_csv_count", exported_count)
+            visual_passed = int(report_payload.get("visual_observation_passed_count") or 0)
+            visual_failed = int(report_payload.get("visual_observation_failed_count") or 0)
+    parity_mode_counts: dict[str, dict[str, int]] = report_mode_counts or {
+        "visual_observation": {
+            "total": manifest_mode_counts.get("visual_observation", 0),
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+        },
+        "exported_study_csv": {
+            "total": manifest_mode_counts.get("exported_study_csv", 0),
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+        },
+    }
+
+    visual_only = visual_count > 0 and exported_count == 0
+
     # Derive workflow status.
     reason_codes: list[str] = []
     if not validation.manifest_present:
@@ -1388,15 +1842,24 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
         if overall_status_from_report == "passed":
             status = "passed"
             reason_codes.append("thinkorswim_parity_passed")
+            if visual_passed > 0:
+                reason_codes.append("thinkorswim_visual_parity_passed")
         elif overall_status_from_report == "failed":
             status = "failed"
             reason_codes.append("thinkorswim_parity_failed")
+            if visual_failed > 0:
+                reason_codes.append("thinkorswim_visual_parity_failed")
         else:
             status = "partial"
             reason_codes.append("thinkorswim_parity_partial")
     else:
         status = "ready"
         reason_codes.append("thinkorswim_parity_pending")
+
+    if visual_count > 0:
+        reason_codes.append("thinkorswim_visual_parity_observations_available")
+    if visual_only:
+        reason_codes.append("thinkorswim_exported_study_csv_unavailable")
 
     if status == "missing":
         summary_text = "Drop Thinkorswim CSV exports and a manifest.json to begin parity validation."
@@ -1410,8 +1873,14 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
             f"{validation.fixtures_total} fixture(s) staged. Run the parity validator to produce a report."
         )
     elif status == "passed":
+        basis = (
+            "visual / manual observation"
+            if visual_only
+            else ("mixed visual + exported study CSV" if visual_count > 0 else "exported study CSV")
+        )
         summary_text = (
-            f"Parity passed for {fixtures_passed}/{validation.fixtures_total} fixtures."
+            f"Parity passed for {fixtures_passed}/{validation.fixtures_total} fixtures "
+            f"(basis: {basis})."
         )
     elif status == "failed":
         summary_text = (
@@ -1435,6 +1904,13 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
         "reason_codes": reason_codes,
         "summary": summary_text,
         "overall_status_from_report": overall_status_from_report,
+        "parity_mode_counts": parity_mode_counts,
+        "visual_observation_count": visual_count,
+        "exported_study_csv_count": exported_count,
+        "visual_observation_passed_count": visual_passed,
+        "visual_observation_failed_count": visual_failed,
+        "visual_reviewed": visual_count > 0,
+        "exported_study_csv_available": exported_count > 0,
     }
 
 
@@ -1445,11 +1921,13 @@ __all__ = [
     "FixtureFolderValidation",
     "FixtureReadiness",
     "LABEL_FIELDS",
+    "PARITY_MODES",
     "ParityFixtureError",
     "ParityFixtureSpec",
     "ParityManifest",
     "ParityReportSummary",
     "RECOMMENDED_STUDY_NAMES",
+    "RECOMMENDED_VISUAL_FIELDS",
     "REPORT_FILENAME_JSON",
     "REPORT_FILENAME_MD",
     "REPORT_SCHEMA_VERSION",

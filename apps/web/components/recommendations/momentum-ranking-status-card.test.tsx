@@ -404,4 +404,125 @@ describe("MomentumRankingStatusCard", () => {
     // A parity pass surfaces explicit non-activation copy.
     expect(html).toContain("does not auto-activate phase c");
   });
+
+  // ── Visual / manual observation parity mode rendering ─────────────
+
+  it("renders visual_observation mode counts when present", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "ready",
+          thinkorswim_parity_fixture_count: 2,
+          thinkorswim_parity_fixtures_ready: 2,
+          thinkorswim_parity_visual_observation_count: 2,
+          thinkorswim_parity_exported_study_csv_count: 0,
+          thinkorswim_parity_visual_reviewed: true,
+          thinkorswim_parity_exported_study_csv_available: false,
+          thinkorswim_parity_reason_codes: [
+            "thinkorswim_parity_pending",
+            "thinkorswim_visual_parity_observations_available",
+            "thinkorswim_exported_study_csv_unavailable",
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-observation-badge"');
+    expect(html).toContain("Visual observations: 2");
+    expect(html).toContain('data-testid="thinkorswim-parity-exported-study-csv-badge"');
+    expect(html).toContain("Exported study CSVs: 0");
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-reviewed-badge"');
+    expect(html).toContain("Visual/manual ToS observations are accepted");
+    expect(html).toContain("Exported study CSV parity unavailable");
+    expect(html).toContain("Visual parity observations available");
+    expect(html).toContain("Exported study CSV parity unavailable / not provided");
+  });
+
+  it("renders visual_passed badge when the visual parity report passes", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixture_count: 3,
+          thinkorswim_parity_fixtures_ready: 3,
+          thinkorswim_parity_fixtures_passed: 3,
+          thinkorswim_parity_fixtures_failed: 0,
+          thinkorswim_parity_visual_observation_count: 3,
+          thinkorswim_parity_visual_observation_passed_count: 3,
+          thinkorswim_parity_visual_observation_failed_count: 0,
+          thinkorswim_parity_visual_reviewed: true,
+          thinkorswim_parity_exported_study_csv_count: 0,
+          thinkorswim_parity_report_available: true,
+          thinkorswim_parity_reason_codes: [
+            "thinkorswim_parity_passed",
+            "thinkorswim_visual_parity_passed",
+            "thinkorswim_exported_study_csv_unavailable",
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-passed-badge"');
+    expect(html).toContain("Visual parity passed");
+  });
+
+  it("renders visual_failed badge when the visual parity report fails", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "failed",
+          thinkorswim_parity_fixture_count: 3,
+          thinkorswim_parity_fixtures_ready: 3,
+          thinkorswim_parity_fixtures_passed: 2,
+          thinkorswim_parity_fixtures_failed: 1,
+          thinkorswim_parity_visual_observation_count: 3,
+          thinkorswim_parity_visual_observation_passed_count: 2,
+          thinkorswim_parity_visual_observation_failed_count: 1,
+          thinkorswim_parity_visual_reviewed: true,
+          thinkorswim_parity_exported_study_csv_count: 0,
+          thinkorswim_parity_report_available: true,
+          thinkorswim_parity_reason_codes: [
+            "thinkorswim_parity_failed",
+            "thinkorswim_visual_parity_failed",
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-failed-badge"');
+    expect(html).toContain("Visual parity failed");
+  });
+
+  it("renders exported_study_csv mode counts when only exported CSV fixtures are present", () => {
+    const html = renderToStaticMarkup(
+      <MomentumRankingStatusCard
+        status={shadowStatus({
+          thinkorswim_parity_workflow_status: "passed",
+          thinkorswim_parity_fixture_count: 2,
+          thinkorswim_parity_fixtures_ready: 2,
+          thinkorswim_parity_fixtures_passed: 2,
+          thinkorswim_parity_visual_observation_count: 0,
+          thinkorswim_parity_exported_study_csv_count: 2,
+          thinkorswim_parity_visual_reviewed: false,
+          thinkorswim_parity_exported_study_csv_available: true,
+          thinkorswim_parity_report_available: true,
+        })}
+      />,
+    );
+    expect(html).toContain("Visual observations: 0");
+    expect(html).toContain("Exported study CSVs: 2");
+    // Visual reviewed badge should NOT render when no visual observations exist.
+    expect(html).not.toContain('data-testid="thinkorswim-parity-visual-reviewed-badge"');
+    // Visual-only banner copy should NOT render.
+    expect(html).not.toContain('data-testid="thinkorswim-parity-exported-csv-unavailable-note"');
+  });
+
+  it("renders the parity workflow as missing when no fixtures exist", () => {
+    const html = renderToStaticMarkup(<MomentumRankingStatusCard status={shadowStatus()} />);
+    expect(html).toContain('data-testid="thinkorswim-parity-visual-observation-badge"');
+    expect(html).toContain("Visual observations: 0");
+    expect(html).toContain("Exported study CSVs: 0");
+    // No approval/order language in any branch.
+    const lower = html.toLowerCase();
+    for (const forbidden of ["approve trade", "route order", "place order"]) {
+      expect(lower.includes(forbidden)).toBe(false);
+    }
+  });
 });

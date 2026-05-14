@@ -30,7 +30,9 @@ from macmarket_trader.indicators.thinkorswim_parity import (
     FieldDelta,
     FixtureComparisonResult,
     LABEL_FIELDS,
+    PARITY_MODES,
     ParityFixtureError,
+    RECOMMENDED_VISUAL_FIELDS,
     REPORT_FILENAME_JSON,
     REPORT_FILENAME_MD,
     REPORT_SCHEMA_VERSION,
@@ -584,3 +586,486 @@ def test_default_tolerances_explicit_and_conservative() -> None:
         assert DEFAULT_TOLERANCES[field] > 0
     assert DEFAULT_TOLERANCES["true_momentum"] <= 1.0
     assert DEFAULT_TOLERANCES["true_momentum_ema"] <= 1.0
+
+
+# ── visual_observation parity mode ─────────────────────────────────────────
+
+
+def _write_visual_manifest(
+    tmp_path: Path,
+    *,
+    observed_latest: dict | None = None,
+    expected_latest: dict | None = None,
+    tolerances: dict | None = None,
+    label_must_match: bool = False,
+    observed_bar_date: str | None = None,
+    screenshot: str | None = None,
+    screenshot_notes: str | None = None,
+    reviewer: str | None = None,
+    reviewed_at: str | None = None,
+    notes: str | None = None,
+    parity_mode: str | None = "visual_observation",
+    extra_fixture_overrides: dict | None = None,
+) -> Path:
+    """Write a synthetic visual_observation manifest using the shared
+    bars-CSV helper. Returns the manifest path. The default visual
+    observation is intentionally wide so the deterministic synthetic
+    bars pass without arguing with the score gate.
+    """
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+
+    fixture: dict = {
+        "name": "AAPL_1D_visual",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "tolerances": tolerances or {"total_score": 1000},
+        "label_must_match": label_must_match,
+    }
+    if parity_mode is not None:
+        fixture["parity_mode"] = parity_mode
+    if observed_latest is not None:
+        fixture["observed_latest"] = observed_latest
+    if expected_latest is not None:
+        fixture["expected_latest"] = expected_latest
+    if observed_bar_date is not None:
+        fixture["observed_bar_date"] = observed_bar_date
+    if screenshot is not None:
+        fixture["screenshot"] = screenshot
+    if screenshot_notes is not None:
+        fixture["screenshot_notes"] = screenshot_notes
+    if reviewer is not None:
+        fixture["reviewer"] = reviewer
+    if reviewed_at is not None:
+        fixture["reviewed_at"] = reviewed_at
+    if notes is not None:
+        fixture["notes"] = notes
+    if extra_fixture_overrides:
+        fixture.update(extra_fixture_overrides)
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": "thinkorswim_momentum_parity.v1",
+            "source": "thinkorswim",
+            "fixtures": [fixture],
+        }),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def test_visual_observation_fixture_loads_without_study_csv(tmp_path: Path) -> None:
+    """A visual_observation fixture is valid without a study CSV — ToS
+    does not export the Momentum study rows."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        reviewer="qa-operator",
+        reviewed_at="2026-05-13T13:30:00Z",
+        observed_bar_date="2026-01-28",
+        screenshot="AAPL_1D_2026-01-28.png",
+        screenshot_notes="placeholder screenshot",
+    )
+    manifest = load_thinkorswim_manifest(manifest_path)
+    assert len(manifest.fixtures) == 1
+    spec = manifest.fixtures[0]
+    assert spec.parity_mode == "visual_observation"
+    assert spec.is_visual is True
+    assert spec.is_exported_study_csv is False
+    assert spec.study_csv is None
+    assert spec.observed_bar_date is not None
+    assert spec.reviewer == "qa-operator"
+    assert spec.screenshot == "AAPL_1D_2026-01-28.png"
+    assert spec.screenshot_notes == "placeholder screenshot"
+    assert spec.reviewed_at is not None
+    assert spec.expected_latest == {"total_score": 50.0}
+
+
+def test_visual_observation_passes_within_tolerance(tmp_path: Path) -> None:
+    """Visual observation within tolerance returns status=passed and
+    surfaces the visual-mode reason code."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        reviewer="qa",
+        observed_bar_date="2026-01-28",
+        screenshot="AAPL_1D.png",
+        reviewed_at="2026-05-13T13:30:00Z",
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert isinstance(result, FixtureComparisonResult)
+    assert result.parity_mode == "visual_observation"
+    assert result.is_visual is True
+    assert result.status == "passed"
+    assert "thinkorswim_parity_passed" in result.reason_codes
+    assert "thinkorswim_visual_parity_passed" in result.reason_codes
+    # Visual metadata propagates into the result for the report.
+    assert result.reviewer == "qa"
+    assert result.observed_bar_date == "2026-01-28"
+    assert result.screenshot == "AAPL_1D.png"
+    assert result.reviewed_at is not None
+    # The diagnostics announce the visual basis.
+    assert result.diagnostics.get("mode") == "visual_observation"
+    assert "operator-read" in str(result.diagnostics.get("source", ""))
+
+
+def test_visual_observation_fails_on_numeric_mismatch(tmp_path: Path) -> None:
+    """A numeric mismatch flips visual_observation to status=failed."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 999},
+        tolerances={"total_score": 0.0001},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.parity_mode == "visual_observation"
+    assert result.status == "failed"
+    assert "thinkorswim_parity_failed" in result.reason_codes
+    assert "thinkorswim_visual_parity_failed" in result.reason_codes
+
+
+def test_visual_observation_label_must_match_true_fails_on_mismatch(tmp_path: Path) -> None:
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50, "total_label": "Strong Bull"},
+        tolerances={"total_score": 1000},
+        label_must_match=True,
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "failed"
+    assert any("total_label" in msg for msg in result.label_mismatches)
+
+
+def test_visual_observation_label_must_match_false_warns_only(tmp_path: Path) -> None:
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50, "total_label": "Strong Bull"},
+        tolerances={"total_score": 1000},
+        label_must_match=False,
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    # The label mismatch is recorded as a warning but the status remains passed.
+    assert result.status == "passed"
+    assert result.label_mismatches  # still reported as diagnostics
+
+
+def test_visual_observation_observed_bar_date_alignment(tmp_path: Path) -> None:
+    """When observed_bar_date does not match the last bar in the bars
+    CSV, the validator records an alignment diagnostic rather than
+    silently switching which bar it evaluates."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars, rows=200)
+    fixture = {
+        "name": "AAPL_1D_visual",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "observed_bar_date": "2025-12-31",  # not the last bar
+        "observed_latest": {"total_score": 50},
+        "tolerances": {"total_score": 1000},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.diagnostics.get("observed_bar_date") == "2025-12-31"
+    assert "observed_bar_date_alignment" in result.diagnostics
+
+
+def test_visual_observation_skipped_when_no_observed_values(tmp_path: Path) -> None:
+    """A visual_observation fixture with no observed_latest/expected_latest
+    block reports status=skipped_missing_observation."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    fixture = {
+        "name": "AAPL_1D_visual",
+        "symbol": "AAPL",
+        "timeframe": "1D",
+        "parity_mode": "visual_observation",
+        "bars_csv": "AAPL_1D_bars.csv",
+        "tolerances": {"total_score": 1000},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"fixtures": [fixture]}), encoding="utf-8")
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.parity_mode == "visual_observation"
+    assert spec.expected_latest == {}
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "skipped_missing_observation"
+    assert "thinkorswim_visual_observation_missing" in result.reason_codes
+
+
+def test_visual_observation_recommended_field_reason_codes(tmp_path: Path) -> None:
+    """Missing recommended fields should add reason codes but not flip
+    status to failed."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        # Only total_score provided — total_label, true_momentum, and
+        # true_momentum_ema are still strongly recommended.
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    for missing in ("total_label", "true_momentum", "true_momentum_ema"):
+        if missing not in RECOMMENDED_VISUAL_FIELDS:
+            continue
+        assert f"thinkorswim_visual_observation_missing_{missing}" in result.reason_codes
+
+
+def test_manifest_rejects_observed_latest_with_expected_latest(tmp_path: Path) -> None:
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "fixtures": [{
+                "name": "AAPL_1D",
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars_csv": "AAPL_1D_bars.csv",
+                "expected_latest": {"total_score": 50},
+                "observed_latest": {"total_score": 50},
+                "tolerances": {"total_score": 1000},
+            }]
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ParityFixtureError):
+        load_thinkorswim_manifest(manifest_path)
+
+
+def test_manifest_infers_visual_observation_when_observed_latest_present(tmp_path: Path) -> None:
+    """When parity_mode is absent and observed_latest is present, the
+    manifest loader infers visual_observation mode for backward compat."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "fixtures": [{
+                "name": "AAPL_1D",
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars_csv": "AAPL_1D_bars.csv",
+                "observed_latest": {"total_score": 50},
+                "tolerances": {"total_score": 1000},
+            }]
+        }),
+        encoding="utf-8",
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.parity_mode == "visual_observation"
+
+
+def test_manifest_infers_exported_study_csv_when_only_expected_latest(tmp_path: Path) -> None:
+    """Legacy manifests with only expected_latest stay in exported_study_csv mode."""
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "fixtures": [{
+                "name": "AAPL_1D",
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars_csv": "AAPL_1D_bars.csv",
+                "expected_latest": {"total_score": 50},
+                "tolerances": {"total_score": 1000},
+            }]
+        }),
+        encoding="utf-8",
+    )
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.parity_mode == "exported_study_csv"
+
+
+def test_manifest_rejects_invalid_parity_mode(tmp_path: Path) -> None:
+    bars = tmp_path / "AAPL_1D_bars.csv"
+    _write_bars_csv(bars)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "fixtures": [{
+                "name": "AAPL_1D",
+                "symbol": "AAPL",
+                "timeframe": "1D",
+                "bars_csv": "AAPL_1D_bars.csv",
+                "parity_mode": "not_a_real_mode",
+                "observed_latest": {"total_score": 50},
+                "tolerances": {"total_score": 1000},
+            }]
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ParityFixtureError):
+        load_thinkorswim_manifest(manifest_path)
+
+
+def test_visual_observation_does_not_load_study_csv(tmp_path: Path) -> None:
+    """Visual observations skip study-CSV cross-checks even when a stray
+    study CSV exists next to the bars CSV."""
+    manifest_path = _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+    )
+    # Drop a deliberately-wrong study CSV next to the bars to confirm
+    # it does NOT get auto-loaded in visual_observation mode.
+    spec = load_thinkorswim_manifest(manifest_path).fixtures[0]
+    assert spec.study_csv is None  # manifest did not declare one
+    result = compare_momentum_to_thinkorswim(spec)
+    assert result.status == "passed"
+    assert result.diagnostics.get("study_rows_loaded", 0) == 0
+
+
+# ── report generation in visual mode ───────────────────────────────────────
+
+
+def test_report_records_visual_observation_in_markdown(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        reviewer="qa-operator",
+        observed_bar_date="2026-01-28",
+        screenshot="AAPL_1D_2026-01-28.png",
+        reviewed_at="2026-05-13T13:30:00Z",
+    )
+    summary = build_thinkorswim_parity_report(tmp_path, write=True)
+    assert summary.overall_status == "passed"
+    md = (tmp_path / REPORT_FILENAME_MD).read_text(encoding="utf-8")
+    assert "Mode: visual observation" in md
+    assert "operator-read Thinkorswim rendered chart labels" in md
+    assert "manual visual parity, not exported study-row parity" in md
+    assert "visual_observation" in md
+    assert "AAPL_1D_2026-01-28.png" in md
+    assert "qa-operator" in md
+    # Visual observations are auditable but not row-level CSV exports.
+    assert "auditable but not row-level CSV exports" in md
+
+
+def test_report_json_includes_parity_mode_and_mode_counts(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        reviewer="qa-operator",
+    )
+    summary = build_thinkorswim_parity_report(tmp_path, write=True)
+    payload = json.loads((tmp_path / REPORT_FILENAME_JSON).read_text(encoding="utf-8"))
+    assert payload["overall_status"] == "passed"
+    assert payload["visual_observation_count"] == 1
+    assert payload["exported_study_csv_count"] == 0
+    assert payload["visual_observation_passed_count"] == 1
+    assert payload["visual_observation_failed_count"] == 0
+    assert payload["visual_reviewed"] is True
+    mode_counts = payload["parity_mode_counts"]
+    assert mode_counts["visual_observation"]["total"] == 1
+    assert mode_counts["visual_observation"]["passed"] == 1
+    assert mode_counts["exported_study_csv"]["total"] == 0
+    assert payload["results"][0]["parity_mode"] == "visual_observation"
+    assert payload["results"][0]["reviewer"] == "qa-operator"
+
+
+# ── status builder mode counts ─────────────────────────────────────────────
+
+
+def test_status_builder_surfaces_visual_observation_counts(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        reviewer="qa",
+    )
+    build_thinkorswim_parity_report(tmp_path, write=True)
+    status = build_thinkorswim_momentum_parity_status(tmp_path)
+    assert status["status"] == "passed"
+    assert status["visual_observation_count"] == 1
+    assert status["exported_study_csv_count"] == 0
+    assert status["visual_observation_passed_count"] == 1
+    assert status["visual_observation_failed_count"] == 0
+    assert status["visual_reviewed"] is True
+    assert status["exported_study_csv_available"] is False
+    mode_counts = status["parity_mode_counts"]
+    assert mode_counts["visual_observation"]["total"] == 1
+    assert mode_counts["visual_observation"]["passed"] == 1
+    assert "thinkorswim_visual_parity_passed" in status["reason_codes"]
+    assert "thinkorswim_visual_parity_observations_available" in status["reason_codes"]
+    assert "thinkorswim_exported_study_csv_unavailable" in status["reason_codes"]
+    # Summary explicitly names the parity basis as visual / manual.
+    assert "visual / manual observation" in (status["summary"] or "")
+
+
+def test_status_builder_visual_observation_failure_surfaces_failed_count(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 999},
+        tolerances={"total_score": 0.0001},
+        reviewer="qa",
+    )
+    build_thinkorswim_parity_report(tmp_path, write=True)
+    status = build_thinkorswim_momentum_parity_status(tmp_path)
+    assert status["status"] == "failed"
+    assert status["visual_observation_count"] == 1
+    assert status["visual_observation_failed_count"] == 1
+    assert "thinkorswim_visual_parity_failed" in status["reason_codes"]
+
+
+def test_status_builder_mode_counts_when_only_manifest_present(tmp_path: Path) -> None:
+    """Before a parity report is generated, status mode counts come
+    from the manifest scan."""
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+    )
+    status = build_thinkorswim_momentum_parity_status(tmp_path)
+    assert status["status"] == "ready"
+    assert status["visual_observation_count"] == 1
+    assert status["exported_study_csv_count"] == 0
+    # No report yet, so visual_passed/failed are zero.
+    assert status["visual_observation_passed_count"] == 0
+    assert status["visual_observation_failed_count"] == 0
+
+
+# ── CLI script in visual mode ──────────────────────────────────────────────
+
+
+def test_cli_strict_visual_observation_pass_exits_zero(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 50},
+        tolerances={"total_score": 1000},
+        reviewer="qa",
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "visual_observation" in completed.stdout
+    assert "Mode summary" in completed.stdout
+
+
+def test_cli_strict_visual_observation_failure_exits_nonzero(tmp_path: Path) -> None:
+    _write_visual_manifest(
+        tmp_path,
+        observed_latest={"total_score": 999},
+        tolerances={"total_score": 0.0001},
+    )
+    completed = _run_cli(
+        "--fixture-dir", str(tmp_path), "--write-report", "--strict"
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+
+
+def test_parity_modes_constant_is_stable() -> None:
+    assert set(PARITY_MODES) == {"exported_study_csv", "visual_observation"}

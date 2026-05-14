@@ -921,6 +921,23 @@ def build_momentum_ranking_status(
         thinkorswim_parity_last_report_generated_at=parity_workflow.get("last_report_generated_at"),
         thinkorswim_parity_summary=parity_workflow.get("summary"),
         thinkorswim_parity_reason_codes=list(parity_workflow.get("reason_codes") or []),
+        thinkorswim_parity_mode_counts=dict(parity_workflow.get("parity_mode_counts") or {}),
+        thinkorswim_parity_visual_observation_count=int(
+            parity_workflow.get("visual_observation_count") or 0
+        ),
+        thinkorswim_parity_exported_study_csv_count=int(
+            parity_workflow.get("exported_study_csv_count") or 0
+        ),
+        thinkorswim_parity_visual_observation_passed_count=int(
+            parity_workflow.get("visual_observation_passed_count") or 0
+        ),
+        thinkorswim_parity_visual_observation_failed_count=int(
+            parity_workflow.get("visual_observation_failed_count") or 0
+        ),
+        thinkorswim_parity_visual_reviewed=bool(parity_workflow.get("visual_reviewed")),
+        thinkorswim_parity_exported_study_csv_available=bool(
+            parity_workflow.get("exported_study_csv_available")
+        ),
     )
 
 

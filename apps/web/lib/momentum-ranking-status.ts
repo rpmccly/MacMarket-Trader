@@ -49,6 +49,20 @@ export type MomentumRankingStatus = {
   thinkorswim_parity_last_report_generated_at?: string | null;
   thinkorswim_parity_summary?: string | null;
   thinkorswim_parity_reason_codes?: string[];
+  // Visual / manual observation parity mode counts. Operator-read
+  // ToS chart label observations are accepted because Thinkorswim does
+  // not export the Momentum study rows. These fields never gate
+  // approval, sizing, or routing — they are operator readiness only.
+  thinkorswim_parity_mode_counts?: {
+    visual_observation?: { total: number; passed: number; failed: number; skipped: number };
+    exported_study_csv?: { total: number; passed: number; failed: number; skipped: number };
+  } | null;
+  thinkorswim_parity_visual_observation_count?: number;
+  thinkorswim_parity_exported_study_csv_count?: number;
+  thinkorswim_parity_visual_observation_passed_count?: number;
+  thinkorswim_parity_visual_observation_failed_count?: number;
+  thinkorswim_parity_visual_reviewed?: boolean;
+  thinkorswim_parity_exported_study_csv_available?: boolean;
 };
 
 /**

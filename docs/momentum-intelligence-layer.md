@@ -225,18 +225,22 @@ no recommendation approval changes.
 - Recommendation approval, sizing, paper-order, options preview, replay, and
   HACO/HACOLT behaviors are unchanged.
 - `parity_status` continues to default to
-  `pending_thinkorswim_fixture_validation` until Thinkorswim fixture CSVs
-  land. Derived higher-timeframe behavior remains explicitly labeled.
+  `pending_thinkorswim_fixture_validation` until Thinkorswim parity
+  evidence — preferably exported bars plus visual/manual study
+  observations because ToS does not export study rows — lands.
+  Derived higher-timeframe behavior remains explicitly labeled.
 
 ---
 
 ## Thinkorswim parity fixtures
 
-Operator-supplied Thinkorswim CSV exports are the only authoritative way to
-validate that MacMarket's deterministic ports of `ST_TrueMomentumScoreSTUDY`,
-`ST_TrueMomentumSTUDY`, and `ST_HiLoEliteSTUDY` actually agree with the source
-studies. The repo ships the **infrastructure** for this validation but not the
-data itself — no fabricated parity values are committed.
+Operator-supplied Thinkorswim parity evidence — preferably exported bars plus
+visual/manual study observations because ToS does not export study rows — is
+the only authoritative way to validate that MacMarket's deterministic ports of
+`ST_TrueMomentumScoreSTUDY`, `ST_TrueMomentumSTUDY`, and `ST_HiLoEliteSTUDY`
+actually agree with the source studies. The repo ships the **infrastructure**
+for this validation but not the data itself — no fabricated parity values are
+committed.
 
 The structured operator workflow (manifest schema, export checklist,
 validator CLI, report interpretation, how it gates Phase C) lives in

@@ -78,12 +78,15 @@ When Phase C1 is authorized, the planned implementations will need:
    export the review as Markdown / JSON. What still remains pending
    here is the *accumulated corpus* of exported B8 reviews across a
    representative sector / regime mix.
-2. **Thinkorswim spot-check / parity review.** Real Thinkorswim fixtures
-   landing in `tests/fixtures/thinkorswim_momentum/` and the structured
-   parity workflow reaching `thinkorswim_parity_workflow_status == "passed"`
+2. **Thinkorswim spot-check / parity review.** Real Thinkorswim
+   parity evidence, preferably exported bars plus visual/manual study
+   observations because ToS does not export study rows, landing in
+   `tests/fixtures/thinkorswim_momentum/` and the structured parity
+   workflow reaching `thinkorswim_parity_workflow_status == "passed"`
    (see [`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md)
-   for the manifest schema, validator CLI, and report interpretation).
-   The `parity_required_for_active` flag must also be flipped to `True`.
+   for the manifest schema, capture paths, validator CLI, and report
+   interpretation). The `parity_required_for_active` flag must also
+   be flipped to `True`.
 3. **Operator authorization.** Explicit go-ahead per family.
 
 ## Env vars
@@ -216,7 +219,7 @@ reason code.
 ### Still pending
 
 - Accumulated B8 outcome evidence corpus.
-- Real Thinkorswim fixture parity.
+- Real Thinkorswim parity evidence, preferably exported bars plus visual/manual study observations because ToS does not export study rows.
 - Operator authorization before any active Phase C.
 
 ## Phase C2 — research-preview evidence bundle
@@ -316,7 +319,7 @@ backend write, no DB row, no migration, no LLM call.
 ### Still pending (carried forward)
 
 - Accumulated B8 outcome evidence corpus.
-- Real Thinkorswim fixture parity.
+- Real Thinkorswim parity evidence, preferably exported bars plus visual/manual study observations because ToS does not export study rows.
 - Operator authorization before any active Phase C.
 
 ## Phase C2.1 — link B7/B8 trial evidence into the C2 bundle
@@ -406,7 +409,7 @@ behavior change.
 ### Still pending
 
 - Accumulated B8 outcome evidence corpus.
-- Real Thinkorswim fixture parity.
+- Real Thinkorswim parity evidence, preferably exported bars plus visual/manual study observations because ToS does not export study rows.
 - Operator authorization before any active Phase C.
 
 ## Phase C2.2 — live B8 outcome linkage + Ranked queue scroll polish
@@ -479,7 +482,7 @@ wrapper shows roughly 10 rows at a time before scrolling.
 ### Still pending
 
 - Accumulated B8 outcome evidence corpus.
-- Real Thinkorswim fixture parity.
+- Real Thinkorswim parity evidence, preferably exported bars plus visual/manual study observations because ToS does not export study rows.
 - Operator authorization before any active Phase C.
 
 ## Phase C3 — research cohort review
@@ -584,7 +587,7 @@ JSON envelope:
 ### Still pending
 
 - Larger accumulated B8 outcome evidence corpus.
-- Real Thinkorswim fixture parity.
+- Real Thinkorswim parity evidence, preferably exported bars plus visual/manual study observations because ToS does not export study rows.
 - Operator authorization before any active Phase C.
 
 ## Related documents
