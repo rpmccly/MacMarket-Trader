@@ -118,6 +118,23 @@ Under these values:
   live" or "activate now" wording — the strongest positive label is
   `promising_research`. Mounted inside the C2 evidence panel so the
   operator does not need to export / import bundles manually.
+- **Phase C4 strategy-family research context (feature implemented).**
+  Recommendations page now renders a True Momentum Strategy Context
+  card for the currently selected queue candidate: family-fit badge,
+  match strength, trigger-readiness checklist, parity / evidence
+  caveats, B8 / C3 evidence status, and an activation-readiness
+  classification (`research_ready` / `needs_more_evidence` /
+  `parity_blocked` / `composite_mismatch_review` / `warning_blocked` /
+  `not_applicable` / `watch_only`). Pure helper at
+  `apps/web/lib/true-momentum-strategy-context.ts`. Backend status
+  endpoint now ships `thinkorswim_parity_symbol_summaries` so the card
+  can surface a symbol-scoped parity caveat (e.g. XLP shows
+  `composite_mismatch` while SPY / XLK / XLE remain attested). Phase C4
+  is research-only — it does not generate queue candidates, change
+  ranking or queue sorting, change recommendation approval, promote,
+  save, paper-order, replay, or options behavior, and does not
+  activate Phase C strategy families. Activation readiness is research
+  context, not trade approval.
 
 ## Outstanding items
 

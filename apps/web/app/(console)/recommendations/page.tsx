@@ -29,6 +29,7 @@ import {
   type ChartHistoryRangeId,
 } from "@/lib/chart-history-range";
 import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
+import { TrueMomentumStrategyContextCard } from "@/components/recommendations/true-momentum-strategy-context-card";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -2015,6 +2016,23 @@ export default function RecommendationsPage() {
         universeSymbols={parsedSymbols.symbols}
         b8Snapshot={b8Snapshot}
         b8OutcomeReview={b8OutcomeReview}
+      />
+
+      {/*
+        Phase C4 — True Momentum Strategy Context card for the
+        currently selected queue candidate. Renders the research-only
+        Phase C4 bundle (family badge + match strength +
+        trigger-readiness checklist + parity/evidence caveats +
+        activation-readiness status). Does not generate queue
+        candidates, change ranking, queue sorting, promote / save /
+        paper-order, replay, or options behavior. Activation
+        readiness ≠ approval; Phase C remains reserved.
+      */}
+      <TrueMomentumStrategyContextCard
+        candidate={selectedQueue}
+        b8OutcomeStatus={
+          b8OutcomeReview ? "available" : b8Snapshot ? "captured_without_outcomes" : "not_captured"
+        }
       />
     </section>
   );

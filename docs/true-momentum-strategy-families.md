@@ -593,6 +593,95 @@ JSON envelope:
 - Real Thinkorswim visual/manual parity evidence (typically `parity_mode: "visual_attestation"`, which records operator-entered ToS and MacMarket rendered chart values from screenshots; no bars or study CSV needed because ToS does not export either for this workflow).
 - Operator authorization before any active Phase C.
 
+## Phase C4 — True Momentum strategy-family research context integration
+
+Phase C4 is a frontend-only research-only integration: it surfaces
+the existing Phase C1 family classification, Phase C3 cohort
+readiness, and the Thinkorswim visual-attestation parity status for
+the **currently selected Recommendations queue candidate** as a
+single operator-readable context card. Phase C4 explicitly does
+**not**:
+
+- generate queue candidates,
+- change recommendation ranking, queue sorting, promote / make-active
+  / save / paper-order, replay, or options behavior,
+- approve / reject / size / route trades,
+- activate Phase C strategy families,
+- mutate the source candidates or the queue,
+- call providers, the database, or an LLM.
+
+### Surface
+
+`apps/web/lib/true-momentum-strategy-context.ts` exposes pure helpers
+(`buildTrueMomentumStrategyContext`,
+`buildTrueMomentumTriggerChecklist`,
+`classifyTrueMomentumStrategyActivationReadiness`,
+`findSelectedSymbolParitySummary`,
+`summarizeTrueMomentumStrategyContext`,
+`collectTrueMomentumStrategyContextSurfaces`). The
+`<TrueMomentumStrategyContextCard />` component renders the bundle on
+the Recommendations page beneath the existing Phase C1 preview panel
+when an operator selects a queue row.
+
+### Trigger-readiness checklist
+
+The card renders a family-specific checklist:
+
+- **Continuation** — Total score Bull / Max Bull or ≥ 80; True
+  Momentum above EMA; Trend score ≥ 70; Momo score ≥ 70; HiLo score
+  > 0 or thrust confirmed; no no-trade warning; no reversal warning;
+  existing deterministic price setup; parity / evidence does not
+  block research review.
+- **Pullback** — Bull / Max Bull or ≥ 80; pullback signal active OR
+  source strategy is Pullback / Trend Continuation; True Momentum
+  above EMA or recently crossed above EMA; HiLo score not strongly
+  negative; no reversal warning; existing deterministic pullback
+  setup; risk / invalidation captured.
+- **Reversal / Weakening Watch** — Reversal OR no-trade warning OR
+  Bear / Max Bear contradiction OR total_score ≤ -50; watch-only;
+  never proposes entry; existing candidate downgraded to research
+  context.
+
+Each item carries `status: pass | fail | warning | unavailable`,
+`reason`, and `source_field`. Missing fields degrade to
+`unavailable`. The checklist never uses trade-execution language.
+
+### Activation-readiness status
+
+`classifyTrueMomentumStrategyActivationReadiness` returns one of:
+
+| Status | Meaning |
+|---|---|
+| `research_ready` | Family matches strongly and no blocking caveats remain |
+| `needs_more_evidence` | Parity partial / cohort insufficient / no clear signal |
+| `parity_blocked` | Selected symbol's parity fixture failed broadly |
+| `composite_mismatch_review` | Selected symbol's parity shows oscillator aligned but composite mismatch (XLP-style) |
+| `warning_blocked` | no_trade or reversal warning active on a non-reversal-watch family |
+| `not_applicable` | No family match for the selected candidate |
+| `watch_only` | Family is `true_momentum_reversal_watch` |
+
+The card never returns "approved" or "ready for live". Activation
+readiness is research context only.
+
+### XLP example
+
+XLP currently fails visual attestation on composite score only:
+oscillator (True Momentum / EMA) is aligned, but `total_score` and
+`total_label` diverge. The Phase C4 card classifies a selected XLP
+candidate as `composite_mismatch_review`, surfaces the
+*"oscillator aligned but composite total score differs"* caveat, and
+keeps unrelated symbols (SPY / XLK / XLE) at `research_ready` even
+though the global visual attestation status is `visual_failed`.
+
+### Strategy Workbench / blueprints
+
+Strategy Workbench-style blueprints stay docs-only research
+descriptions (`status: research_preview`,
+`generates_candidates: false`, `activation: reserved`,
+`prerequisites: [B8 outcome evidence corpus, C3 cohort review,
+visual parity review, operator authorization]`). No active generator
+function was added.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

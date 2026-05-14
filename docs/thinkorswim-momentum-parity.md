@@ -244,6 +244,23 @@ these into operator-friendly labels: `oscillator_aligned`,
 `oscillator_mismatch`, `composite_mismatch`, `bar_context_mismatch`,
 and `label_mismatch_only`.
 
+### Surfaced into the Recommendations context (Phase C4)
+
+The Phase C4 True Momentum Strategy Context card on the
+Recommendations page consumes
+`thinkorswim_parity_symbol_summaries` (newly added to the
+`/user/momentum-ranking-status` payload) to surface a symbol-scoped
+parity caveat. A selected XLP candidate is classified as
+`composite_mismatch_review` and renders the
+*"oscillator aligned but composite total score differs"* note;
+unrelated symbols (SPY / XLK / XLE) stay at `research_ready` even
+when global visual attestation reports `visual_failed`. The card is
+research-only — it does not approve / reject / size / route trades,
+does not generate queue candidates, and does not activate Phase C
+strategy families. See
+[`true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
+for the full Phase C4 contract.
+
 ### Example: XLP-style classification
 
 XLP (2026-05-13) is the canonical "oscillator aligned, composite

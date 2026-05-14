@@ -2184,6 +2184,27 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C4 — True Momentum strategy-family research context integration
+
+Phase C4 wires the existing Phase C1 / C2 / C3 research bundles plus
+the Thinkorswim visual-attestation parity status into a single
+operator-readable context card for the currently selected
+Recommendations queue candidate. See
+[`true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
+for the full charter, checklist rules, readiness classification, and
+the XLP example. Phase C4 is frontend-only research integration; it
+does not change ranking, queue sorting, recommendation approval,
+promote, save, paper-order, replay, or options behavior, never
+generates queue candidates, never activates Phase C strategy
+families, and never returns "approved" or "ready for live" status.
+
+The backend `/user/momentum-ranking-status` payload gains a new
+`thinkorswim_parity_symbol_summaries` field (per-symbol parity
+diagnostic projection from the latest parity report) so the card can
+surface a symbol-scoped caveat — e.g. XLP shows
+`composite_mismatch_review` while SPY / XLK / XLE remain
+`visual_attested` and `research_ready` for matching candidates.
+
 ## Phase C3 — research cohort review
 
 Phase C3 layers a local research cohort archive on top of Phase C2.

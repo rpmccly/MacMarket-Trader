@@ -2970,7 +2970,62 @@ def build_thinkorswim_momentum_parity_status(fixture_dir: Path) -> dict[str, Any
         "visual_attestation_status": attestation_status_from_report,
         "visual_reviewed": visual_count > 0 or attestation_count > 0,
         "exported_study_csv_available": exported_count > 0,
+        "symbol_summaries": _build_symbol_summaries_from_report(report_payload),
     }
+
+
+def _build_symbol_summaries_from_report(
+    report_payload: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Project the per-fixture results from ``parity-report.json`` into a
+    compact per-symbol summary the Settings card / Recommendations
+    surface can use to render symbol-level parity caveats. Returns ``[]``
+    when no report is available — callers should fall back to global
+    counts in that case.
+
+    The summary is operator-readability only: no scoring/approval
+    implication, no provider calls, no DB write.
+    """
+    if not isinstance(report_payload, dict):
+        return []
+    results = report_payload.get("results")
+    if not isinstance(results, list):
+        return []
+    summaries: list[dict[str, Any]] = []
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        symbol = entry.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        classification_raw = entry.get("diagnostic_classification")
+        classification: list[str] = []
+        if isinstance(classification_raw, list):
+            classification = [str(c) for c in classification_raw if isinstance(c, str)]
+        reason_codes_raw = entry.get("reason_codes")
+        reason_codes: list[str] = []
+        if isinstance(reason_codes_raw, list):
+            reason_codes = [str(c) for c in reason_codes_raw if isinstance(c, str)]
+        diagnostic_flags_raw = entry.get("diagnostic_flags")
+        diagnostic_flags: dict[str, bool] = {}
+        if isinstance(diagnostic_flags_raw, dict):
+            diagnostic_flags = {
+                str(k): bool(v) for k, v in diagnostic_flags_raw.items()
+            }
+        summaries.append(
+            {
+                "symbol": symbol.upper(),
+                "timeframe": str(entry.get("timeframe") or ""),
+                "fixture_name": str(entry.get("fixture_name") or ""),
+                "parity_mode": str(entry.get("parity_mode") or ""),
+                "status": str(entry.get("status") or ""),
+                "diagnostic_classification": classification,
+                "diagnostic_flags": diagnostic_flags,
+                "reason_codes": reason_codes,
+                "observed_bar_date": entry.get("observed_bar_date"),
+            }
+        )
+    return summaries
 
 
 REFERENCE_ONLY_FIELDS: frozenset[str] = _REFERENCE_ONLY_FIELDS

@@ -1623,6 +1623,13 @@ class MomentumRankingStatus(BaseModel):
     thinkorswim_parity_visual_attestation_status: Literal[
         "visual_attested", "visual_failed", "visual_partial"
     ] | None = None
+    # Per-symbol parity summary projected from the parity-report.json.
+    # Each entry is a dict with ``symbol``, ``status``,
+    # ``diagnostic_classification``, ``diagnostic_flags``,
+    # ``reason_codes``, ``parity_mode``, ``timeframe``,
+    # ``fixture_name``, and ``observed_bar_date``. Operator-readability
+    # only — never gates approval, sizing, or routing.
+    thinkorswim_parity_symbol_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MomentumRankingContribution(BaseModel):

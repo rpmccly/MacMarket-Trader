@@ -1536,3 +1536,109 @@ describe("Momentum visual parity chart polish guards", () => {
     }
   });
 });
+
+describe("Momentum Intelligence Phase C4 — True Momentum strategy context guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Recommendations page mounts the True Momentum Strategy Context card", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("@/components/recommendations/true-momentum-strategy-context-card");
+    expect(source).toContain("TrueMomentumStrategyContextCard");
+    // The card must be wired with the selected queue candidate, not a
+    // synthetic / generated row.
+    expect(source).toContain("candidate={selectedQueue}");
+  });
+
+  it("Phase C4 helper / card are not imported into order, paper, replay, or options-paper routes", () => {
+    const routesToGuard = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/orders/portfolio-summary/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+      "app/api/user/recommendations/queue/promote/route.ts",
+    ];
+    const forbiddenImports = [
+      "@/lib/true-momentum-strategy-context",
+      "true-momentum-strategy-context-card",
+      "buildTrueMomentumStrategyContext",
+      "classifyTrueMomentumStrategyActivationReadiness",
+      "TrueMomentumStrategyContextCard",
+    ];
+    for (const route of routesToGuard) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of forbiddenImports) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("Phase C4 helper / card never use trade-approval or order-routing language", () => {
+    const surfaces = [
+      "lib/true-momentum-strategy-context.ts",
+      "components/recommendations/true-momentum-strategy-context-card.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "generate recommendation",
+      "auto-create order",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lower = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lower.includes(phrase)).toBe(false);
+      }
+    }
+  });
+
+  it("Phase C4 helper is research-only and never generates queue candidates", () => {
+    const source = read("lib/true-momentum-strategy-context.ts");
+    // Helper must explicitly carry the never-generates / never-approves
+    // deterministic note.
+    expect(source).toContain(
+      "does not generate queue candidates",
+    );
+    // Activation readiness must never produce an "approved" status —
+    // the union of readiness values is closed and known.
+    const readinessUnion = source.match(/TrueMomentumStrategyActivationReadiness\s*=([\s\S]+?);/);
+    expect(readinessUnion).not.toBeNull();
+    const readinessLines = (readinessUnion?.[0] ?? "").toLowerCase();
+    expect(readinessLines.includes("approved")).toBe(false);
+    expect(readinessLines.includes("ready_for_live")).toBe(false);
+    expect(source).toContain("research_ready");
+    expect(source).toContain("watch_only");
+    // The non_actionable: true marker must remain on every context
+    // bundle.
+    expect(source).toContain("non_actionable: true");
+  });
+
+  it("Recommendation page does not change queue sorting or order paths when mounting the C4 card", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    // Activation-readiness is never wired into the promote / make-active /
+    // save / paper-order surfaces. The card sits beside the C1 panel.
+    expect(source).toContain("TrueMomentumStrategyContextCard");
+    expect(source).not.toContain("activation_readiness=\"approved\"");
+    // The promote / make-active hook is not derived from the C4 readiness.
+    expect(source).not.toContain("ctx.readiness === \"approved\"");
+  });
+});

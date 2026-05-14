@@ -78,6 +78,24 @@ export type MomentumRankingStatus = {
     | "visual_failed"
     | "visual_partial"
     | null;
+  /**
+   * Per-symbol parity summaries projected from the latest parity-report.
+   * Each entry carries the fixture's resolved status, diagnostic flags,
+   * classification, reason codes, and (when applicable) observed bar.
+   * Operator-readability only — never gates approval, sizing, or
+   * routing.
+   */
+  thinkorswim_parity_symbol_summaries?: Array<{
+    symbol: string;
+    timeframe?: string;
+    fixture_name?: string;
+    parity_mode?: string;
+    status: string;
+    diagnostic_classification?: string[];
+    diagnostic_flags?: Record<string, boolean>;
+    reason_codes?: string[];
+    observed_bar_date?: string | null;
+  }>;
 };
 
 /**

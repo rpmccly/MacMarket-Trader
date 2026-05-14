@@ -953,6 +953,9 @@ def build_momentum_ranking_status(
         thinkorswim_parity_visual_attestation_status=(
             parity_workflow.get("visual_attestation_status") or None
         ),
+        thinkorswim_parity_symbol_summaries=list(
+            parity_workflow.get("symbol_summaries") or []
+        ),
     )
 
 
