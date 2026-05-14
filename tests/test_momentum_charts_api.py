@@ -256,3 +256,242 @@ def test_chart_history_range_helpers_pure_module() -> None:
     # Intraday limits are bounded.
     assert chart_history_range_bar_limit("1H", "5Y") <= 4000
     assert chart_history_range_bar_limit("4H", "5Y") <= 2000
+
+
+# ── Visual parity chart polish ─────────────────────────────────────────────
+
+
+def test_momentum_chart_payload_includes_visual_parity_snapshot() -> None:
+    """Latest-bar parity snapshot is populated with already-computed
+    indicator state. IV% is intentionally null (no deterministic IV
+    source) and listed in unavailable_fields."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    snapshot = payload["visual_parity_snapshot"]
+    assert snapshot is not None
+    for field in (
+        "total_score",
+        "total_label",
+        "trend_score",
+        "momo_score",
+        "true_momentum",
+        "true_momentum_ema",
+        "hilo_elite_value",
+        "hilo_thrust_state",
+        "hilo_score",
+        "pullback_signal",
+        "reversal_warning",
+        "no_trade_warning",
+        "iv_percent",
+        "source_notes",
+        "unavailable_fields",
+        "as_of",
+        "symbol",
+        "timeframe",
+    ):
+        assert field in snapshot, f"visual_parity_snapshot missing {field!r}"
+    # IV% is unavailable — never fabricated.
+    assert snapshot["iv_percent"] is None
+    assert "iv_percent" in snapshot["unavailable_fields"]
+    # HiLo scalar and thrust state are kept distinct.
+    assert isinstance(snapshot["hilo_elite_value"], (int, float))
+    assert snapshot["hilo_thrust_state"] in {"bullish", "bearish", "neutral"}
+    # Symbol/timeframe echo the request.
+    assert snapshot["symbol"] == "SPY"
+    assert snapshot["timeframe"] == "1D"
+
+
+def test_momentum_chart_visual_parity_series_per_bar() -> None:
+    """Per-bar parity series mirrors candle alignment so the frontend
+    can lookup status by hovered timestamp."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    payload = response.json()
+    series = payload["visual_parity_series"]
+    candle_times = [c["time"] for c in payload["candles"]]
+    assert len(series) == len(candle_times)
+    assert [p["time"] for p in series] == candle_times
+    # Latest series row drives the latest_snapshot — labels/state match.
+    latest = series[-1]
+    snapshot = payload["visual_parity_snapshot"]
+    assert latest["total_score"] == snapshot["total_score"]
+    assert latest["total_label"] == snapshot["total_label"]
+    assert latest["hilo_thrust_state"] == snapshot["hilo_thrust_state"]
+
+
+def test_momentum_chart_panel_markers_emit_no_action_language() -> None:
+    """Panel markers describe deterministic context only — never
+    buy/sell/enter/short/approve language."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    payload = response.json()
+    forbidden = ("buy", "sell", "enter", "short", "approve", "route", "place order")
+    for marker in payload["true_momentum_panel_markers"] + payload["hilo_panel_markers"]:
+        for field in ("label", "reason"):
+            text = str(marker[field]).lower()
+            for word in forbidden:
+                assert word not in text, (
+                    f"panel marker {marker['marker_type']!r} {field} leaked action word {word!r}: {text!r}"
+                )
+        assert marker["panel"] in {"true_momentum", "hilo"}
+        assert marker["direction"] in {"up", "down", "neutral"}
+
+
+def test_momentum_chart_panel_markers_include_bullish_cross() -> None:
+    """Synthetic bars where True Momentum crosses above EMA produce a
+    bullish_cross marker on the True Momentum panel."""
+    # Trending up bars after a flat region: should produce at least
+    # one cross over a 200-bar window.
+    base = date(2026, 1, 1)
+    bars: list[Bar] = []
+    for i in range(200):
+        if i < 60:
+            close = 100.0
+        else:
+            close = 100.0 + (i - 60) * 0.3
+        bars.append(
+            Bar(
+                date=base + timedelta(days=i),
+                timestamp=None,
+                open=close,
+                high=close + 0.5,
+                low=close - 0.5,
+                close=close,
+                volume=1_000_000,
+            )
+        )
+    payload = MomentumChartService().build_payload(symbol="SPY", timeframe="1D", bars=bars)
+    types = {m.marker_type for m in payload.true_momentum_panel_markers}
+    # At least one cross fires during the directional shift.
+    assert types & {"bullish_cross", "bearish_cross"}
+    for marker in payload.true_momentum_panel_markers:
+        assert marker.panel == "true_momentum"
+        assert marker.direction in {"up", "down", "neutral"}
+
+
+def test_momentum_chart_panel_markers_include_hilo_state_transitions() -> None:
+    """Synthetic bars covering an up→down regime change produce HiLo
+    panel markers when the thrust state changes."""
+    base = date(2026, 1, 1)
+    bars: list[Bar] = []
+    for i in range(180):
+        # Aggressive up trend then sharp down trend to force HiLo
+        # thrust transitions.
+        if i < 90:
+            close = 100.0 + i * 0.8
+        else:
+            close = 100.0 + 90 * 0.8 - (i - 90) * 0.9
+        bars.append(
+            Bar(
+                date=base + timedelta(days=i),
+                timestamp=None,
+                open=close,
+                high=close + 0.4,
+                low=close - 0.4,
+                close=close,
+                volume=1_000_000,
+            )
+        )
+    payload = MomentumChartService().build_payload(symbol="SPY", timeframe="1D", bars=bars)
+    # HiLo state may or may not fire on every synthetic dataset, but the
+    # bucket must be a list and obey the deterministic contract when it
+    # does fire.
+    assert isinstance(payload.hilo_panel_markers, list)
+    for marker in payload.hilo_panel_markers:
+        assert marker.panel == "hilo"
+        assert marker.marker_type in {"hilo_confirmed", "hilo_deconfirmed", "hilo_state_transition"}
+        assert marker.direction in {"up", "down", "neutral"}
+
+
+def test_momentum_chart_payload_remains_backward_compatible() -> None:
+    """Existing chart-payload fields are preserved alongside the new
+    visual parity additions."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
+    )
+    payload = response.json()
+    for legacy_field in (
+        "candles",
+        "true_momentum_line",
+        "true_momentum_ema_line",
+        "hilo_slowd_line",
+        "hilo_slowd_x_line",
+        "hilo_thrust_strip",
+        "score_strip",
+        "markers",
+        "latest_snapshot",
+        "explanation",
+        "parity_status",
+        "data_source",
+        "fallback_mode",
+        "higher_timeframe_source",
+    ):
+        assert legacy_field in payload, f"chart payload missing legacy field {legacy_field!r}"
+    # New visual parity fields are additions, not replacements.
+    for new_field in (
+        "visual_parity_snapshot",
+        "visual_parity_series",
+        "true_momentum_panel_markers",
+        "hilo_panel_markers",
+    ):
+        assert new_field in payload, f"chart payload missing new field {new_field!r}"
+
+
+def test_momentum_chart_visual_parity_with_longer_history_range() -> None:
+    """The visual parity series and panel markers still populate when
+    the operator requests a longer history range."""
+    client = TestClient(app)
+    _approve_default_user(client)
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "symbol": "SPY",
+            "timeframe": "1D",
+            "bars": _daily_bars(220),
+            "history_range": "1Y",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["visual_parity_series"]) == len(payload["candles"])
+    assert payload["history_range"] == "1Y"
+    assert payload["visual_parity_snapshot"] is not None
+
+
+def test_momentum_chart_empty_bars_returns_safe_parity_payload() -> None:
+    """No-bars chart payload still returns a structured visual parity
+    snapshot (with all fields in unavailable_fields)."""
+    payload = MomentumChartService().build_payload(symbol="SPY", timeframe="1D", bars=[])
+    assert payload.visual_parity_snapshot is not None
+    snapshot = payload.visual_parity_snapshot
+    # Everything but IV% — which is unavailable for a different reason —
+    # collapses into unavailable_fields when there are no bars.
+    assert "iv_percent" in snapshot.unavailable_fields
+    assert "total_score" in snapshot.unavailable_fields
+    assert snapshot.total_score is None
+    assert payload.visual_parity_series == []
+    assert payload.true_momentum_panel_markers == []
+    assert payload.hilo_panel_markers == []

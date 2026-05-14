@@ -104,6 +104,67 @@ export type MomentumChartExplanation = {
   notes: string[];
 };
 
+export type MomentumHiloThrustState = "bullish" | "bearish" | "neutral";
+
+export type MomentumVisualParitySnapshot = {
+  as_of: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  history_range: string | null;
+  total_score: number | null;
+  total_label: string | null;
+  trend_score: number | null;
+  momo_score: number | null;
+  true_momentum: number | null;
+  true_momentum_ema: number | null;
+  hilo_elite_value: number | null;
+  hilo_thrust_state: MomentumHiloThrustState | null;
+  hilo_score: number | null;
+  pullback_signal: boolean | null;
+  reversal_warning: boolean | null;
+  no_trade_warning: boolean | null;
+  iv_percent: number | null;
+  source_notes: string[];
+  unavailable_fields: string[];
+};
+
+export type MomentumVisualParityPoint = {
+  index: number;
+  time: ChartTime;
+  total_score: number;
+  total_label: string;
+  total_state: string;
+  trend_score: number;
+  momo_score: number;
+  true_momentum: number;
+  true_momentum_ema: number;
+  hilo_elite_value: number;
+  hilo_thrust_state: MomentumHiloThrustState;
+  hilo_score: number;
+  pullback_signal: boolean;
+  reversal_warning: boolean;
+  no_trade_warning: boolean;
+};
+
+export type MomentumPanelMarkerType =
+  | "bullish_cross"
+  | "bearish_cross"
+  | "hilo_confirmed"
+  | "hilo_deconfirmed"
+  | "state_transition"
+  | "hilo_state_transition";
+
+export type MomentumPanelMarker = {
+  index: number;
+  time: ChartTime;
+  panel: "true_momentum" | "hilo";
+  marker_type: MomentumPanelMarkerType;
+  direction: "up" | "down" | "neutral";
+  label: string;
+  value: number;
+  reason: string;
+};
+
 export type MomentumChartCandle = {
   index: number;
   time: ChartTime;
@@ -144,6 +205,12 @@ export type MomentumChartPayload = {
   history_range?: string | null;
   lookback_days?: number | null;
   bars_returned?: number | null;
+  /** Visual parity chart polish — normalized parity snapshot, per-bar
+   *  parity points for hover lookup, and panel-specific markers. */
+  visual_parity_snapshot?: MomentumVisualParitySnapshot | null;
+  visual_parity_series?: MomentumVisualParityPoint[];
+  true_momentum_panel_markers?: MomentumPanelMarker[];
+  hilo_panel_markers?: MomentumPanelMarker[];
 };
 
 export async function fetchMomentumChart(request: MomentumChartRequest): Promise<MomentumChartPayload> {

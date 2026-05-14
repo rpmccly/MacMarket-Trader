@@ -3,7 +3,14 @@ import type { ReactNode } from "react";
 
 import { Card, EmptyState, ErrorState, StatusBadge } from "@/components/operator-ui";
 import {
+  CandleStatusBadges,
+  HiloPanelStatusBadges,
+  TrueMomentumPanelStatusBadges,
+} from "@/components/charts/chart-status-badges";
+import { MomentumContextLegend } from "@/components/charts/momentum-context-legend";
+import {
   buildMomentumLegendValues,
+  buildVisualParityFields,
   describeHigherTimeframeSource,
   describeParityStatus,
   formatMomentumScore,
@@ -12,6 +19,7 @@ import {
   MOMENTUM_DETERMINISTIC_NOTE,
   type MomentumLegendValue,
   type MomentumTone,
+  type VisualParityBadge,
 } from "@/lib/momentum-chart";
 import type { MomentumChartPayload } from "@/lib/momentum-api";
 
@@ -191,10 +199,58 @@ export function MomentumSummaryPanel({
           </ToneBadge>
         </div>
 
+        <VisualParityStrip payload={payload} />
+
         <p style={NOTE_STYLE} data-testid="momentum-deterministic-note">
           {MOMENTUM_DETERMINISTIC_NOTE}
         </p>
+
+        <MomentumContextLegend testId="momentum-summary-context-legend" />
       </div>
     </Card>
+  );
+}
+
+function VisualParityStrip({ payload }: { payload: MomentumChartPayload }) {
+  const snapshot = payload.visual_parity_snapshot ?? null;
+  if (!snapshot) return null;
+  const fields: VisualParityBadge[] = buildVisualParityFields(snapshot);
+  if (fields.length === 0) return null;
+  return (
+    <div
+      role="region"
+      aria-label="Visual parity snapshot"
+      data-testid="momentum-visual-parity-strip"
+      style={{
+        display: "grid",
+        gap: 6,
+        padding: "8px 10px",
+        borderRadius: 8,
+        background: "rgba(15, 24, 34, 0.55)",
+        border: "1px solid rgba(115, 138, 163, 0.22)",
+      }}
+    >
+      <div className="op-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <strong style={{ fontSize: "0.8rem" }}>Visual parity snapshot</strong>
+        <span style={{ fontSize: "0.74rem", color: "var(--op-muted, #7a8999)" }}>
+          {snapshot.as_of ? `As of ${snapshot.as_of}` : "As of latest bar"}
+        </span>
+      </div>
+      <CandleStatusBadges snapshot={snapshot} testId="momentum-candle-status-badges" />
+      <TrueMomentumPanelStatusBadges
+        snapshot={snapshot}
+        testId="momentum-true-momentum-status-badges"
+      />
+      <HiloPanelStatusBadges snapshot={snapshot} testId="momentum-hilo-status-badges" />
+      {snapshot.unavailable_fields.includes("iv_percent") ? (
+        <p
+          style={{ margin: 0, fontSize: "0.72rem", color: "var(--op-muted, #7a8999)" }}
+          data-testid="momentum-iv-unavailable-note"
+        >
+          IV% unavailable — no deterministic IV / IV-percentile source is
+          wired into this payload.
+        </p>
+      ) : null}
+    </div>
   );
 }

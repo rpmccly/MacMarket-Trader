@@ -11,10 +11,13 @@ from macmarket_trader.domain.schemas import (
     MomentumChartPayload,
     MomentumComponentBreakdownPayload,
     MomentumLinePoint,
+    MomentumPanelMarker,
     MomentumScoreSnapshot,
     MomentumScoreStripPoint,
     MomentumSignalMarker,
     MomentumStripPoint,
+    MomentumVisualParityPoint,
+    MomentumVisualParitySnapshot,
 )
 from macmarket_trader.indicators.hilo_elite import compute_hilo_elite
 from macmarket_trader.indicators.true_momentum import compute_true_momentum
@@ -85,6 +88,31 @@ class MomentumChartService:
                 higher_timeframe=None,
                 parity_status="pending_thinkorswim_fixture_validation",
                 calculation_notes=["no chart bars provided"],
+                visual_parity_snapshot=MomentumVisualParitySnapshot(
+                    as_of=None,
+                    symbol=symbol,
+                    timeframe=timeframe_upper,
+                    iv_percent=None,
+                    source_notes=["No chart bars provided."],
+                    unavailable_fields=[
+                        "iv_percent",
+                        "total_score",
+                        "total_label",
+                        "trend_score",
+                        "momo_score",
+                        "true_momentum",
+                        "true_momentum_ema",
+                        "hilo_elite_value",
+                        "hilo_thrust_state",
+                        "hilo_score",
+                        "pullback_signal",
+                        "reversal_warning",
+                        "no_trade_warning",
+                    ],
+                ),
+                visual_parity_series=[],
+                true_momentum_panel_markers=[],
+                hilo_panel_markers=[],
             )
 
         tm_series = compute_true_momentum(
@@ -272,6 +300,198 @@ class MomentumChartService:
         first_bar = canonical_bars[0]
         last_bar = canonical_bars[-1]
 
+        # ── Visual parity series + panel markers ────────────────────
+        # Per-bar normalized parity status so the chart frontend can
+        # render hover-aware top-left status badges. Values are pulled
+        # from already-computed indicator state — no formula changes.
+        visual_parity_series: list[MomentumVisualParityPoint] = []
+        for idx, score_point in enumerate(score_series.points):
+            hilo_point = hilo_series.points[idx]
+            hilo_thrust_state: str
+            if hilo_point.thrust == 1:
+                hilo_thrust_state = "bullish"
+            elif hilo_point.thrust == -1:
+                hilo_thrust_state = "bearish"
+            else:
+                hilo_thrust_state = "neutral"
+            point_reversal = bool(
+                score_point.from_max_bull_to_weak
+                or score_point.from_bull_to_weak
+                or score_point.from_max_bear_to_weak
+                or score_point.from_bear_to_weak
+            )
+            point_pullback = bool(
+                score_point.new_max_bull_pullback
+                or score_point.new_bull_pullback
+                or score_point.new_max_bear_rally
+                or score_point.new_bear_rally
+            )
+            point_no_trade = score_point.total_state == "neutral"
+            visual_parity_series.append(
+                MomentumVisualParityPoint(
+                    index=idx,
+                    time=chart_times[idx],
+                    total_score=score_point.total_score,
+                    total_label=score_point.total_label,
+                    total_state=score_point.total_state,
+                    trend_score=score_point.trend_score,
+                    momo_score=score_point.momo_score,
+                    true_momentum=score_point.true_momentum,
+                    true_momentum_ema=score_point.true_momentum_ema,
+                    hilo_elite_value=hilo_point.slow_d,
+                    hilo_thrust_state=hilo_thrust_state,  # type: ignore[arg-type]
+                    hilo_score=score_point.component_breakdown.hilo_thrust,
+                    pullback_signal=point_pullback,
+                    reversal_warning=point_reversal,
+                    no_trade_warning=point_no_trade,
+                )
+            )
+
+        # Latest-bar parity snapshot. IV% is intentionally left as None
+        # because no deterministic IV / IV-percentile source is wired
+        # into the Momentum chart payload yet — surfacing a fabricated
+        # value would break the parity charter.
+        as_of_str: str | None = (
+            last_bar.timestamp.isoformat() if last_bar.timestamp else last_bar.date.isoformat()
+        )
+        latest_parity_point = visual_parity_series[-1] if visual_parity_series else None
+        unavailable_fields: list[str] = ["iv_percent"]
+        source_notes: list[str] = [
+            "All visual parity fields come from already-computed Momentum indicator state.",
+            "IV% is unavailable because no deterministic IV / IV-percentile source is wired into the Momentum chart payload.",
+        ]
+        if latest_parity_point is not None:
+            visual_parity_snapshot = MomentumVisualParitySnapshot(
+                as_of=as_of_str,
+                symbol=symbol,
+                timeframe=timeframe_upper,
+                history_range=str(metadata.get("history_range")) if metadata.get("history_range") is not None else None,
+                total_score=latest_parity_point.total_score,
+                total_label=latest_parity_point.total_label,
+                trend_score=latest_parity_point.trend_score,
+                momo_score=latest_parity_point.momo_score,
+                true_momentum=latest_parity_point.true_momentum,
+                true_momentum_ema=latest_parity_point.true_momentum_ema,
+                hilo_elite_value=latest_parity_point.hilo_elite_value,
+                hilo_thrust_state=latest_parity_point.hilo_thrust_state,
+                hilo_score=latest_parity_point.hilo_score,
+                pullback_signal=latest_parity_point.pullback_signal,
+                reversal_warning=latest_parity_point.reversal_warning,
+                no_trade_warning=latest_parity_point.no_trade_warning,
+                iv_percent=None,
+                source_notes=source_notes,
+                unavailable_fields=unavailable_fields,
+            )
+        else:
+            visual_parity_snapshot = MomentumVisualParitySnapshot(
+                as_of=as_of_str,
+                symbol=symbol,
+                timeframe=timeframe_upper,
+                iv_percent=None,
+                source_notes=source_notes,
+                unavailable_fields=[
+                    "iv_percent",
+                    "total_score",
+                    "total_label",
+                    "trend_score",
+                    "momo_score",
+                    "true_momentum",
+                    "true_momentum_ema",
+                    "hilo_elite_value",
+                    "hilo_thrust_state",
+                    "hilo_score",
+                    "pullback_signal",
+                    "reversal_warning",
+                    "no_trade_warning",
+                ],
+            )
+
+        # True Momentum / EMA panel markers — deterministic crosses
+        # detected from the existing ``true_momentum`` and
+        # ``true_momentum_ema`` series. Markers describe context only,
+        # never buy/sell.
+        true_momentum_panel_markers: list[MomentumPanelMarker] = []
+        if include_markers and len(score_series.points) >= 2:
+            for idx in range(1, len(score_series.points)):
+                prev = score_series.points[idx - 1]
+                cur = score_series.points[idx]
+                prev_diff = prev.true_momentum - prev.true_momentum_ema
+                cur_diff = cur.true_momentum - cur.true_momentum_ema
+                if prev_diff <= 0 and cur_diff > 0:
+                    true_momentum_panel_markers.append(
+                        MomentumPanelMarker(
+                            index=idx,
+                            time=chart_times[idx],
+                            panel="true_momentum",
+                            marker_type="bullish_cross",
+                            direction="up",
+                            label="True Momentum cross up",
+                            value=cur.true_momentum,
+                            reason="True Momentum crossed above EMA",
+                        )
+                    )
+                elif prev_diff >= 0 and cur_diff < 0:
+                    true_momentum_panel_markers.append(
+                        MomentumPanelMarker(
+                            index=idx,
+                            time=chart_times[idx],
+                            panel="true_momentum",
+                            marker_type="bearish_cross",
+                            direction="down",
+                            label="True Momentum cross down",
+                            value=cur.true_momentum,
+                            reason="True Momentum crossed below EMA",
+                        )
+                    )
+
+        # HiLo panel markers — derived from the existing
+        # ``thrust_changed`` flag on the HiLo series. Up/down arrows
+        # render on the panel where the thrust state changed.
+        hilo_panel_markers: list[MomentumPanelMarker] = []
+        if include_markers:
+            for idx, hilo_point in enumerate(hilo_series.points):
+                if not hilo_point.thrust_changed:
+                    continue
+                if hilo_point.thrust == 1:
+                    hilo_panel_markers.append(
+                        MomentumPanelMarker(
+                            index=idx,
+                            time=chart_times[idx],
+                            panel="hilo",
+                            marker_type="hilo_confirmed",
+                            direction="up",
+                            label="HiLo confirmed",
+                            value=hilo_point.slow_d,
+                            reason="HiLo thrust transitioned to bullish/confirmed",
+                        )
+                    )
+                elif hilo_point.thrust == -1:
+                    hilo_panel_markers.append(
+                        MomentumPanelMarker(
+                            index=idx,
+                            time=chart_times[idx],
+                            panel="hilo",
+                            marker_type="hilo_deconfirmed",
+                            direction="down",
+                            label="HiLo deconfirmed",
+                            value=hilo_point.slow_d,
+                            reason="HiLo thrust transitioned to bearish/unconfirmed",
+                        )
+                    )
+                else:
+                    hilo_panel_markers.append(
+                        MomentumPanelMarker(
+                            index=idx,
+                            time=chart_times[idx],
+                            panel="hilo",
+                            marker_type="hilo_state_transition",
+                            direction="neutral",
+                            label="HiLo state transition",
+                            value=hilo_point.slow_d,
+                            reason="HiLo thrust state changed",
+                        )
+                    )
+
         return MomentumChartPayload(
             symbol=symbol,
             timeframe=timeframe_upper,
@@ -305,4 +525,8 @@ class MomentumChartService:
             higher_timeframe=tm_series.higher_timeframe_label,
             parity_status=tm_series.parity_status,
             calculation_notes=notes,
+            visual_parity_snapshot=visual_parity_snapshot,
+            visual_parity_series=visual_parity_series,
+            true_momentum_panel_markers=true_momentum_panel_markers,
+            hilo_panel_markers=hilo_panel_markers,
         )

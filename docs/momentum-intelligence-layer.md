@@ -127,6 +127,93 @@ Failure modes:
 
 ---
 
+## Visual parity chart polish
+
+The Momentum chart now exposes a normalized visual parity surface so
+operators can quickly compare MM rendered charts against Thinkorswim
+visual labels for the same symbol / timeframe / bar. Nothing here
+changes ranking math, scoring, approval, paper-order, replay, or
+options behavior — it is rendered context only, sourced from already-
+computed indicator state.
+
+**Payload additions** (in `MomentumChartPayload`):
+
+- `visual_parity_snapshot` — normalized latest-bar parity status.
+  Fields: `as_of`, `symbol`, `timeframe`, `history_range`,
+  `total_score`, `total_label`, `trend_score`, `momo_score`,
+  `true_momentum`, `true_momentum_ema`, `hilo_elite_value`,
+  `hilo_thrust_state`, `hilo_score`, `pullback_signal`,
+  `reversal_warning`, `no_trade_warning`, `iv_percent`,
+  `source_notes`, `unavailable_fields`. The HiLo scalar
+  (`hilo_elite_value`, the rendered SlowD line) is kept distinct
+  from the categorical `hilo_thrust_state` so the UI never collapses
+  the two. `iv_percent` is intentionally `None` and listed in
+  `unavailable_fields` because no deterministic IV / IV-percentile
+  source is wired into the Momentum chart payload yet — fabricating
+  one would break the parity charter.
+- `visual_parity_series` — per-bar parity snapshots aligned to the
+  candle time axis so the frontend can look up status by hovered
+  bar. Latest-bar status is also derivable from the last entry.
+- `true_momentum_panel_markers` — deterministic markers on the True
+  Momentum panel. `bullish_cross` fires when True Momentum crosses
+  above its EMA; `bearish_cross` fires when it crosses below.
+- `hilo_panel_markers` — deterministic markers on the HiLo panel
+  derived from the existing `thrust_changed` flag on the HiLo
+  series. `hilo_confirmed` (up), `hilo_deconfirmed` (down), or
+  `hilo_state_transition` (neutral).
+
+Markers describe deterministic context only. They are never trade
+approval, buy/sell signals, or execution intent.
+
+**Frontend surfaces:**
+
+- `apps/web/components/charts/chart-status-badges.tsx` —
+  `CandleStatusBadges`, `TrueMomentumPanelStatusBadges`, and
+  `HiloPanelStatusBadges`. Compact top-left badge rows above each
+  panel; values are sourced from the latest parity snapshot (or a
+  hovered bar via `findVisualParityForTime`).
+- `apps/web/components/charts/momentum-context-legend.tsx` —
+  collapsible glossary of candle-pane annotations (Rally context,
+  Pullback context, Reversal warning, Neutral → Bull, Neutral →
+  Bear, No-trade warning, True Momentum cross up/down, HiLo
+  confirmed/deconfirmed). Copy is deterministic and non-actionable.
+- `MomentumSummaryPanel` now renders a "Visual parity snapshot"
+  strip and the annotation glossary alongside the existing summary
+  badges so the Recommendation detail / Strategy Workbench / Symbol
+  Snapshot surfaces all carry the parity-review context.
+- `MomentumWorkspace` renders per-panel badges above the candle,
+  True Momentum, and HiLo charts and includes the legend below the
+  panel stack. True Momentum and EMA are split into bullish (above
+  EMA, green) and bearish (below EMA, red) segments via
+  `splitMomentumLineByDirection` so direction is visually obvious.
+
+**Scope guarantees:**
+
+- No ranking math, queue sorting, recommendation approval,
+  paper-order, replay, options, or backend scoring behavior changed.
+- No Momentum indicator math changed — every parity field is sourced
+  from values the indicator engines already compute.
+- No active Phase C implementation.
+- No database migration.
+- No LLM call, OCR, or image parsing.
+- Thinkorswim B/S labels and shaded swing zones are **deferred**
+  because no deterministic MM equivalent exists. They will be
+  reconsidered only if/when an equivalent deterministic signal is
+  defined under this charter.
+- IV% is **unavailable** for now and surfaces as "IV% —" with
+  `unavailable=true` on every badge. The schema reserves the field
+  so a future deterministic IV source can populate it without a
+  contract change.
+
+This polish is the operator-side companion to the visual/manual
+Thinkorswim parity workflow documented in
+[`thinkorswim-momentum-parity.md`](thinkorswim-momentum-parity.md):
+operators can now read MM's ToS-comparable values directly on the
+chart and compare against the rendered Thinkorswim chart labels for
+the same bar.
+
+---
+
 ## Phase A3 — visual QA / operator hardening
 
 Phase A3 is **polish only** — no new ranking influence, no strategy families,

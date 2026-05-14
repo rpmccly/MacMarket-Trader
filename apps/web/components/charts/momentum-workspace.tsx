@@ -15,6 +15,12 @@ import { useEffect, useRef, useState } from "react";
 
 import { Card, ErrorState, StatusBadge } from "@/components/operator-ui";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
+import {
+  CandleStatusBadges,
+  HiloPanelStatusBadges,
+  TrueMomentumPanelStatusBadges,
+} from "@/components/charts/chart-status-badges";
+import { MomentumContextLegend } from "@/components/charts/momentum-context-legend";
 import { ChartHistoryRangeSelect } from "@/components/charts/chart-history-range-select";
 import {
   defaultChartHistoryRange,
@@ -26,10 +32,12 @@ import {
   describeHigherTimeframeSource,
   describeParityStatus,
   MOMENTUM_DETERMINISTIC_NOTE,
+  splitMomentumLineByDirection,
 } from "@/lib/momentum-chart";
 import {
   fetchMomentumChart,
   type MomentumChartPayload,
+  type MomentumPanelMarker,
   type MomentumSignalMarker,
 } from "@/lib/momentum-api";
 
@@ -57,6 +65,16 @@ function markerProps(marker: MomentumSignalMarker): {
 } {
   if (marker.direction === "bullish") return { position: "belowBar", color: COLORS.bull, shape: "arrowUp" };
   if (marker.direction === "bearish") return { position: "aboveBar", color: COLORS.bear, shape: "arrowDown" };
+  return { position: "aboveBar", color: COLORS.warn, shape: "circle" };
+}
+
+function panelMarkerProps(marker: MomentumPanelMarker): {
+  position: "belowBar" | "aboveBar";
+  color: string;
+  shape: "arrowUp" | "arrowDown" | "circle";
+} {
+  if (marker.direction === "up") return { position: "belowBar", color: COLORS.bull, shape: "arrowUp" };
+  if (marker.direction === "down") return { position: "aboveBar", color: COLORS.bear, shape: "arrowDown" };
   return { position: "aboveBar", color: COLORS.warn, shape: "circle" };
 }
 
@@ -181,26 +199,95 @@ export function MomentumWorkspace() {
       );
     }
 
-    const trueMomentumLine: LineData<Time>[] = data.true_momentum_line.map((p) => ({ time: p.time as Time, value: p.value }));
-    const trueMomentumEmaLine: LineData<Time>[] = data.true_momentum_ema_line.map((p) => ({ time: p.time as Time, value: p.value }));
-    if (trueMomentumLine.length > 0) {
-      const tm = trueChart.addLineSeries({ color: COLORS.trueMomentum, lineWidth: 2 });
-      tm.setData(trueMomentumLine);
+    // Directional True Momentum / EMA series — bullish (above EMA)
+    // renders green, bearish (below EMA) renders red so direction is
+    // visually obvious in the same way as the Thinkorswim chart. The
+    // raw numeric values are preserved; only the visual segmentation
+    // is recomputed for split-series overlay rendering.
+    const { bullSeries: tmBull, bearSeries: tmBear } = splitMomentumLineByDirection(
+      data.true_momentum_line,
+      data.true_momentum_ema_line,
+    );
+    const { bullSeries: emaBull, bearSeries: emaBear } = splitMomentumLineByDirection(
+      data.true_momentum_ema_line,
+      data.true_momentum_line,
+    );
+    if (tmBull.length > 0) {
+      const series = trueChart.addLineSeries({ color: COLORS.bull, lineWidth: 2 });
+      series.setData(tmBull.map((p) => ({ time: p.time as Time, value: p.value })));
     }
-    if (trueMomentumEmaLine.length > 0) {
-      const tmEma = trueChart.addLineSeries({ color: COLORS.trueMomentumEma, lineWidth: 2 });
-      tmEma.setData(trueMomentumEmaLine);
+    if (tmBear.length > 0) {
+      const series = trueChart.addLineSeries({ color: COLORS.bear, lineWidth: 2 });
+      series.setData(tmBear.map((p) => ({ time: p.time as Time, value: p.value })));
+    }
+    if (emaBull.length > 0) {
+      const series = trueChart.addLineSeries({ color: COLORS.bull, lineWidth: 1, lineStyle: 2 });
+      series.setData(emaBull.map((p) => ({ time: p.time as Time, value: p.value })));
+    }
+    if (emaBear.length > 0) {
+      const series = trueChart.addLineSeries({ color: COLORS.bear, lineWidth: 1, lineStyle: 2 });
+      series.setData(emaBear.map((p) => ({ time: p.time as Time, value: p.value })));
+    }
+
+    // Render True Momentum panel markers (cross-up / cross-down) on
+    // the True Momentum series. Markers describe deterministic context
+    // only — they are never buy/sell signals.
+    const tmMarkers = data.true_momentum_panel_markers ?? [];
+    if (tmMarkers.length > 0 && (tmBull.length > 0 || tmBear.length > 0)) {
+      // Attach to whichever series has the most data — markers display
+      // independent of the underlying series direction.
+      const carrier = trueChart.addLineSeries({
+        color: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const carrierData: LineData<Time>[] = data.true_momentum_line.map((p) => ({
+        time: p.time as Time,
+        value: p.value,
+      }));
+      carrier.setData(carrierData);
+      carrier.setMarkers(
+        tmMarkers.map((m) => {
+          const props = panelMarkerProps(m);
+          return {
+            time: m.time as Time,
+            position: props.position,
+            color: props.color,
+            shape: props.shape,
+            text: m.label,
+          };
+        }),
+      );
     }
 
     const slowDLine: LineData<Time>[] = data.hilo_slowd_line.map((p) => ({ time: p.time as Time, value: p.value }));
     const slowDXLine: LineData<Time>[] = data.hilo_slowd_x_line.map((p) => ({ time: p.time as Time, value: p.value }));
+    let hiloMarkerSeries: ISeriesApi<"Line"> | null = null;
     if (slowDLine.length > 0) {
       const sd = hiloChart.addLineSeries({ color: COLORS.slowD, lineWidth: 2 });
       sd.setData(slowDLine);
+      hiloMarkerSeries = sd;
     }
     if (slowDXLine.length > 0) {
       const sdx = hiloChart.addLineSeries({ color: COLORS.slowDX, lineWidth: 2 });
       sdx.setData(slowDXLine);
+    }
+
+    const hiloMarkers = data.hilo_panel_markers ?? [];
+    if (hiloMarkerSeries && hiloMarkers.length > 0) {
+      hiloMarkerSeries.setMarkers(
+        hiloMarkers.map((m) => {
+          const props = panelMarkerProps(m);
+          return {
+            time: m.time as Time,
+            position: props.position,
+            color: props.color,
+            shape: props.shape,
+            text: m.label,
+          };
+        }),
+      );
     }
 
     if (data.score_strip.length > 0) {
@@ -339,15 +426,36 @@ export function MomentumWorkspace() {
           One canonical time axis spans all five panels. Markers describe deterministic context only — they are not buy or sell instructions.
         </p>
         <PanelHeading title="Price" hint="Primary candles" />
+        <div style={{ marginBottom: 4 }}>
+          <CandleStatusBadges
+            snapshot={data?.visual_parity_snapshot ?? null}
+            testId="workspace-candle-status-badges"
+          />
+        </div>
         <div ref={priceRef} role="img" aria-label="Price candles" style={{ minHeight: 200 }} />
-        <PanelHeading title="True Momentum vs EMA" hint="Lower-pane lines" />
+        <PanelHeading title="True Momentum vs EMA" hint="Lower-pane lines (green=above EMA, red=below)" />
+        <div style={{ marginBottom: 4 }}>
+          <TrueMomentumPanelStatusBadges
+            snapshot={data?.visual_parity_snapshot ?? null}
+            testId="workspace-true-momentum-status-badges"
+          />
+        </div>
         <div ref={trueMomentumRef} role="img" aria-label="True Momentum and EMA panel" style={{ minHeight: 90 }} />
         <PanelHeading title="HiLo SlowD vs SlowD_X" hint="Stochastic cycle context" />
+        <div style={{ marginBottom: 4 }}>
+          <HiloPanelStatusBadges
+            snapshot={data?.visual_parity_snapshot ?? null}
+            testId="workspace-hilo-status-badges"
+          />
+        </div>
         <div ref={hiloRef} role="img" aria-label="HiLo SlowD and SlowD X panel" style={{ minHeight: 90 }} />
         <PanelHeading title="Composite total score" hint="Histogram (-130…+130)" />
         <div ref={scoreRef} role="img" aria-label="Composite score histogram" style={{ minHeight: 80 }} />
         <PanelHeading title="HiLo thrust strip" hint="Bullish / bearish / neutral" />
         <div ref={thrustRef} role="img" aria-label="HiLo thrust strip" style={{ minHeight: 60 }} />
+        <div style={{ marginTop: 8 }}>
+          <MomentumContextLegend testId="workspace-context-legend" />
+        </div>
       </Card>
 
       <MomentumSummaryPanel payload={data} loading={loading} error={error} title="Momentum Intelligence snapshot" />

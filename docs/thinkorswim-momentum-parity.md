@@ -29,6 +29,48 @@ study-row exports given the ToS limitation. They are auditable but
 not row-level CSV exports, and the validator labels them as such on
 every surface.
 
+## Visual parity chart polish
+
+To accelerate the manual observation step, the MM Momentum chart now
+renders a ToS-comparable visual parity surface that mirrors the
+rendered Thinkorswim chart label fields (Total Score, Total Label,
+True Momentum, True Momentum EMA, HiLo Elite value, HiLo thrust
+state, HiLo score, Pullback / Reversal / No-trade flags, and a
+reserved IV% slot). Polish summary:
+
+- A normalized `visual_parity_snapshot` ships in every
+  `MomentumChartPayload`. A per-bar `visual_parity_series` lets the
+  frontend look up status by hovered bar (latest-bar status is the
+  fallback when no hover is active).
+- Compact top-left status badge rows render above the candle pane,
+  the True Momentum panel, and the HiLo panel. IV% is shown as
+  "IV% —" with `unavailable=true` until a deterministic IV /
+  IV-percentile source exists; the schema field is reserved so it
+  can populate cleanly later.
+- True Momentum and EMA segments are colored green when True
+  Momentum is above its EMA (constructive) and red when below
+  (weakening) so direction is visually obvious. The raw numeric
+  values are preserved; only the visual segmentation is recomputed.
+- Deterministic arrows mark True Momentum / EMA crosses
+  (`bullish_cross`, `bearish_cross`) and HiLo thrust state changes
+  (`hilo_confirmed`, `hilo_deconfirmed`, `hilo_state_transition`).
+  Arrows describe context only — they are never buy/sell signals.
+- A collapsible "Chart annotation glossary" component documents
+  Rally context, Pullback context, Reversal warning, Neutral → Bull,
+  Neutral → Bear, No-trade warning, and the new cross/transition
+  markers in deterministic, non-actionable copy.
+- Thinkorswim B/S labels and shaded swing zones are **deferred** in
+  this pass because no deterministic MM equivalent exists. They
+  will be revisited only if/when an equivalent deterministic signal
+  is defined.
+
+The polish does **not** change ranking math, queue sorting,
+recommendation approval, paper-order behavior, replay behavior,
+options behavior, backend scoring, or the underlying Momentum
+indicator math. Visual parity remains operator-reviewed manual
+observation evidence — the chart polish just makes that review
+faster.
+
 The parity workflow is the bridge between the "Phase B6 active
 trial" posture and any future Phase C activation. Until a real parity
 review lands here, the operator UI surfaces

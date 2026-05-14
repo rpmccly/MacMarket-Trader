@@ -1451,3 +1451,88 @@ describe("Momentum Intelligence Phase B6 safety-guard guards", () => {
     }
   });
 });
+
+describe("Momentum visual parity chart polish guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Momentum summary panel imports the visual parity badges + legend", () => {
+    const source = read("components/charts/momentum-summary-panel.tsx");
+    expect(source).toContain("@/components/charts/chart-status-badges");
+    expect(source).toContain("@/components/charts/momentum-context-legend");
+    expect(source).toContain("CandleStatusBadges");
+    expect(source).toContain("MomentumContextLegend");
+    expect(source).toContain("buildVisualParityFields");
+  });
+
+  it("Momentum workspace wires status badges + legend on the canonical chart page", () => {
+    const source = read("components/charts/momentum-workspace.tsx");
+    expect(source).toContain("CandleStatusBadges");
+    expect(source).toContain("TrueMomentumPanelStatusBadges");
+    expect(source).toContain("HiloPanelStatusBadges");
+    expect(source).toContain("MomentumContextLegend");
+    expect(source).toContain("splitMomentumLineByDirection");
+    expect(source).toContain("true_momentum_panel_markers");
+    expect(source).toContain("hilo_panel_markers");
+  });
+
+  it("Recommendations page imports MomentumSummaryPanel so the parity polish reaches the recommendation detail surface", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain("MomentumSummaryPanel");
+    expect(source).toContain("@/components/charts/momentum-summary-panel");
+  });
+
+  it("Chart parity badges/legend are not imported into order, paper-order, or replay route handlers", () => {
+    const routesToGuard = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+      "app/api/user/recommendations/queue/route.ts",
+      "app/api/user/recommendations/queue/promote/route.ts",
+    ];
+    for (const route of routesToGuard) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      expect(source).not.toContain("chart-status-badges");
+      expect(source).not.toContain("momentum-context-legend");
+      expect(source).not.toContain("splitMomentumLineByDirection");
+      expect(source).not.toContain("CandleStatusBadges");
+    }
+  });
+
+  it("Chart parity surfaces never use trade-approval or order-routing language", () => {
+    const surfaces = [
+      "lib/momentum-chart.ts",
+      "components/charts/chart-status-badges.tsx",
+      "components/charts/momentum-context-legend.tsx",
+    ];
+    const forbidden = [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+    ];
+    for (const surface of surfaces) {
+      const source = readSafe(surface);
+      expect(source).not.toBeNull();
+      const lower = (source ?? "").toLowerCase();
+      for (const phrase of forbidden) {
+        expect(lower.includes(phrase)).toBe(false);
+      }
+    }
+  });
+});

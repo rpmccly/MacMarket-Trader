@@ -1384,6 +1384,93 @@ class MomentumChartExplanation(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class MomentumVisualParitySnapshot(BaseModel):
+    """Normalized chart-context status snapshot for ToS-comparable
+    visual parity review.
+
+    Every field is sourced from already-computed Momentum indicator
+    state — no values are recomputed here and no formula changes.
+    Missing fields (e.g. ``iv_percent`` when no deterministic IV
+    source exists) come through as ``None`` and are surfaced via
+    ``unavailable_fields`` so the UI can label them rather than
+    fabricating a value.
+    """
+
+    as_of: str | None = None
+    symbol: str | None = None
+    timeframe: str | None = None
+    history_range: str | None = None
+    total_score: int | None = None
+    total_label: str | None = None
+    trend_score: float | None = None
+    momo_score: float | None = None
+    true_momentum: float | None = None
+    true_momentum_ema: float | None = None
+    # HiLo scalar — most closely corresponds to ToS ST_HiLoElite. This
+    # is the slow-D series value (the rendered chart line) rather than
+    # the categorical thrust state.
+    hilo_elite_value: float | None = None
+    # Categorical thrust state — kept distinct from the HiLo scalar so
+    # the UI never collapses the two into one cell.
+    hilo_thrust_state: Literal["bullish", "bearish", "neutral"] | None = None
+    # Composite HiLo score component (already part of the breakdown).
+    hilo_score: int | None = None
+    pullback_signal: bool | None = None
+    reversal_warning: bool | None = None
+    no_trade_warning: bool | None = None
+    iv_percent: float | None = None
+    source_notes: list[str] = Field(default_factory=list)
+    unavailable_fields: list[str] = Field(default_factory=list)
+
+
+class MomentumVisualParityPoint(BaseModel):
+    """Per-bar visual parity snapshot.
+
+    Used by the chart frontend to look up status fields by hovered
+    bar so the top-left status badges can reflect the bar under the
+    cursor. Latest-bar status is also derivable from the last entry.
+    """
+
+    index: int
+    time: str | int
+    total_score: int
+    total_label: str
+    total_state: str
+    trend_score: float
+    momo_score: float
+    true_momentum: float
+    true_momentum_ema: float
+    hilo_elite_value: float
+    hilo_thrust_state: Literal["bullish", "bearish", "neutral"]
+    hilo_score: int
+    pullback_signal: bool
+    reversal_warning: bool
+    no_trade_warning: bool
+
+
+class MomentumPanelMarker(BaseModel):
+    """Deterministic marker rendered on the True Momentum or HiLo
+    panel. Markers describe deterministic context only — they are
+    never trade approval, buy/sell signals, or execution intent.
+    """
+
+    index: int
+    time: str | int
+    panel: Literal["true_momentum", "hilo"]
+    marker_type: Literal[
+        "bullish_cross",
+        "bearish_cross",
+        "hilo_confirmed",
+        "hilo_deconfirmed",
+        "state_transition",
+        "hilo_state_transition",
+    ]
+    direction: Literal["up", "down", "neutral"]
+    label: str
+    value: float
+    reason: str
+
+
 class MomentumChartRequest(BaseModel):
     symbol: str
     timeframe: str = "1D"
@@ -1577,6 +1664,19 @@ class MomentumChartPayload(BaseModel):
     lookback_days: int | None = None
     bars_returned: int | None = None
     calculation_notes: list[str] = Field(default_factory=list)
+    # ── Visual parity chart polish ────────────────────────────────────
+    # Latest-bar normalized parity snapshot for the candle / panel
+    # top-left status badges. Hover-aware UIs can lookup
+    # ``visual_parity_series`` by time and fall back to this latest
+    # snapshot when no hover is active.
+    visual_parity_snapshot: MomentumVisualParitySnapshot | None = None
+    visual_parity_series: list[MomentumVisualParityPoint] = Field(default_factory=list)
+    # Panel-specific markers (separate from candle-pane ``markers``).
+    # ``true_momentum_panel_markers`` carries bullish/bearish crosses
+    # on the True Momentum / EMA panel; ``hilo_panel_markers`` carries
+    # HiLo thrust state transitions.
+    true_momentum_panel_markers: list[MomentumPanelMarker] = Field(default_factory=list)
+    hilo_panel_markers: list[MomentumPanelMarker] = Field(default_factory=list)
 
 
 class TrueMomentumStrategyFamilySpecPayload(BaseModel):
