@@ -195,4 +195,82 @@ describe("TrueMomentumPhaseCCloseoutCardView", () => {
     expect(html).toContain('data-testid="true-momentum-phase-c-closeout-card-deterministic-note"');
     expect(html).toContain('data-testid="true-momentum-phase-c-closeout-card-recommended-action"');
   });
+
+  it("renders the paper-order-creation badge as manual / unaffected", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus(),
+    });
+    const html = renderToStaticMarkup(
+      <TrueMomentumPhaseCCloseoutCardView status={status} />,
+    );
+    expect(html).toContain('data-testid="true-momentum-phase-c-closeout-card-paper-order"');
+    expect(html).toContain("Paper-order creation: manual / unaffected");
+  });
+
+  it("renders the current parity summary block with SPY / XLK / XLE passing and XLP composite-mismatch", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus({
+        thinkorswim_parity_symbol_summaries: [
+          {
+            symbol: "SPY",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLK",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLE",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLP",
+            status: "visual_failed",
+            diagnostic_classification: [
+              "oscillator_aligned",
+              "composite_mismatch",
+            ],
+            diagnostic_flags: {
+              oscillator_aligned: true,
+              composite_score_failed: true,
+            },
+            reason_codes: [],
+          },
+        ],
+      }),
+    });
+    const html = renderToStaticMarkup(
+      <TrueMomentumPhaseCCloseoutCardView status={status} />,
+    );
+    expect(html).toContain('data-testid="true-momentum-phase-c-closeout-card-parity-summary"');
+    expect(html).toContain("Visual attestation passed");
+    expect(html).toContain("SPY");
+    expect(html).toContain("XLK");
+    expect(html).toContain("XLE");
+    expect(html).toContain("Visual attestation failed");
+    expect(html).toContain("Composite mismatch under review");
+    expect(html).toContain("XLP");
+  });
+
+  it("renders the dedicated xlp_composite_mismatch blocker line", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus(),
+    });
+    const html = renderToStaticMarkup(
+      <TrueMomentumPhaseCCloseoutCardView status={status} />,
+    );
+    expect(html).toContain(
+      'data-testid="true-momentum-phase-c-closeout-card-blocker-xlp_composite_mismatch"',
+    );
+    expect(html).toContain("XLP composite mismatch under review");
+  });
 });

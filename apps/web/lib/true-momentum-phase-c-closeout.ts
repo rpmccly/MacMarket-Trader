@@ -25,6 +25,7 @@ export const TRUE_MOMENTUM_PHASE_C_CLOSEOUT_DETERMINISTIC_NOTE =
 
 export type TrueMomentumPhaseCBlockerId =
   | "parity_mixed"
+  | "xlp_composite_mismatch"
   | "insufficient_b8_evidence"
   | "insufficient_c3_cohort"
   | "operator_authorization_required"
@@ -49,7 +50,8 @@ export type TrueMomentumPhaseCShippedPhaseId =
   | "C2.2"
   | "C3"
   | "C4"
-  | "C4.1";
+  | "C4.1"
+  | "C4.2";
 
 export const TRUE_MOMENTUM_PHASE_C_SHIPPED_PHASES: ReadonlyArray<TrueMomentumPhaseCShippedPhaseId> = [
   "C0",
@@ -60,7 +62,16 @@ export const TRUE_MOMENTUM_PHASE_C_SHIPPED_PHASES: ReadonlyArray<TrueMomentumPha
   "C3",
   "C4",
   "C4.1",
+  "C4.2",
 ];
+
+export type TrueMomentumPhaseCParitySummary = {
+  visual_attestation_passed_symbols: string[];
+  visual_attestation_failed_symbols: string[];
+  visual_attestation_partial_symbols: string[];
+  oscillator_aligned_symbols: string[];
+  composite_mismatch_symbols: string[];
+};
 
 export type TrueMomentumPhaseCCloseoutStatus = {
   research_implementation_status: "complete" | "incomplete";
@@ -68,9 +79,12 @@ export type TrueMomentumPhaseCCloseoutStatus = {
   can_generate_queue_candidates: false;
   can_approve_trades: false;
   can_route_orders: false;
+  can_size_trades: false;
+  can_create_paper_orders: false;
   can_change_paper_order_behavior: false;
   blockers: TrueMomentumPhaseCBlocker[];
   shipped_phases: ReadonlyArray<TrueMomentumPhaseCShippedPhaseId>;
+  current_parity_summary: TrueMomentumPhaseCParitySummary;
   next_allowed_phase: {
     id: string;
     label: string;
@@ -121,9 +135,10 @@ export function buildTrueMomentumPhaseCCloseoutStatus(
   args: BuildTrueMomentumPhaseCCloseoutArgs,
 ): TrueMomentumPhaseCCloseoutStatus {
   const blockers: TrueMomentumPhaseCBlocker[] = [];
+  const parity_summary = buildTrueMomentumPhaseCParitySummary(args.rankingStatus);
 
   // Parity blocker — surface every symbol carrying composite_mismatch.
-  const compositeMismatchSymbols = collectCompositeMismatchSymbols(args.rankingStatus);
+  const compositeMismatchSymbols = parity_summary.composite_mismatch_symbols;
   if (compositeMismatchSymbols.length > 0) {
     blockers.push({
       id: "parity_mixed",
@@ -132,6 +147,23 @@ export function buildTrueMomentumPhaseCCloseoutStatus(
         "At least one visual_attestation fixture is oscillator_aligned + composite_mismatch. Resolve or document the composite-score divergence before treating parity as fully attested.",
       symbols: compositeMismatchSymbols,
     });
+    // XLP-specific blocker — surface separately so the closeout card
+    // and the docs contract test can pin the current research item by
+    // name. Fires whenever the parity summary carries XLP as a
+    // composite_mismatch symbol; never blocks unrelated symbols.
+    if (
+      compositeMismatchSymbols
+        .map((s) => s.toUpperCase())
+        .includes("XLP")
+    ) {
+      blockers.push({
+        id: "xlp_composite_mismatch",
+        label: "XLP composite mismatch under review",
+        detail:
+          "XLP visual_attestation: True Momentum / EMA oscillator fields aligned, but composite total score / label differ (ToS 35 Neutral vs MM 65 Neutral Up). Resolve or document the divergence (capture MM composite breakdown + close-price context) before any future active Phase C decision.",
+        symbols: ["XLP"],
+      });
+    }
   }
 
   // B8 outcome evidence corpus.
@@ -188,13 +220,58 @@ export function buildTrueMomentumPhaseCCloseoutStatus(
     can_generate_queue_candidates: false,
     can_approve_trades: false,
     can_route_orders: false,
+    can_size_trades: false,
+    can_create_paper_orders: false,
     can_change_paper_order_behavior: false,
     blockers,
     shipped_phases: TRUE_MOMENTUM_PHASE_C_SHIPPED_PHASES,
+    current_parity_summary: parity_summary,
     next_allowed_phase: NEXT_ALLOWED_PHASE,
     recommended_action: RECOMMENDED_ACTION,
     deterministic_note: TRUE_MOMENTUM_PHASE_C_CLOSEOUT_DETERMINISTIC_NOTE,
   };
+}
+
+/**
+ * Project the per-symbol parity summary into the lists the closeout
+ * card renders (pass, fail, partial, oscillator-aligned,
+ * composite-mismatch). Pure helper — never mutates inputs.
+ */
+export function buildTrueMomentumPhaseCParitySummary(
+  rankingStatus: MomentumRankingStatus | null | undefined,
+): TrueMomentumPhaseCParitySummary {
+  const summary: TrueMomentumPhaseCParitySummary = {
+    visual_attestation_passed_symbols: [],
+    visual_attestation_failed_symbols: [],
+    visual_attestation_partial_symbols: [],
+    oscillator_aligned_symbols: [],
+    composite_mismatch_symbols: [],
+  };
+  const entries = rankingStatus?.thinkorswim_parity_symbol_summaries;
+  if (!Array.isArray(entries)) return summary;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const symbol = typeof entry.symbol === "string" ? entry.symbol.toUpperCase() : "";
+    if (!symbol) continue;
+    const status = typeof entry.status === "string" ? entry.status : "";
+    if (status === "visual_attested" || status === "passed") {
+      summary.visual_attestation_passed_symbols.push(symbol);
+    } else if (status === "visual_failed" || status === "failed") {
+      summary.visual_attestation_failed_symbols.push(symbol);
+    } else if (status === "visual_partial" || status === "partial") {
+      summary.visual_attestation_partial_symbols.push(symbol);
+    }
+    const classification = entry.diagnostic_classification;
+    if (Array.isArray(classification)) {
+      if (classification.includes("oscillator_aligned")) {
+        summary.oscillator_aligned_symbols.push(symbol);
+      }
+      if (classification.includes("composite_mismatch")) {
+        summary.composite_mismatch_symbols.push(symbol);
+      }
+    }
+  }
+  return summary;
 }
 
 export function collectCompositeMismatchSymbols(
@@ -217,13 +294,11 @@ export function collectCompositeMismatchSymbols(
 export function summarizeTrueMomentumPhaseCCloseout(
   status: TrueMomentumPhaseCCloseoutStatus,
 ): TrueMomentumPhaseCCompletionSummary {
-  const compositeMismatch = (
-    status.blockers.find((b) => b.id === "parity_mixed")?.symbols ?? []
-  ).slice();
   return {
     shipped: status.shipped_phases,
     blockers_open: status.blockers.length,
-    composite_mismatch_symbols: compositeMismatch,
+    composite_mismatch_symbols:
+      status.current_parity_summary.composite_mismatch_symbols.slice(),
   };
 }
 

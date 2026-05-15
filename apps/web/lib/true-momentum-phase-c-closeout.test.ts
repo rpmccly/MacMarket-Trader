@@ -102,6 +102,7 @@ describe("buildTrueMomentumPhaseCCloseoutStatus", () => {
       "C3",
       "C4",
       "C4.1",
+      "C4.2",
     ]);
   });
 
@@ -248,5 +249,109 @@ describe("trueMomentumPhaseCCloseoutBlockerLabels", () => {
     expect(labels).toContain("Visual parity mixed");
     expect(labels).toContain("Operator authorization required");
     expect(labels).toContain("Active Phase C generation is not implemented");
+  });
+});
+
+describe("Phase C closeout extended capability flags", () => {
+  it("can_size_trades and can_create_paper_orders are always false", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus(),
+    });
+    expect(status.can_size_trades).toBe(false);
+    expect(status.can_create_paper_orders).toBe(false);
+  });
+});
+
+describe("xlp_composite_mismatch blocker", () => {
+  it("surfaces xlp_composite_mismatch as a separate blocker when XLP is in composite mismatch", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus(),
+    });
+    const xlpBlocker = status.blockers.find((b) => b.id === "xlp_composite_mismatch");
+    expect(xlpBlocker).toBeDefined();
+    expect(xlpBlocker?.symbols).toEqual(["XLP"]);
+    expect(xlpBlocker?.label.toLowerCase()).toContain("xlp");
+  });
+
+  it("does not emit xlp_composite_mismatch when XLP is not present", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus({
+        thinkorswim_parity_symbol_summaries: [
+          {
+            symbol: "SPY",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+        ],
+      }),
+    });
+    expect(
+      status.blockers.find((b) => b.id === "xlp_composite_mismatch"),
+    ).toBeUndefined();
+  });
+});
+
+describe("current_parity_summary", () => {
+  it("buckets symbols by status and classification", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus({
+        thinkorswim_parity_symbol_summaries: [
+          {
+            symbol: "SPY",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLK",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLE",
+            status: "visual_attested",
+            diagnostic_classification: ["oscillator_aligned"],
+            diagnostic_flags: { oscillator_aligned: true },
+            reason_codes: [],
+          },
+          {
+            symbol: "XLP",
+            status: "visual_failed",
+            diagnostic_classification: [
+              "oscillator_aligned",
+              "composite_mismatch",
+            ],
+            diagnostic_flags: {
+              oscillator_aligned: true,
+              composite_score_failed: true,
+            },
+            reason_codes: [],
+          },
+        ],
+      }),
+    });
+    const summary = status.current_parity_summary;
+    expect(summary.visual_attestation_passed_symbols).toEqual(
+      expect.arrayContaining(["SPY", "XLK", "XLE"]),
+    );
+    expect(summary.visual_attestation_failed_symbols).toEqual(["XLP"]);
+    expect(summary.composite_mismatch_symbols).toEqual(["XLP"]);
+    expect(summary.oscillator_aligned_symbols).toEqual(
+      expect.arrayContaining(["SPY", "XLK", "XLE", "XLP"]),
+    );
+  });
+
+  it("is empty when no parity report has landed", () => {
+    const status = buildTrueMomentumPhaseCCloseoutStatus({
+      rankingStatus: rankingStatus({ thinkorswim_parity_symbol_summaries: [] }),
+    });
+    expect(status.current_parity_summary.visual_attestation_passed_symbols).toEqual([]);
+    expect(status.current_parity_summary.visual_attestation_failed_symbols).toEqual([]);
+    expect(status.current_parity_summary.composite_mismatch_symbols).toEqual([]);
   });
 });

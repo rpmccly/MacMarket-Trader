@@ -17,8 +17,8 @@ generation remains reserved and is not implemented.
 | **C3** | `apps/web/lib/true-momentum-cohort-review.ts` + cohort panel | Local cohort archive across sessions; emits a readiness label (`insufficient_evidence` / `parity_blocked` / `promising_research` / …). Strongest positive is `promising_research`. |
 | **C4** | `apps/web/lib/true-momentum-strategy-context.ts` + context card | Selected-candidate True Momentum context: family-fit badge, match strength, trigger-readiness checklist, parity/evidence caveats, activation-readiness classification. Activation readiness is research context only. |
 | **C4.1** | Recommendations page UX consolidation | C4 card is now the primary selected-candidate surface; C1/C2/C3 + B7/B8 live in a collapsible "True Momentum research evidence" section; Shadow Impact Review collapses under "Momentum ranking diagnostics". |
-| **C4.2** | Composite-mismatch drilldown on the C4 card | When the selected symbol's parity summary carries `oscillator_aligned` + `composite_mismatch`, the card surfaces a dedicated "Composite score mismatch under review" diagnostic block with ToS/MM totals, MM component attribution (when captured), and the suggested interpretation. Diagnostic-only — never alters readiness logic for unrelated symbols. |
-| **C (closeout)** | `apps/web/lib/true-momentum-phase-c-closeout.ts` + closeout card | Operator-readable summary of the closeout posture, blockers, and the next allowed research phase. |
+| **C4.2** | Composite-mismatch drilldown on the C4 card | When the selected symbol's parity summary carries `oscillator_aligned` + `composite_mismatch`, the card surfaces a dedicated "Composite score mismatch under review" diagnostic block with ToS/MM totals, MM component attribution (when captured), True Momentum + EMA comparison status, and the suggested interpretation. Diagnostic-only — never alters readiness logic for unrelated symbols. |
+| **C (closeout)** | `apps/web/lib/true-momentum-phase-c-closeout.ts` + closeout card | Operator-readable summary of the closeout posture, blockers (including the dedicated `xlp_composite_mismatch` blocker), current parity summary buckets (visual_attestation_passed/failed/partial/oscillator_aligned/composite_mismatch_symbols), and the next allowed research phase. |
 
 ## What is explicitly NOT shipped
 
@@ -27,6 +27,7 @@ generation remains reserved and is not implemented.
 - **Auto approval.** Operator approval remains manual.
 - **Auto sizing.** Sizing remains operator-controlled per the deterministic Phase A/B risk path.
 - **Order routing.** Order intent / OMS / paper broker behavior is unchanged.
+- **Automatic paper-order creation.** Paper-order creation remains manual / unaffected by every Phase C surface.
 
 The closeout helper / card / docs all carry the deterministic note:
 

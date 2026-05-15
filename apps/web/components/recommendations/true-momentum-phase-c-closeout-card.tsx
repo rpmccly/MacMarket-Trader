@@ -88,7 +88,60 @@ export function TrueMomentumPhaseCCloseoutCardView({
           <StatusBadge tone="neutral">
             Approval / order behavior: unchanged / manual
           </StatusBadge>
+          <StatusBadge tone="neutral" data-testid="true-momentum-phase-c-closeout-card-paper-order">
+            Paper-order creation: manual / unaffected
+          </StatusBadge>
         </div>
+
+        <section
+          aria-label="Current parity summary"
+          data-testid="true-momentum-phase-c-closeout-card-parity-summary"
+        >
+          <h4 style={{ margin: "0 0 4px 0", fontSize: "0.86rem", fontWeight: 600 }}>
+            Current parity summary
+          </h4>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.82rem" }}>
+            {status.current_parity_summary.visual_attestation_passed_symbols.length > 0 ? (
+              <li
+                data-testid="true-momentum-phase-c-closeout-card-parity-passed"
+              >
+                <strong>Visual attestation passed:</strong>{" "}
+                {status.current_parity_summary.visual_attestation_passed_symbols.join(", ")}.
+              </li>
+            ) : null}
+            {status.current_parity_summary.visual_attestation_failed_symbols.length > 0 ? (
+              <li
+                data-testid="true-momentum-phase-c-closeout-card-parity-failed"
+              >
+                <strong>Visual attestation failed:</strong>{" "}
+                {status.current_parity_summary.visual_attestation_failed_symbols.join(", ")}.
+              </li>
+            ) : null}
+            {status.current_parity_summary.composite_mismatch_symbols.length > 0 ? (
+              <li
+                data-testid="true-momentum-phase-c-closeout-card-parity-composite-mismatch"
+              >
+                <strong>Composite mismatch under review:</strong>{" "}
+                {status.current_parity_summary.composite_mismatch_symbols.join(", ")}.
+                {" "}
+                Oscillator (True Momentum / EMA) aligned; composite total score differs.
+              </li>
+            ) : null}
+            {status.current_parity_summary.oscillator_aligned_symbols.length > 0 ? (
+              <li
+                data-testid="true-momentum-phase-c-closeout-card-parity-oscillator-aligned"
+              >
+                <strong>Oscillator aligned:</strong>{" "}
+                {status.current_parity_summary.oscillator_aligned_symbols.join(", ")}.
+              </li>
+            ) : null}
+            {status.current_parity_summary.visual_attestation_passed_symbols.length === 0 &&
+            status.current_parity_summary.visual_attestation_failed_symbols.length === 0 &&
+            status.current_parity_summary.visual_attestation_partial_symbols.length === 0 ? (
+              <li>No parity-report fixtures available yet.</li>
+            ) : null}
+          </ul>
+        </section>
 
         <section
           aria-label="Phase C shipped phases"
