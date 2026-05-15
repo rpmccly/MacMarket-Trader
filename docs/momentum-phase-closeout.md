@@ -118,6 +118,23 @@ Under these values:
   live" or "activate now" wording — the strongest positive label is
   `promising_research`. Mounted inside the C2 evidence panel so the
   operator does not need to export / import bundles manually.
+- **Phase C research closeout (feature implemented).** Phase C is now
+  closed out as **research-only**. `apps/web/lib/true-momentum-phase-c-closeout.ts`
+  + the closeout card surface the research-implementation-complete /
+  active-generation-not-implemented posture, the canonical shipped
+  phases (C0 / C1 / C2 / C2.1 / C2.2 / C3 / C4 / C4.1), the remaining
+  blockers (`parity_mixed`, `insufficient_b8_evidence`,
+  `insufficient_c3_cohort`, `operator_authorization_required`,
+  `active_generation_not_implemented`), and the next allowed phase
+  (C5 research candidate proposal — still non-active and
+  non-ordering). Active Phase C strategy generation is **not
+  implemented**; no queue candidates are generated; recommendation
+  approval and paper-order behavior are unchanged. XLP remains
+  `oscillator_aligned` + `composite_mismatch` and is recorded as a
+  research item, not a parity tolerance to widen. B8 outcome
+  evidence, C3 cohort evidence, and explicit operator authorization
+  all remain required before any future active Phase C decision. See
+  [`true-momentum-phase-c-closeout.md`](true-momentum-phase-c-closeout.md).
 - **Phase C4 strategy-family research context (feature implemented).**
   Recommendations page now renders a True Momentum Strategy Context
   card for the currently selected queue candidate: family-fit badge,

@@ -1777,3 +1777,97 @@ describe("Momentum Intelligence Phase C4.1 — UX consolidation guards", () => {
     }
   });
 });
+
+describe("True Momentum Phase C research closeout guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("Phase C closeout helper carries the canonical shipped phases and no live activation copy", () => {
+    const source = read("lib/true-momentum-phase-c-closeout.ts");
+    for (const phase of ["C0", "C1", "C2", "C2.1", "C2.2", "C3", "C4", "C4.1"]) {
+      expect(source).toContain(`"${phase}"`);
+    }
+    expect(source).toContain("research_implementation_status");
+    expect(source).toContain("can_generate_queue_candidates");
+    expect(source).toContain("can_approve_trades");
+    expect(source).toContain("can_route_orders");
+    expect(source).toContain('"C5"');
+    const lower = source.toLowerCase();
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "ready for live",
+    ]) {
+      expect(lower.includes(forbidden)).toBe(false);
+    }
+  });
+
+  it("Phase C closeout card is mounted inside the research-evidence collapsible", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain(
+      "@/components/recommendations/true-momentum-phase-c-closeout-card",
+    );
+    expect(source).toContain("TrueMomentumPhaseCCloseoutCard");
+    expect(source).toContain('data-testid="true-momentum-research-evidence-closeout-section"');
+    // Closeout collapsible sits inside the parent research-evidence
+    // collapsible (i.e. after its opening anchor).
+    const evidenceIdx = source.indexOf("true-momentum-research-evidence-section");
+    const closeoutIdx = source.indexOf("true-momentum-research-evidence-closeout-section");
+    expect(evidenceIdx).toBeGreaterThan(-1);
+    expect(closeoutIdx).toBeGreaterThan(evidenceIdx);
+  });
+
+  it("Phase C closeout helper / card are not imported into order / paper / replay / options-paper routes", () => {
+    const routesToGuard = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+      "app/api/user/recommendations/queue/promote/route.ts",
+    ];
+    const forbidden = [
+      "@/lib/true-momentum-phase-c-closeout",
+      "true-momentum-phase-c-closeout-card",
+      "buildTrueMomentumPhaseCCloseoutStatus",
+      "TrueMomentumPhaseCCloseoutCard",
+    ];
+    for (const route of routesToGuard) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of forbidden) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("C4.2 composite-mismatch drilldown lives on the C4 card and is gated on parity classification", () => {
+    const card = read(
+      "components/recommendations/true-momentum-strategy-context-card.tsx",
+    );
+    expect(card).toContain("CompositeMismatchDrilldown");
+    expect(card).toContain("Composite score mismatch under review");
+    expect(card).toContain('data-testid="true-momentum-strategy-context-card-composite-drilldown"');
+    // Drilldown is gated on the two classification tags from the
+    // selected symbol's parity summary — never an unrelated symbol.
+    expect(card).toContain('classification.includes("oscillator_aligned")');
+    expect(card).toContain('classification.includes("composite_mismatch")');
+    expect(card).toContain(
+      "Oscillator parity is aligned, but composite score differs",
+    );
+  });
+});

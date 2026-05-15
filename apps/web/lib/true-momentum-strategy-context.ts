@@ -206,6 +206,12 @@ export type SelectedSymbolParitySummary = {
   observed_bar_date: string | null;
   fixture_name: string | null;
   parity_mode: string | null;
+  // C4.2 composite-mismatch drilldown values surfaced from the
+  // parity-report.json per-fixture result.
+  tos_total_score: number | null;
+  mm_total_score: number | null;
+  mm_component_sum: number | null;
+  composite_score_attribution: Record<string, unknown>;
 };
 
 function safeNumber(value: unknown): number | null {
@@ -257,6 +263,23 @@ export function findSelectedSymbolParitySummary(
         typeof entry.observed_bar_date === "string" ? entry.observed_bar_date : null,
       fixture_name: typeof entry.fixture_name === "string" ? entry.fixture_name : null,
       parity_mode: typeof entry.parity_mode === "string" ? entry.parity_mode : null,
+      tos_total_score: safeNumber(
+        (entry as { tos_total_score?: unknown }).tos_total_score,
+      ),
+      mm_total_score: safeNumber(
+        (entry as { mm_total_score?: unknown }).mm_total_score,
+      ),
+      mm_component_sum: safeNumber(
+        (entry as { mm_component_sum?: unknown }).mm_component_sum,
+      ),
+      composite_score_attribution:
+        typeof (entry as { composite_score_attribution?: unknown })
+          .composite_score_attribution === "object" &&
+        (entry as { composite_score_attribution?: unknown })
+          .composite_score_attribution !== null
+          ? ((entry as { composite_score_attribution?: Record<string, unknown> })
+              .composite_score_attribution as Record<string, unknown>)
+          : {},
     };
   }
   return null;

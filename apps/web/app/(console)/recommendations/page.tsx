@@ -30,6 +30,7 @@ import {
 } from "@/lib/chart-history-range";
 import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
 import { TrueMomentumStrategyContextCard } from "@/components/recommendations/true-momentum-strategy-context-card";
+import { TrueMomentumPhaseCCloseoutCard } from "@/components/recommendations/true-momentum-phase-c-closeout-card";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -2136,6 +2137,37 @@ export default function RecommendationsPage() {
               universeSymbols={parsedSymbols.symbols}
               onSnapshotChange={setB8Snapshot}
               onOutcomeReviewChange={setB8OutcomeReview}
+            />
+          </div>
+        </details>
+
+        {/*
+          Phase C closeout — research-only summary of what shipped,
+          what is explicitly not shipped, the remaining blockers
+          before any future active Phase C decision, and the next
+          allowed research phase. The card never approves /
+          rejects / sizes / routes trades, and never generates queue
+          candidates.
+        */}
+        <details
+          data-testid="true-momentum-research-evidence-closeout-section"
+          style={{ marginTop: 8 }}
+        >
+          <summary
+            data-testid="true-momentum-research-evidence-closeout-summary"
+            style={{ cursor: "pointer", fontSize: "0.84rem", fontWeight: 600 }}
+          >
+            Phase C research closeout — what shipped, blockers, next phase
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            <TrueMomentumPhaseCCloseoutCard
+              b8OutcomeStatus={
+                b8OutcomeReview
+                  ? "available"
+                  : b8Snapshot
+                    ? "captured_without_outcomes"
+                    : "not_captured"
+              }
             />
           </div>
         </details>

@@ -244,6 +244,17 @@ these into operator-friendly labels: `oscillator_aligned`,
 `oscillator_mismatch`, `composite_mismatch`, `bar_context_mismatch`,
 and `label_mismatch_only`.
 
+### Surfaced into the Phase C research closeout
+
+The Phase C research closeout
+([`true-momentum-phase-c-closeout.md`](true-momentum-phase-c-closeout.md))
+treats the XLP `oscillator_aligned` + `composite_mismatch` finding
+as a `parity_mixed` blocker — research-only, never a reason to widen
+parity tolerances. SPY / XLK / XLE remain `visual_attested`. Active
+Phase C strategy generation is **not implemented**; no queue
+candidates are generated; recommendation approval, paper-order
+behavior, and ranking math remain unchanged.
+
 ### Surfaced into the Recommendations context (Phase C4)
 
 The Phase C4 True Momentum Strategy Context card on the

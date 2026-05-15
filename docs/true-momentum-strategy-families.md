@@ -682,6 +682,26 @@ descriptions (`status: research_preview`,
 visual parity review, operator authorization]`). No active generator
 function was added.
 
+### Phase C research closeout — what shipped, blockers, next phase
+
+Phase C is now closed out as **research-only**. The full closeout
+posture, what shipped (C0 / C1 / C2 / C2.1 / C2.2 / C3 / C4 / C4.1),
+the explicit not-shipped list (active strategy generation, queue
+candidate generation, auto approval, auto sizing, order routing),
+the current parity state (SPY pass, XLK pass, XLE pass, XLP
+oscillator aligned / composite mismatch), the remaining blockers
+(resolve / document XLP composite mismatch, accumulate B8 outcome
+evidence, accumulate C3 cohort evidence, operator authorization),
+and the next allowed phase (C5 research candidate proposal — still
+non-active and non-ordering) are documented in
+[`true-momentum-phase-c-closeout.md`](true-momentum-phase-c-closeout.md).
+The Phase C closeout helper + card surface this on the
+Recommendations page inside the "True Momentum research evidence"
+collapsible. Active Phase C strategy generation is **not
+implemented**; no True Momentum queue candidates are generated;
+recommendation approval and paper-order behavior remain
+unchanged.
+
 ### Phase C4.1 — True Momentum UX consolidation
 
 Phase C4.1 is a frontend-only UX consolidation. The Recommendations

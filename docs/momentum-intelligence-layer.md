@@ -2184,6 +2184,20 @@ The exported `MomentumTrialExportPayload.snapshot` now carries
   families remain a separate, explicitly-gated phase. Phase B7.1 does
   not introduce, implement, or schedule any strategy-family code.
 
+## Phase C research closeout
+
+Phase C is closed out as **research-only**. Full closeout posture
+(shipped phases C0–C4.1, explicit not-shipped list, current parity
+state, blockers, next allowed phase C5 — still non-active and
+non-ordering) is documented in
+[`true-momentum-phase-c-closeout.md`](true-momentum-phase-c-closeout.md).
+Active Phase C strategy generation is **not implemented**; no True
+Momentum queue candidates are generated; recommendation approval and
+paper-order behavior remain unchanged. The closeout helper + card
+(`apps/web/lib/true-momentum-phase-c-closeout.ts` + the closeout
+component) live inside the Recommendations page's True Momentum
+research evidence collapsible.
+
 ## Phase C4 — True Momentum strategy-family research context integration
 
 Phase C4 wires the existing Phase C1 / C2 / C3 research bundles plus

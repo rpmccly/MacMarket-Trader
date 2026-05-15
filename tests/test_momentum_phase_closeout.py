@@ -260,3 +260,93 @@ def test_phase_c_doc_records_b8_feature_implemented() -> None:
     # The "feature already implemented" framing is present so a reader
     # of the C0 doc does not interpret outcome-review as TODO.
     assert "already implemented" in lowered
+
+
+# ── Phase C research closeout doc contract ─────────────────────────────────
+
+
+PHASE_C_CLOSEOUT_DOC = DOCS_DIR / "true-momentum-phase-c-closeout.md"
+PARITY_DOC = DOCS_DIR / "thinkorswim-momentum-parity.md"
+
+
+def test_phase_c_closeout_doc_exists_and_records_research_only_posture() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    # Doc explicitly names the research-only closeout posture.
+    assert "research-only" in lowered or "research only" in lowered
+    # Active Phase C is not implemented.
+    assert "active phase c strategy generation remains reserved" in lowered
+    assert "not implemented" in lowered
+    # No queue candidates are generated.
+    assert (
+        "no queue candidates are generated" in lowered
+        or "no true momentum queue candidates are generated" in lowered
+        or "true momentum queue candidate generation" in lowered
+    )
+    # Approval / paper-order behavior unchanged. Permissive: accept
+    # any of the three idiomatic phrasings, with or without markdown
+    # emphasis markers around "unchanged".
+    stripped = lowered.replace("**", "")
+    assert (
+        "recommendation approval and paper-order behavior remain" in stripped
+        or "recommendation approval and paper-order behavior are unchanged" in stripped
+        or "paper-order behavior: unchanged" in stripped
+    )
+
+
+def test_phase_c_closeout_doc_records_xlp_oscillator_aligned_composite_mismatch() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    assert "xlp" in lowered
+    assert "oscillator_aligned" in lowered or "oscillator aligned" in lowered
+    assert "composite_mismatch" in lowered or "composite mismatch" in lowered
+
+
+def test_phase_c_closeout_doc_records_b8_and_c3_prerequisites() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    assert "b8 outcome evidence" in lowered
+    assert "c3 cohort" in lowered
+    assert "operator authorization" in lowered
+
+
+def test_phase_c_closeout_doc_has_no_live_trading_language() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC).lower()
+    forbidden = (
+        "ready for live",
+        "approve trade",
+        "auto approve",
+        "route order",
+        "place order",
+        "buy now",
+        "sell now",
+        "enter now",
+        "short now",
+    )
+    for phrase in forbidden:
+        assert phrase not in body, (
+            f"phase C closeout doc must not contain {phrase!r}"
+        )
+
+
+def test_phase_c_closeout_doc_recommends_c5_research_candidate_proposal_only() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    assert "c5" in lowered
+    assert "research candidate proposal" in lowered
+    assert "non-active" in lowered
+    assert "non-ordering" in lowered
+
+
+def test_related_docs_link_back_to_phase_c_closeout_doc() -> None:
+    for doc in (LAYER_DOC, CLOSEOUT_DOC, PHASE_C_DOC, PARITY_DOC):
+        body = _read(doc).lower()
+        assert "true-momentum-phase-c-closeout.md" in body, (
+            f"{doc.name} must link to true-momentum-phase-c-closeout.md"
+        )
+
+
+def test_phase_c_closeout_doc_lists_canonical_shipped_phases() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    for phase in ("C0", "C1", "C2", "C2.1", "C2.2", "C3", "C4", "C4.1"):
+        assert phase in body, f"closeout doc must list shipped phase {phase}"

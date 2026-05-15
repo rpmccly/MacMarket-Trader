@@ -3012,6 +3012,17 @@ def _build_symbol_summaries_from_report(
             diagnostic_flags = {
                 str(k): bool(v) for k, v in diagnostic_flags_raw.items()
             }
+        # Composite + price diagnostics. Operator-readability only —
+        # frontend C4.2 drilldown renders these when the symbol has an
+        # oscillator_aligned + composite_mismatch classification.
+        composite_attr_raw = entry.get("composite_score_attribution")
+        composite_attribution: dict[str, Any] = {}
+        if isinstance(composite_attr_raw, dict):
+            composite_attribution = dict(composite_attr_raw)
+        tos_total_score = entry.get("tos_total_score")
+        mm_total_score = entry.get("mm_total_score")
+        mm_component_sum = entry.get("mm_component_sum")
+
         summaries.append(
             {
                 "symbol": symbol.upper(),
@@ -3023,6 +3034,10 @@ def _build_symbol_summaries_from_report(
                 "diagnostic_flags": diagnostic_flags,
                 "reason_codes": reason_codes,
                 "observed_bar_date": entry.get("observed_bar_date"),
+                "tos_total_score": tos_total_score,
+                "mm_total_score": mm_total_score,
+                "mm_component_sum": mm_component_sum,
+                "composite_score_attribution": composite_attribution,
             }
         )
     return summaries
