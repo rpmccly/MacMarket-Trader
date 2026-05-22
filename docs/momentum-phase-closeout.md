@@ -152,6 +152,26 @@ Under these values:
   save, paper-order, replay, or options behavior, and does not
   activate Phase C strategy families. Activation readiness is research
   context, not trade approval.
+- **Phase C5 research candidate proposal (feature implemented).**
+  Recommendations page now exposes a research-only Phase C5 proposal
+  surface inside the "True Momentum research evidence" collapsible,
+  after the Phase C closeout details. Pure helper at
+  `apps/web/lib/true-momentum-research-candidates.ts` consumes the
+  existing queue + Phase C1 classifier + parity status and returns a
+  versioned (`phase_c5.v1`) proposal set with proposal type
+  (`continuation_research` / `pullback_research` /
+  `watch_only_research`), status (`proposed_for_research` /
+  `watch_only` / `blocked_by_warning` / `blocked_by_parity` /
+  `blocked_by_composite_mismatch` / `insufficient_evidence`), and
+  per-proposal decision gates that always include two activation-
+  blocking gates (`operator_authorization`,
+  `active_generation_reserved`). The panel only generates proposals on
+  explicit Generate; Copy / Download produces Markdown / JSON exports
+  with the deterministic non-actionable note. XLP composite-mismatch
+  is surfaced as a watch-only / blocked row without blocking unrelated
+  symbols. Phase C5 is research-only — it does not enter the ranked
+  queue, and does not approve, reject, size, or route trades, and
+  never creates paper orders.
 
 ## Outstanding items
 

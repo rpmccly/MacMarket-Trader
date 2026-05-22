@@ -31,6 +31,7 @@ import {
 import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/true-momentum-strategy-preview-panel";
 import { TrueMomentumStrategyContextCard } from "@/components/recommendations/true-momentum-strategy-context-card";
 import { TrueMomentumPhaseCCloseoutCard } from "@/components/recommendations/true-momentum-phase-c-closeout-card";
+import { TrueMomentumResearchCandidatesPanel } from "@/components/recommendations/true-momentum-research-candidates-panel";
 import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
@@ -2161,6 +2162,38 @@ export default function RecommendationsPage() {
           </summary>
           <div style={{ marginTop: 8 }}>
             <TrueMomentumPhaseCCloseoutCard
+              b8OutcomeStatus={
+                b8OutcomeReview
+                  ? "available"
+                  : b8Snapshot
+                    ? "captured_without_outcomes"
+                    : "not_captured"
+              }
+            />
+          </div>
+        </details>
+
+        {/*
+          Phase C5 — True Momentum research candidate proposals.
+          Research-only. Reads the existing queue + Phase C context
+          and emits proposal rows + decision gates + Markdown / JSON
+          exports. Never enters the ranked queue, and never approves,
+          rejects, sizes, or routes trades, and never creates paper
+          orders.
+        */}
+        <details
+          data-testid="true-momentum-research-evidence-c5-section"
+          style={{ marginTop: 8 }}
+        >
+          <summary
+            data-testid="true-momentum-research-evidence-c5-summary"
+            style={{ cursor: "pointer", fontSize: "0.84rem", fontWeight: 600 }}
+          >
+            Phase C5 research candidate proposals — research-only
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            <TrueMomentumResearchCandidatesPanel
+              queueCandidates={queue}
               b8OutcomeStatus={
                 b8OutcomeReview
                   ? "available"

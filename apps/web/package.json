@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 9500",
     "build": "next build",
+    "build:clean": "node scripts/clean-next-cache.mjs && next build",
     "start": "next start -p 9500",
     "test": "vitest run",
     "test:e2e": "playwright test",

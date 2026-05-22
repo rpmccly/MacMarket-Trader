@@ -2198,6 +2198,21 @@ paper-order behavior remain unchanged. The closeout helper + card
 component) live inside the Recommendations page's True Momentum
 research evidence collapsible.
 
+## Phase C5 — True Momentum research candidate proposal
+
+Phase C5 is shipped as a research-only proposal surface. The pure
+helper at `apps/web/lib/true-momentum-research-candidates.ts` consumes
+the existing Recommendations queue + Phase C1 family preview + parity
+status and returns a versioned (`phase_c5.v1`) proposal set with per-
+proposal decision gates (always including the two activation-blocking
+`operator_authorization` and `active_generation_reserved` gates). The
+UI panel mounts inside the "True Momentum research evidence"
+collapsible after the Phase C closeout details and only generates
+proposals when the operator clicks Generate. Markdown / JSON exports
+carry the deterministic non-actionable note. C5 never enters the
+ranked queue, and does not approve, reject, size, or route trades,
+and never creates paper orders.
+
 ## Phase C4 — True Momentum strategy-family research context integration
 
 Phase C4 wires the existing Phase C1 / C2 / C3 research bundles plus

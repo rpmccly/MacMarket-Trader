@@ -682,6 +682,37 @@ descriptions (`status: research_preview`,
 visual parity review, operator authorization]`). No active generator
 function was added.
 
+### Phase C5 — research candidate proposal (shipped, research-only)
+
+Phase C5 lands a research-only proposal surface inside the
+Recommendations page. It reads the already-loaded queue + Phase C1
+classifier + Thinkorswim parity status and emits proposal rows
+grouped by family (`continuation_research`, `pullback_research`,
+`watch_only_research`) with a proposal status
+(`proposed_for_research`, `watch_only`, `blocked_by_warning`,
+`blocked_by_parity`, `blocked_by_composite_mismatch`,
+`insufficient_evidence`) and per-proposal decision gates. The XLP
+composite-mismatch symbol is surfaced as a watch-only / blocked row;
+unrelated symbols are never blocked just because XLP mismatch is
+present.
+
+Every C5 proposal carries two always-blocking decision gates —
+`operator_authorization` and `active_generation_reserved` — and the
+helper / panel emit `non_actionable: true` and the deterministic note
+"C5 research candidate proposals are non-active and non-ordering.
+They do not enter the ranked queue, and do not approve, reject, size,
+or route trades. They never create paper orders." The Markdown and
+JSON exports use `schema_version: "phase_c5.v1"`.
+
+Phase C5 does **not**:
+
+- generate queue candidates,
+- approve, reject, size, route, open, close, or settle trades,
+- create paper orders,
+- change ranking math, queue sorting, recommendation approval,
+  promote / make-active / save flows, replay, or options behavior,
+- activate any Phase C strategy family.
+
 ### Phase C research closeout — what shipped, blockers, next phase
 
 Phase C is now closed out as **research-only**. The full closeout

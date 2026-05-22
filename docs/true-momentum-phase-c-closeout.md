@@ -66,6 +66,29 @@ The next allowed research phase is **C5 — research candidate proposal**:
 
 C5 must not generate queue candidates, and must not approve, reject, size, or route trades.
 
+## Phase C5 — research candidate proposal (shipped, research-only)
+
+Phase C5 is now shipped as a research-only proposal surface:
+
+- `apps/web/lib/true-momentum-research-candidates.ts` exposes the pure
+  builder (`buildTrueMomentumResearchCandidateProposalSet`), the
+  summary, partition, rank, validation, and Markdown / JSON export
+  helpers, all returning `schema_version: "phase_c5.v1"` and
+  `non_actionable: true`.
+- `apps/web/components/recommendations/true-momentum-research-candidates-panel.tsx`
+  mounts a Generate / Clear / Copy / Download UI inside the
+  Recommendations page "True Momentum research evidence" collapsible,
+  after the Phase C closeout details.
+- Every proposal carries two always-blocking decision gates —
+  `operator_authorization` and `active_generation_reserved` — so the
+  panel can never lead to an activation.
+- The XLP composite-mismatch symbol is surfaced as
+  `blocked_by_composite_mismatch` and as `watch_only_research`; it
+  never blocks unrelated symbols.
+
+C5 proposals do not enter the ranked queue, and do not approve, reject,
+size, or route trades. They never create paper orders.
+
 ## Behavior guarantees
 
 - Ranking math: **unchanged**.

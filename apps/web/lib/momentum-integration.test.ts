@@ -1871,3 +1871,128 @@ describe("True Momentum Phase C research closeout guards", () => {
     );
   });
 });
+
+describe("True Momentum Phase C5 research candidate proposal guards", () => {
+  function readSafe(relative: string): string | null {
+    try {
+      return read(relative);
+    } catch {
+      return null;
+    }
+  }
+
+  it("C5 helper exports the expected types, builder, and exports without forbidden trade-action language", () => {
+    const source = read("lib/true-momentum-research-candidates.ts");
+    expect(source).toContain("buildTrueMomentumResearchCandidateProposalSet");
+    expect(source).toContain("summarizeTrueMomentumResearchCandidates");
+    expect(source).toContain("partitionTrueMomentumResearchCandidatesByFamily");
+    expect(source).toContain("rankTrueMomentumResearchCandidates");
+    expect(source).toContain("buildTrueMomentumResearchCandidateMarkdown");
+    expect(source).toContain("buildTrueMomentumResearchCandidateJson");
+    expect(source).toContain("validateTrueMomentumResearchCandidateProposalSet");
+    expect(source).toContain("trueMomentumResearchCandidateStatusLabel");
+    expect(source).toContain("trueMomentumResearchCandidateTone");
+    expect(source).toContain('"phase_c5.v1"');
+    expect(source).toContain('"C5"');
+    expect(source).toContain("operator_authorization");
+    expect(source).toContain("active_generation_reserved");
+    expect(source).toContain("non_actionable");
+    const lower = source.toLowerCase();
+    for (const forbidden of [
+      "approve trade",
+      "auto approve",
+      "route order",
+      "place order",
+      "buy now",
+      "sell now",
+      "enter now",
+      "short now",
+      "ready for live",
+    ]) {
+      expect(lower.includes(forbidden)).toBe(false);
+    }
+  });
+
+  it("C5 UI panel is mounted inside the research-evidence collapsible after the Phase C closeout details", () => {
+    const source = read("app/(console)/recommendations/page.tsx");
+    expect(source).toContain(
+      "@/components/recommendations/true-momentum-research-candidates-panel",
+    );
+    expect(source).toContain("<TrueMomentumResearchCandidatesPanel");
+    expect(source).toContain('data-testid="true-momentum-research-evidence-c5-section"');
+    const evidenceIdx = source.indexOf("true-momentum-research-evidence-section");
+    const closeoutIdx = source.indexOf("true-momentum-research-evidence-closeout-section");
+    const c5Idx = source.indexOf("true-momentum-research-evidence-c5-section");
+    expect(evidenceIdx).toBeGreaterThan(-1);
+    expect(closeoutIdx).toBeGreaterThan(-1);
+    expect(c5Idx).toBeGreaterThan(closeoutIdx);
+  });
+
+  it("C5 helper / panel are not imported into order / paper / replay / options-paper routes", () => {
+    const routesToGuard = [
+      "app/api/user/orders/route.ts",
+      "app/api/user/orders/[orderId]/route.ts",
+      "app/api/user/paper-positions/route.ts",
+      "app/api/user/paper-trades/route.ts",
+      "app/api/user/options/replay-preview/route.ts",
+      "app/api/user/options/paper-structures/route.ts",
+      "app/api/user/options/paper-structures/open/route.ts",
+      "app/api/user/options/paper-structures/review/route.ts",
+      "app/api/user/recommendations/queue/promote/route.ts",
+      "app/(console)/orders/page.tsx",
+      "app/(console)/replay-runs/page.tsx",
+    ];
+    const forbidden = [
+      "@/lib/true-momentum-research-candidates",
+      "true-momentum-research-candidates-panel",
+      "buildTrueMomentumResearchCandidateProposalSet",
+      "TrueMomentumResearchCandidatesPanel",
+    ];
+    for (const route of routesToGuard) {
+      const source = readSafe(route);
+      if (source === null) continue;
+      for (const pattern of forbidden) {
+        expect(source).not.toContain(pattern);
+      }
+    }
+  });
+
+  it("C5 panel + helper sources never carry forbidden trade-action language", () => {
+    const sources = [
+      read("lib/true-momentum-research-candidates.ts"),
+      read("components/recommendations/true-momentum-research-candidates-panel.tsx"),
+    ];
+    for (const source of sources) {
+      const lower = source.toLowerCase();
+      for (const forbidden of [
+        "approve trade",
+        "auto approve",
+        "route order",
+        "place order",
+        "buy now",
+        "sell now",
+        "enter now",
+        "short now",
+        "ready for live",
+        "activate now",
+      ]) {
+        expect(lower.includes(forbidden)).toBe(false);
+      }
+    }
+  });
+
+  it("C5 helper always blocks activation via operator_authorization and active_generation_reserved gates", () => {
+    const source = read("lib/true-momentum-research-candidates.ts");
+    expect(source).toContain('id: "operator_authorization"');
+    expect(source).toContain('id: "active_generation_reserved"');
+    // Both gates must mark blocks_activation: true.
+    const opAuthBlock = source.match(
+      /id:\s*"operator_authorization"[\s\S]*?blocks_activation:\s*true/,
+    );
+    const activeGenBlock = source.match(
+      /id:\s*"active_generation_reserved"[\s\S]*?blocks_activation:\s*true/,
+    );
+    expect(opAuthBlock).not.toBeNull();
+    expect(activeGenBlock).not.toBeNull();
+  });
+});

@@ -272,6 +272,18 @@ strategy families. See
 [`true-momentum-strategy-families.md`](true-momentum-strategy-families.md)
 for the full Phase C4 contract.
 
+### Surfaced into the Phase C5 research candidate proposal
+
+Phase C5's research-only proposal helper
+(`apps/web/lib/true-momentum-research-candidates.ts`) reads the same
+`thinkorswim_parity_symbol_summaries` payload and emits a
+`blocked_by_composite_mismatch` / `watch_only_research` row whenever
+the selected symbol carries `oscillator_aligned` + `composite_mismatch`
+(today: XLP). Unrelated symbols (SPY / XLK / XLE) remain eligible for
+`proposed_for_research` even when XLP's mismatch is present. C5 stays
+research-only — proposals do not enter the ranked queue, and do not
+approve, reject, size, or route trades, and never create paper orders.
+
 ### Example: XLP-style classification
 
 XLP (2026-05-13) is the canonical "oscillator aligned, composite

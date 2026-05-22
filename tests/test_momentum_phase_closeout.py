@@ -350,3 +350,36 @@ def test_phase_c_closeout_doc_lists_canonical_shipped_phases() -> None:
     body = _read(PHASE_C_CLOSEOUT_DOC)
     for phase in ("C0", "C1", "C2", "C2.1", "C2.2", "C3", "C4", "C4.1"):
         assert phase in body, f"closeout doc must list shipped phase {phase}"
+
+
+# ── Phase C5 research candidate proposal doc contract ──────────────────
+
+
+def test_phase_c_closeout_doc_records_c5_research_candidate_proposal_shipped() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC)
+    lowered = _normalize_whitespace(body.lower())
+    assert "c5" in lowered
+    # The next-allowed-phase section preserves the C5 description.
+    assert "research candidate proposal" in lowered
+    # Research-only / non-active / non-ordering remain explicit.
+    assert "non-active" in lowered
+    assert "non-ordering" in lowered
+
+
+def test_phase_c_closeout_doc_records_c5_does_not_change_queue_or_orders() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC).lower()
+    # Either the canonical "C5 must not generate queue candidates"
+    # statement or a paraphrase that names queue / orders / paper.
+    assert (
+        "must not generate queue candidates" in body
+        or "do not enter the ranked queue" in body
+        or "non-active and non-ordering" in body
+    )
+
+
+def test_phase_c_closeout_doc_has_no_live_trading_language_around_c5() -> None:
+    body = _read(PHASE_C_CLOSEOUT_DOC).lower()
+    for forbidden in FORBIDDEN_ACTION_PHRASES:
+        assert forbidden not in body, (
+            f"phase C closeout doc (incl. C5 section) must not contain {forbidden!r}"
+        )

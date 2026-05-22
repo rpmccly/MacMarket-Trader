@@ -228,6 +228,33 @@ When local runtime state looks stale/inconsistent:
    - `python -m macmarket_trader.cli seed-demo-data`
 5. If deleting SQLite DB file manually, always stop backend/frontend first, then restart backend and reseed.
 
+## Frontend production build hangs
+
+If `npm run build` (from `apps/web`) prints
+
+```
+▲ Next.js 15.5.15
+- Environments: .env.local
+```
+
+and then hangs indefinitely with no further output, the cause is usually a stale `.next/` directory left behind by a previously killed or crashed build, plus orphaned `next build` worker processes still holding cache locks. The fix:
+
+1. Kill any lingering `next build` / `npm run build` processes:
+   - Windows PowerShell: `Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*nodejs*' -and $_.CommandLine -like '*next*build*' } | Stop-Process -Force`
+   - macOS/Linux: `pkill -f "next build" || true`
+2. Clear `.next/`:
+   - macOS/Linux: `rm -rf apps/web/.next`
+   - Windows PowerShell: `Remove-Item -Recurse -Force apps/web/.next`
+3. Re-run the build: `cd apps/web && npm run build`.
+
+For a single-command recovery, run `npm run build:clean` from `apps/web` — it clears the `.next/` cache via `scripts/clean-next-cache.mjs` and then runs `next build`.
+
+Notes:
+
+- `next build` does **not** accept a `--debug` flag (use `--debug-prerender` for prerender diagnostics).
+- All `(console)` routes are dynamic (server-rendered on demand). C5's "use client" panel only touches `window` / `document` / `localStorage` / `Blob` inside effects and event handlers; it does not block server prerender.
+- Avoid running two `next build` invocations simultaneously against the same `apps/web` working tree.
+
 Create a lean shareable archive (excluding runtime artifacts) with the canonical backup script: `scripts\\create_shareable_backup.bat`.
 
 ## Private-alpha operator workflow refresh (2026-04)
