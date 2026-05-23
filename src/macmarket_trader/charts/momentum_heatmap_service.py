@@ -23,7 +23,7 @@ from macmarket_trader.domain.schemas import (
 )
 from macmarket_trader.domain.time import utc_now
 from macmarket_trader.domain.timeframes import CHART_BAR_LIMIT_BY_TIMEFRAME, ChartTimeframe
-from macmarket_trader.indicators.true_momentum_score import compute_true_momentum_score
+from macmarket_trader.charts.momentum_service import MomentumChartService
 
 HEATMAP_PROVIDER_SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.]{0,14}$")
 HEATMAP_SCORE_TIMEFRAMES: tuple[ChartTimeframe, ...] = ("1W", "1D", "4H", "1H", "30M")
@@ -32,6 +32,7 @@ HEATMAP_SCORE_TIMEFRAMES: tuple[ChartTimeframe, ...] = ("1W", "1D", "4H", "1H", 
 class MomentumHeatmapService:
     def __init__(self, market_data_service) -> None:  # noqa: ANN001
         self.market_data_service = market_data_service
+        self.momentum_chart_service = MomentumChartService()
 
     @staticmethod
     def _normalize_provider_symbol(row: MomentumHeatmapRowRequest) -> str:
@@ -106,29 +107,36 @@ class MomentumHeatmapService:
             )
 
         try:
-            score_series = compute_true_momentum_score(bars, timeframe=timeframe)
+            payload = self.momentum_chart_service.build_payload(
+                symbol=provider_symbol,
+                timeframe=timeframe,
+                bars=bars,
+                include_markers=False,
+                data_source=source,
+                fallback_mode=fallback_mode,
+            )
         except Exception as exc:  # pragma: no cover - deterministic scorer should not crash the row
             return MomentumHeatmapScoreCell(
                 value=None,
                 status="error",
-                reason=f"true_momentum_score_failed:{type(exc).__name__}",
+                reason=f"momentum_intelligence_score_failed:{type(exc).__name__}",
                 data_source=source,
                 fallback_mode=fallback_mode,
                 as_of=self._bar_as_of(bars[-1] if bars else None),
             )
 
-        if not score_series.points:
+        if payload.latest_snapshot is None:
             return MomentumHeatmapScoreCell(
                 value=None,
                 status="unavailable",
-                reason="true_momentum_score_unavailable",
+                reason="momentum_intelligence_score_unavailable",
                 data_source=source,
                 fallback_mode=fallback_mode,
                 as_of=self._bar_as_of(bars[-1] if bars else None),
             )
 
         return MomentumHeatmapScoreCell(
-            value=float(score_series.points[-1].total_score),
+            value=float(payload.latest_snapshot.total_score),
             status="ok",
             data_source=source,
             fallback_mode=fallback_mode,

@@ -9,7 +9,7 @@ if (!existsSync(nextDir)) {
 
 try {
   rmSync(nextDir, { recursive: true, force: true });
-  console.log("[playwright] cleared stale .next cache before webServer startup");
+  console.log("[next] cleared stale .next cache before build startup");
 } catch (error) {
-  console.warn("[playwright] warning: unable to clear .next cache", error);
+  console.warn("[next] warning: unable to clear .next cache", error);
 }
