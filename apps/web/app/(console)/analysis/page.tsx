@@ -27,6 +27,7 @@ import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, GUIDED_FLOW_LABEL, parseGuidedFlowState } from "@/lib/guided-workflow";
 import { formatExpectedMoveSummary } from "@/lib/analysis-expected-range";
 import { SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
+import { SUPPORTED_TIMEFRAME_OPTIONS, type SupportedTimeframe } from "@/lib/timeframes";
 import { WorkflowBanner } from "@/components/workflow-banner";
 import {
   formatResearchCell,
@@ -48,9 +49,6 @@ import {
   type OptionsResearchStructure,
 } from "@/lib/recommendations";
 
-const SUPPORTED_TIMEFRAMES = ["1D", "4H", "1H"] as const;
-
-type SupportedTimeframe = (typeof SUPPORTED_TIMEFRAMES)[number];
 type WorkbenchState = "auth_initializing" | "loading_analysis" | "ready" | "fallback_mode" | "provider_unavailable" | "data_not_entitled" | "hard_failure";
 
 type SetupPayload = {
@@ -567,7 +565,7 @@ export default function Page() {
           </div>
         </div>
         <div><label>Market mode</label><select value={draftMarketMode} onChange={(e) => setDraftMarketMode(e.target.value as MarketMode)}><option value="equities">Equities</option><option value="options">Options (research preview)</option><option value="crypto">Crypto (research preview)</option></select></div>
-        <div><label>Timeframe</label><select value={draftTimeframe} onChange={(e) => setDraftTimeframe(e.target.value as SupportedTimeframe)}>{SUPPORTED_TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}</select></div>
+        <div><label>Timeframe</label><select value={draftTimeframe} onChange={(e) => setDraftTimeframe(e.target.value as SupportedTimeframe)}>{SUPPORTED_TIMEFRAME_OPTIONS.map((tf) => <option key={tf.value} value={tf.value}>{tf.label}</option>)}</select></div>
         <div>
           <label>Strategy</label>
           <select value={draftStrategy} onChange={(e) => setDraftStrategy(e.target.value)}>{strategiesForDraftMode.map((entry) => <option key={entry.strategy_id} value={entry.display_name}>{entry.display_name}</option>)}</select>

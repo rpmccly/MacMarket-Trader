@@ -155,6 +155,43 @@ def test_user_generation_uses_requested_timeframe(monkeypatch) -> None:
     assert payload["session_policy"] == "regular_hours"
 
 
+def test_user_recommendation_endpoints_accept_weekly_and_30m_timeframes(monkeypatch) -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    class StubMarketData:
+        def historical_bars(self, symbol: str, timeframe: str, limit: int):
+            calls.append((symbol, timeframe, limit))
+            return DeterministicFallbackMarketDataProvider().fetch_historical_bars(symbol, timeframe, limit), "polygon", False
+
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+
+    client = TestClient(app)
+    _approve_default_user(client)
+
+    generate = client.post(
+        "/user/recommendations/generate",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "AAPL", "timeframe": "1W", "event_text": "Operator trigger"},
+    )
+    queue = client.post(
+        "/user/recommendations/queue",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbols": ["AAPL"], "timeframe": "30M", "market_mode": "equities", "top_n": 1},
+    )
+    promote = client.post(
+        "/user/recommendations/queue/promote",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "AAPL", "strategy": "Event Continuation", "timeframe": "1W"},
+    )
+
+    assert generate.status_code == 200
+    assert queue.status_code == 200
+    assert queue.json()["timeframe"] == "30M"
+    assert promote.status_code == 200
+    assert ("AAPL", "1W", 60) in calls
+    assert ("AAPL", "30M", 120) in calls
+
+
 def test_user_ranked_recommendation_queue_contract() -> None:
     client = TestClient(app)
     _approve_default_user(client)

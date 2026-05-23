@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from macmarket_trader.domain.enums import AppRole, ApprovalStatus, Direction, EventSourceType, InstrumentType, MarketMode, OrderStatus, RegimeType, SetupType, TradingSessionModel
 from macmarket_trader.domain.time import utc_now
+from macmarket_trader.domain.timeframes import (
+    CHART_BAR_LIMIT_BY_TIMEFRAME,
+    INTRADAY_CHART_TIMEFRAME_SET,
+    SUPPORTED_CHART_TIMEFRAMES,
+    validate_chart_timeframe,
+)
 
 SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.:-]{0,14}$")
 
@@ -72,13 +78,13 @@ def chart_history_range_bar_limit(timeframe: str, history_range: object) -> int:
     provider call stays bounded.
     """
     days = chart_history_range_to_lookback_days(history_range)
-    tf = str(timeframe or "1D").strip().upper()
-    if tf == "1H":
-        return min(max(days * 7, 400), 4000)
-    if tf == "4H":
-        return min(max(days * 2, 200), 2000)
-    # 1D and any other future timeframe: one bar per trading day.
-    return max(days, 60)
+    tf = validate_chart_timeframe(timeframe)
+    cap = CHART_BAR_LIMIT_BY_TIMEFRAME[tf]
+    if tf == "1W":
+        return min(max((days // 7) + 2, 52), cap)
+    if tf in INTRADAY_CHART_TIMEFRAME_SET:
+        return cap
+    return min(max(days, 60), cap)
 
 
 class Bar(BaseModel):
@@ -203,10 +209,7 @@ class HacoChartRequest(BaseModel):
     @field_validator("timeframe")
     @classmethod
     def _validate_timeframe(cls, value: str) -> str:
-        timeframe = str(value or "1D").strip().upper()
-        if timeframe not in {"1D", "1H", "4H"}:
-            raise ValueError("timeframe must be one of: 1D, 1H, 4H")
-        return timeframe
+        return validate_chart_timeframe(value)
 
     @field_validator("history_range")
     @classmethod
@@ -1508,15 +1511,100 @@ class MomentumChartRequest(BaseModel):
     @field_validator("timeframe")
     @classmethod
     def _validate_timeframe(cls, value: str) -> str:
-        timeframe = str(value or "1D").strip().upper()
-        if timeframe not in {"1D", "1H", "4H"}:
-            raise ValueError("timeframe must be one of: 1D, 1H, 4H")
-        return timeframe
+        return validate_chart_timeframe(value)
 
     @field_validator("history_range")
     @classmethod
     def _normalize_history_range(cls, value: str) -> str:
         return _normalize_chart_history_range(value)
+
+
+class MomentumHeatmapScoreCell(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: float | None = None
+    status: Literal["ok", "unavailable", "unsupported", "error"]
+    reason: str | None = None
+    data_source: str | None = None
+    fallback_mode: bool | None = None
+    as_of: str | None = None
+
+
+class MomentumHeatmapSqueezeCell(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None = None
+    status: Literal["deferred", "ok", "unavailable"] = "deferred"
+    reason: str | None = None
+
+
+class MomentumHeatmapRowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(max_length=120)
+    symbol: str = Field(max_length=80)
+    display_name: str | None = Field(default=None, alias="displayName", max_length=120)
+    provider_symbol: str | None = Field(default=None, alias="providerSymbol", max_length=80)
+
+    @field_validator("id", "symbol", "display_name", "provider_symbol")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip()
+
+
+class MomentumHeatmapCategoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    category_id: str = Field(alias="categoryId", max_length=80)
+    category_label: str = Field(alias="categoryLabel", max_length=120)
+    rows: list[MomentumHeatmapRowRequest] = Field(default_factory=list, max_length=250)
+
+
+class MomentumHeatmapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    categories: list[MomentumHeatmapCategoryRequest] = Field(default_factory=list, max_length=12)
+    timeframes: list[str] = Field(default_factory=lambda: list(SUPPORTED_CHART_TIMEFRAMES), max_length=5)
+
+    @field_validator("timeframes")
+    @classmethod
+    def _validate_timeframes(cls, values: list[str]) -> list[str]:
+        cleaned = [validate_chart_timeframe(value) for value in (values or list(SUPPORTED_CHART_TIMEFRAMES))]
+        if not cleaned:
+            return list(SUPPORTED_CHART_TIMEFRAMES)
+        return cleaned
+
+
+class MomentumHeatmapRowResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str
+    symbol: str
+    display_name: str = Field(alias="displayName")
+    provider_symbol: str = Field(alias="providerSymbol")
+    scores: dict[str, MomentumHeatmapScoreCell]
+    long_term_score: float | None = None
+    short_term_score: float | None = None
+    strength_percent: float | None = None
+    squeeze: MomentumHeatmapSqueezeCell
+
+
+class MomentumHeatmapCategoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    category_id: str = Field(alias="categoryId")
+    category_label: str = Field(alias="categoryLabel")
+    rows: list[MomentumHeatmapRowResponse]
+
+
+class MomentumHeatmapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: datetime
+    timeframes: list[str]
+    categories: list[MomentumHeatmapCategoryResponse]
 
 
 class MomentumRankingStatus(BaseModel):

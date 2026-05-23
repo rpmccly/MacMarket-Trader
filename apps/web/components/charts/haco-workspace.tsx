@@ -15,6 +15,7 @@ import {
   writeChartHistoryRangeToStorage,
   type ChartHistoryRangeId,
 } from "@/lib/chart-history-range";
+import { SUPPORTED_TIMEFRAME_OPTIONS, type SupportedTimeframe } from "@/lib/timeframes";
 
 const STORAGE_KEY = "macmarket-indicators-haco";
 const HACO_WORKSPACE_SUPPORTED_INDICATORS: IndicatorId[] = [...FIRST_CLASS_WORKFLOW_INDICATORS, ...HACO_CONTEXT_SUPPORTED_INDICATORS];
@@ -27,7 +28,7 @@ function formatSessionPolicy(value: string | null | undefined): string | null {
 
 export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [symbol, setSymbol] = useState("AAPL");
-  const [timeframe, setTimeframe] = useState("1D");
+  const [timeframe, setTimeframe] = useState<SupportedTimeframe>("1D");
   const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
     defaultChartHistoryRange(),
   );
@@ -161,7 +162,7 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
 
       <div className="op-row">
         <label>Symbol <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ marginLeft: 8 }} /></label>
-        <label>Timeframe <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} style={{ marginLeft: 8 }}><option value="1D">1D</option><option value="4H">4H</option><option value="1H">1H</option></select></label>
+        <label>Timeframe <select value={timeframe} onChange={(e) => setTimeframe(e.target.value as SupportedTimeframe)} style={{ marginLeft: 8 }}>{SUPPORTED_TIMEFRAME_OPTIONS.map((tf) => <option key={tf.value} value={tf.value}>{tf.label}</option>)}</select></label>
         <ChartHistoryRangeSelect
           value={historyRange}
           onChange={handleHistoryRangeChange}

@@ -221,6 +221,67 @@ def test_polygon_4h_intraday_returns_latest_ascending(monkeypatch) -> None:
     assert len({bar.timestamp for bar in bars}) == len(bars)
 
 
+def test_polygon_30m_intraday_returns_regular_hours_half_hour_bars(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
+    provider = PolygonMarketDataProvider()
+    stamps = [
+        datetime(2026, 4, 1, 12, 30, tzinfo=UTC),
+        datetime(2026, 4, 1, 13, 30, tzinfo=UTC),
+        datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
+        datetime(2026, 4, 1, 20, 0, tzinfo=UTC),
+    ]
+
+    def fake_request_json(path: str, query: dict[str, str]) -> dict[str, object]:
+        assert path.startswith("/v2/aggs/ticker/AAPL/range/30/minute/")
+        assert query["sort"] == "desc"
+        assert query["limit"] == "50000"
+        return {
+            "results": [
+                {"t": int(stamp.timestamp() * 1000), "o": 100 + idx, "h": 101 + idx, "l": 99 + idx, "c": 100.5 + idx, "v": 1000 + idx}
+                for idx, stamp in enumerate(stamps)
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_request_json", fake_request_json)
+
+    bars = provider.fetch_historical_bars(symbol="AAPL", timeframe="30M", limit=5)
+
+    assert [bar.timestamp for bar in bars] == [
+        datetime(2026, 4, 1, 13, 30, tzinfo=UTC),
+        datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
+    ]
+    assert all(bar.session_policy == "regular_hours" for bar in bars)
+    assert all(bar.source_timeframe == "30M" for bar in bars)
+    assert provider.last_aggregate_request_metadata is not None
+    assert provider.last_aggregate_request_metadata["output_timeframe"] == "30M"
+    assert provider.last_aggregate_request_metadata["source_timeframe"] == "30M"
+
+
+def test_polygon_weekly_mapping_supports_1w(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
+    provider = PolygonMarketDataProvider()
+
+    def fake_request_json(path: str, query: dict[str, str]) -> dict[str, object]:
+        assert path.startswith("/v2/aggs/ticker/AAPL/range/1/week/")
+        assert query["sort"] == "asc"
+        assert query["limit"] == "3"
+        return {
+            "results": [
+                {"t": 1775088000000, "o": 190.1, "h": 192.0, "l": 189.4, "c": 191.2, "v": 123456},
+                {"t": 1775692800000, "o": 191.2, "h": 193.5, "l": 190.7, "c": 193.0, "v": 150000},
+                {"t": 1776297600000, "o": 193.0, "h": 195.0, "l": 192.0, "c": 194.0, "v": 160000},
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_request_json", fake_request_json)
+
+    bars = provider.fetch_historical_bars(symbol="AAPL", timeframe="1W", limit=3)
+
+    assert len(bars) == 3
+    assert provider.last_aggregate_request_metadata is not None
+    assert provider.last_aggregate_request_metadata["timeframe"] == "1W"
+
+
 def test_polygon_rth_normalization_uses_new_york_dst_boundaries(monkeypatch) -> None:
     monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
     provider = PolygonMarketDataProvider()
@@ -278,6 +339,26 @@ def test_alpaca_historical_bars_normalization(monkeypatch) -> None:
     assert bars[0].open == 190.1
     assert bars[1].close == 193.0
     assert bars[1].volume == 150000
+
+
+def test_alpaca_timeframe_mapping_supports_weekly_and_30m() -> None:
+    provider = AlpacaMarketDataProvider()
+
+    assert provider._map_timeframe("1W") == "1Week"
+    assert provider._map_timeframe("30M") == "30Min"
+
+
+def test_fallback_provider_returns_deterministic_weekly_and_30m_bars() -> None:
+    provider = DeterministicFallbackMarketDataProvider()
+
+    weekly = provider.fetch_historical_bars(symbol="AAPL", timeframe="1W", limit=4)
+    half_hour = provider.fetch_historical_bars(symbol="AAPL", timeframe="30M", limit=13)
+
+    assert len(weekly) == 4
+    assert all(bar.timestamp is None for bar in weekly)
+    assert len(half_hour) == 13
+    assert all(bar.timestamp is not None for bar in half_hour)
+    assert all(bar.session_policy == "regular_hours" for bar in half_hour)
 
 
 def test_latest_snapshot_normalization(monkeypatch) -> None:
@@ -1882,6 +1963,7 @@ def test_spx_option_paths_use_index_snapshot_and_unprefixed_reference(monkeypatc
     monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
     provider = PolygonMarketDataProvider()
     seen: list[tuple[str, dict[str, str]]] = []
+    fresh_ts_ns = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
 
     def fake_request_json(path: str, query: dict[str, str]) -> dict[str, object]:
         seen.append((path, query))
@@ -1895,8 +1977,8 @@ def test_spx_option_paths_use_index_snapshot_and_unprefixed_reference(monkeypatc
         assert path == "/v3/snapshot/options/I:SPX/O:SPX260516C05000000"
         return {
             "results": {
-                "last_quote": {"bid": 10.0, "ask": 11.0, "sip_timestamp": 1778943600000000000},
-                "last_trade": {"price": 10.5, "sip_timestamp": 1778943600000000000},
+                "last_quote": {"bid": 10.0, "ask": 11.0, "sip_timestamp": fresh_ts_ns},
+                "last_trade": {"price": 10.5, "sip_timestamp": fresh_ts_ns},
                 "underlying_asset": {"value": 5005.0},
             }
         }

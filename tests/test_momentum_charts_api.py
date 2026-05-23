@@ -6,7 +6,7 @@ from sqlalchemy import select
 from macmarket_trader.api.main import app
 from macmarket_trader.charts.momentum_service import MomentumChartService
 from macmarket_trader.domain.models import AppUserModel
-from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.schemas import Bar, MomentumChartRequest
 from macmarket_trader.storage.db import SessionLocal, init_db
 
 
@@ -99,6 +99,50 @@ def test_momentum_intraday_1h_uses_unique_unix_second_times() -> None:
     assert len(times) == len(set(times))
     assert all(isinstance(t, int) for t in times)
     assert [p.time for p in payload.true_momentum_line] == times
+
+
+def test_momentum_chart_request_accepts_weekly_and_30m_timeframes() -> None:
+    assert MomentumChartRequest(symbol="AAPL", timeframe="1W").timeframe == "1W"
+    assert MomentumChartRequest(symbol="AAPL", timeframe="30M").timeframe == "30M"
+
+
+def test_momentum_weekly_payload_keeps_date_time_values() -> None:
+    service = MomentumChartService()
+    bars = [
+        Bar(
+            date=date(2026, 1, 2) + timedelta(days=i * 7),
+            open=100 + i,
+            high=102 + i,
+            low=99 + i,
+            close=101 + i,
+            volume=1000,
+        )
+        for i in range(60)
+    ]
+    payload = service.build_payload("AAPL", "1W", bars)
+    times = [c.time for c in payload.candles]
+    assert all(isinstance(t, str) for t in times)
+    assert times == sorted(times)
+
+
+def test_momentum_30m_payload_uses_unix_seconds() -> None:
+    service = MomentumChartService()
+    bars = [
+        Bar(
+            date=date(2026, 4, 1),
+            timestamp=datetime(2026, 4, 1, 13, 30, tzinfo=UTC) + timedelta(minutes=30 * i),
+            open=100 + i * 0.1,
+            high=101 + i * 0.1,
+            low=99 + i * 0.1,
+            close=100.5 + i * 0.1,
+            volume=1000,
+        )
+        for i in range(80)
+    ]
+    payload = service.build_payload("AAPL", "30M", bars)
+    times = [c.time for c in payload.candles]
+    assert all(isinstance(t, int) for t in times)
+    assert len(times) == len(set(times))
 
 
 def test_momentum_daily_payload_keeps_date_time_values() -> None:
@@ -247,15 +291,13 @@ def test_chart_history_range_helpers_pure_module() -> None:
     # Unknown values fall back to 1Y.
     assert chart_history_range_to_lookback_days("garbage") == 366
     assert chart_history_range_to_lookback_days(None) == 366
-    # Bar-limit scales with the range for daily bars.
+    # Bar-limit respects bounded chart route caps by timeframe.
     assert chart_history_range_bar_limit("1D", "1M") == max(31, 60)
-    assert chart_history_range_bar_limit("1D", "5Y") == 1830
-    assert chart_history_range_bar_limit("1D", "5Y") > chart_history_range_bar_limit(
-        "1D", "1Y"
-    )
-    # Intraday limits are bounded.
-    assert chart_history_range_bar_limit("1H", "5Y") <= 4000
-    assert chart_history_range_bar_limit("4H", "5Y") <= 2000
+    assert chart_history_range_bar_limit("1D", "5Y") == 120
+    assert chart_history_range_bar_limit("1W", "5Y") == 156
+    assert chart_history_range_bar_limit("30M", "5Y") == 500
+    assert chart_history_range_bar_limit("1H", "5Y") == 400
+    assert chart_history_range_bar_limit("4H", "5Y") == 200
 
 
 # ── Visual parity chart polish ─────────────────────────────────────────────

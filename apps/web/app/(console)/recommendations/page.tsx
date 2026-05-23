@@ -36,6 +36,7 @@ import type { MomentumRankingContribution } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
 import { parseManualSymbolEntry, SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
+import { normalizeTimeframe } from "@/lib/timeframes";
 import { WorkflowBanner } from "@/components/workflow-banner";
 import {
   formatResearchValue,
@@ -1060,7 +1061,7 @@ export default function RecommendationsPage() {
     async function loadMomentum() {
       const momentumSymbol = isOptionsPreviewMode ? (optionsPreview?.symbol ?? previewSymbol) : (selectedRecommendation?.symbol ?? selectedQueue?.symbol);
       const timeframeRaw = isOptionsPreviewMode ? (optionsPreview?.timeframe ?? "1D") : (selectedQueue?.timeframe ?? "1D");
-      const timeframe = ["1D", "4H", "1H"].includes(String(timeframeRaw).toUpperCase()) ? String(timeframeRaw).toUpperCase() : "1D";
+      const timeframe = normalizeTimeframe(String(timeframeRaw));
       if (!momentumSymbol) {
         setSelectedMomentumPayload(null);
         setSelectedMomentumError(null);

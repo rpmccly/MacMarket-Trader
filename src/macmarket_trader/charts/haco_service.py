@@ -13,6 +13,7 @@ from macmarket_trader.domain.schemas import (
     HacoStatePoint,
     HacoltStatePoint,
 )
+from macmarket_trader.domain.timeframes import is_intraday_chart_timeframe
 from macmarket_trader.indicators.haco_ha import compute_haco_from_ha
 from macmarket_trader.indicators.hacolt import compute_hacolt_direction
 
@@ -27,7 +28,7 @@ class HacoChartService:
 
     @staticmethod
     def _is_intraday_timeframe(timeframe: str) -> bool:
-        return timeframe.upper() != "1D"
+        return is_intraday_chart_timeframe(timeframe)
 
     @classmethod
     def _chart_time(cls, bar: Bar, timeframe: str) -> str | int:

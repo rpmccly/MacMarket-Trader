@@ -4,12 +4,15 @@ from fastapi import APIRouter, Depends
 
 from macmarket_trader.api.deps.auth import require_approved_user
 from macmarket_trader.charts.haco_service import HacoChartService
+from macmarket_trader.charts.momentum_heatmap_service import MomentumHeatmapService
 from macmarket_trader.charts.momentum_service import MomentumChartService
 from macmarket_trader.data.providers.registry import build_market_data_service
 from macmarket_trader.domain.schemas import (
     Bar,
     HacoChartPayload,
     HacoChartRequest,
+    MomentumHeatmapRequest,
+    MomentumHeatmapResponse,
     MomentumChartPayload,
     MomentumChartRequest,
     chart_history_range_bar_limit,
@@ -165,3 +168,8 @@ def get_momentum_chart(req: MomentumChartRequest, _user=Depends(require_approved
         lookback_days=chart_history_range_to_lookback_days(req.history_range),
         bars_returned=len(bars),
     )
+
+
+@router.post("/momentum-heatmap", response_model=MomentumHeatmapResponse)
+def get_momentum_heatmap(req: MomentumHeatmapRequest, _user=Depends(require_approved_user)) -> MomentumHeatmapResponse:
+    return MomentumHeatmapService(market_data_service).build_heatmap(req)

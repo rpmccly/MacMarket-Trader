@@ -322,7 +322,7 @@ Create a lean shareable archive (excluding runtime artifacts) with the canonical
 - Workbench has CTA: **Create recommendation from this setup**.
 - Source coherence is explicit: provider/fallback source chip is displayed and fallback is labeled throughout workflow context.
 
-- Supported Analysis timeframes are currently: `1D`, `4H`, `1H` (no synthetic `1W` option).
+- Supported Analysis/chart timeframes are currently: `1W`, `1D`, `4H`, `1H`, `30M`.
 - Workflow pages explicitly label source mode as provider, fallback (local/dev override), or provider-blocked.
 - Source chips should never display `unknown`; if source is not resolved yet, UI shows `workflow pending`.
 

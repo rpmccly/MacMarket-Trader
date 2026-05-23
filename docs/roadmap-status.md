@@ -1,6 +1,26 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-05-04
+Last updated: 2026-05-23
+
+## 2026-05-23 Update - Momentum Heatmap Initial Pass And Timeframe Expansion
+Chart timeframe support is now centralized for `1W`, `1D`, `4H`, `1H`, and
+`30M` across backend validation, chart rendering, provider mapping, and shared
+frontend dropdown options. Polygon/Massive weekly bars use range/1/week, 30M
+uses regular-hours 30-minute buckets, and fallback bars remain deterministic
+with explicit fallback metadata. Weekly chart times render as date strings;
+intraday chart times remain Unix seconds.
+
+An initial protected Momentum Heatmap page now exists at `/momentum-heatmap`
+under Research. It uses workbook-derived default categories, lets the operator
+collapse categories, include/exclude categories from refresh, add/remove rows
+with localStorage persistence, and manually refresh only included categories.
+The heatmap API reuses the existing deterministic True Momentum Score model for
+cell values and computes the workbook long-term, short-term, and strength
+formulas only when all required timeframe scores are numeric. Unsupported
+multi-asset symbols are isolated at the row/cell level. The squeeze column is
+explicitly deferred until an approved squeeze algorithm/version is added.
+No live trading, broker routing, automated exits, or execution support was
+added.
 
 ## 2026-05-04 Update - Index-Aware Market Risk Calendar
 Market Risk Calendar assessments now consume provider-backed Index Context

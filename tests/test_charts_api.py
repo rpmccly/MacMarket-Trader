@@ -7,7 +7,7 @@ from macmarket_trader.api.main import app
 from macmarket_trader.api.routes import charts as charts_routes
 from macmarket_trader.charts.haco_service import HacoChartService
 from macmarket_trader.domain.models import AppUserModel, DailyBarModel
-from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.schemas import Bar, HacoChartRequest
 from macmarket_trader.storage.db import SessionLocal, init_db
 
 
@@ -113,6 +113,62 @@ def test_haco_intraday_1h_uses_unique_unix_second_times() -> None:
     assert len(times) == len(set(times))
     assert [point.time for point in payload.haco_strip] == times
     assert [point.time for point in payload.hacolt_strip] == times
+
+
+def test_haco_chart_request_accepts_weekly_and_30m_timeframes() -> None:
+    assert HacoChartRequest(symbol="AAPL", timeframe="1W").timeframe == "1W"
+    assert HacoChartRequest(symbol="AAPL", timeframe="30M").timeframe == "30M"
+
+
+def test_haco_weekly_payload_keeps_date_time_values() -> None:
+    service = HacoChartService()
+    bars = [
+        Bar(date=date(2026, 4, 3), timestamp=datetime(2026, 4, 3, 20, 0, tzinfo=UTC), open=100, high=105, low=98, close=103, volume=1000),
+        Bar(date=date(2026, 4, 10), timestamp=datetime(2026, 4, 10, 20, 0, tzinfo=UTC), open=103, high=106, low=101, close=105, volume=1200),
+    ]
+
+    payload = service.build_payload("AAPL", "1W", bars)
+
+    assert [candle.time for candle in payload.candles] == ["2026-04-03", "2026-04-10"]
+
+
+def test_haco_30m_payload_uses_unix_seconds_and_regular_hours_metadata() -> None:
+    service = HacoChartService()
+    bars = [
+        Bar(
+            date=date(2026, 4, 1),
+            timestamp=datetime(2026, 4, 1, 13, 30, tzinfo=UTC),
+            open=100,
+            high=101,
+            low=99,
+            close=100.5,
+            volume=1000,
+            session_policy="regular_hours",
+            source_session_policy="provider_session",
+            source_timeframe="30M",
+            provider="polygon",
+        ),
+        Bar(
+            date=date(2026, 4, 1),
+            timestamp=datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
+            open=101,
+            high=102,
+            low=100,
+            close=101.5,
+            volume=1100,
+            session_policy="regular_hours",
+            source_session_policy="provider_session",
+            source_timeframe="30M",
+            provider="polygon",
+        ),
+    ]
+
+    payload = service.build_payload("AAPL", "30M", bars)
+
+    assert [candle.time for candle in payload.candles] == [int(bar.timestamp.timestamp()) for bar in bars if bar.timestamp is not None]
+    assert payload.session_policy == "regular_hours"
+    assert payload.source_timeframe == "30M"
+    assert payload.output_timeframe == "30M"
 
 
 def test_haco_intraday_4h_sorts_by_timestamp_for_same_market_date() -> None:

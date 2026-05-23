@@ -13,9 +13,10 @@ from typing import Literal, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.timeframes import ChartTimeframe
 from macmarket_trader.indicators.common import crosses_above, crosses_below, ema, safe_div
 
-Timeframe = Literal["1D", "4H", "1H"]
+Timeframe = ChartTimeframe
 HigherTimeframeSource = Literal[
     "provided_higher_timeframe_bars",
     "derived_from_chart_bars",
@@ -37,12 +38,16 @@ class TrueMomentumConfig(BaseModel):
 
 
 def config_for_timeframe(timeframe: Timeframe) -> TrueMomentumConfig:
+    if timeframe == "1W":
+        return TrueMomentumConfig(timeframe="1W", higher_timeframe_label="monthly", L1=21, L2=21)
     if timeframe == "1D":
         return TrueMomentumConfig(timeframe="1D", higher_timeframe_label="weekly", L1=21, L2=21)
     if timeframe == "4H":
         return TrueMomentumConfig(timeframe="4H", higher_timeframe_label="three_day", L1=30, L2=35)
     if timeframe == "1H":
         return TrueMomentumConfig(timeframe="1H", higher_timeframe_label="daily", L1=30, L2=21)
+    if timeframe == "30M":
+        return TrueMomentumConfig(timeframe="30M", higher_timeframe_label="daily", L1=30, L2=21)
     raise ValueError(f"unsupported timeframe: {timeframe}")
 
 
@@ -80,6 +85,10 @@ def _iso_week_key(d: date_cls) -> tuple[int, int]:
     return iso[0], iso[1]
 
 
+def _month_key(d: date_cls) -> tuple[int, int]:
+    return d.year, d.month
+
+
 def _three_session_key(d: date_cls, anchor: date_cls) -> int:
     return (d - anchor).days // 3
 
@@ -110,7 +119,16 @@ def _daily_to_weekly(bars: Sequence[Bar]) -> list[float]:
     return [by_week[k] for k in sorted(by_week)]
 
 
+def _weekly_to_monthly(bars: Sequence[Bar]) -> list[float]:
+    by_month: dict[tuple[int, int], float] = {}
+    for bar in sorted(bars, key=lambda b: b.date):
+        by_month[_month_key(bar.date)] = bar.close
+    return [by_month[k] for k in sorted(by_month)]
+
+
 def _derive_higher_closes(bars: Sequence[Bar], timeframe: Timeframe) -> list[float]:
+    if timeframe == "1W":
+        return _weekly_to_monthly(bars)
     if timeframe == "1D":
         return _daily_to_weekly(bars)
     if timeframe == "4H":
@@ -120,6 +138,10 @@ def _derive_higher_closes(bars: Sequence[Bar], timeframe: Timeframe) -> list[flo
 
 def _bar_to_higher_index(bars: Sequence[Bar], timeframe: Timeframe) -> list[int]:
     """Project each chart bar to the index of its higher-timeframe bucket."""
+    if timeframe == "1W":
+        keys = sorted({_month_key(b.date) for b in bars})
+        index_by_key = {k: i for i, k in enumerate(keys)}
+        return [index_by_key[_month_key(b.date)] for b in bars]
     if timeframe == "1D":
         keys = sorted({_iso_week_key(b.date) for b in bars})
         index_by_key = {k: i for i, k in enumerate(keys)}

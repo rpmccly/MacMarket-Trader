@@ -40,9 +40,7 @@ import {
   type MomentumPanelMarker,
   type MomentumSignalMarker,
 } from "@/lib/momentum-api";
-
-const TIMEFRAMES = ["1D", "4H", "1H"] as const;
-type Timeframe = (typeof TIMEFRAMES)[number];
+import { SUPPORTED_TIMEFRAME_OPTIONS, type SupportedTimeframe } from "@/lib/timeframes";
 
 const COLORS = {
   bull: "#21c06e",
@@ -101,7 +99,7 @@ function PanelHeading({ title, hint }: { title: string; hint: string }) {
 
 export function MomentumWorkspace() {
   const [symbol, setSymbol] = useState("AAPL");
-  const [timeframe, setTimeframe] = useState<Timeframe>("1D");
+  const [timeframe, setTimeframe] = useState<SupportedTimeframe>("1D");
   const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
     defaultChartHistoryRange(),
   );
@@ -377,11 +375,11 @@ export function MomentumWorkspace() {
               aria-label="Timeframe"
               data-testid="momentum-timeframe-select"
               value={timeframe}
-              onChange={(e) => setTimeframe(e.target.value as Timeframe)}
+              onChange={(e) => setTimeframe(e.target.value as SupportedTimeframe)}
             >
-              {TIMEFRAMES.map((tf) => (
-                <option key={tf} value={tf}>
-                  {tf}
+              {SUPPORTED_TIMEFRAME_OPTIONS.map((tf) => (
+                <option key={tf.value} value={tf.value}>
+                  {tf.label}
                 </option>
               ))}
             </select>

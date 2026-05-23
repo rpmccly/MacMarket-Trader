@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from macmarket_trader.config import settings
 from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.timeframes import REGULAR_HOURS_SOURCE_TIMEFRAME, is_intraday_chart_timeframe
 
 
 class ProviderUnavailableError(Exception):
@@ -39,10 +40,11 @@ INDEX_LABELS = {
 }
 POLYGON_AGGREGATE_MAX_LIMIT = 50_000
 US_EQUITY_TIMEZONE = ZoneInfo("America/New_York")
-RTH_SOURCE_TIMEFRAME = "30M"
+RTH_SOURCE_TIMEFRAME = REGULAR_HOURS_SOURCE_TIMEFRAME
 RTH_SOURCE_MULTIPLIER = 30
 RTH_SOURCE_TIMESPAN = "minute"
 RTH_BUCKETS_BY_TIMEFRAME = {
+    "30M": [(minute, minute + 30) for minute in range(570, 960, 30)],
     "1H": [(570, 630), (630, 690), (690, 750), (750, 810), (810, 870), (870, 930), (930, 960)],
     "4H": [(570, 810), (810, 960)],
 }
@@ -501,7 +503,7 @@ class DeterministicFallbackMarketDataProvider(MarketDataProvider):
     def _bars(self, symbol: str, timeframe: str, limit: int) -> list[Bar]:
         del symbol
         tf = timeframe.upper()
-        if tf in {"1H", "4H"}:
+        if tf in RTH_BUCKETS_BY_TIMEFRAME:
             bucket_starts = [start for start, _end in RTH_BUCKETS_BY_TIMEFRAME[tf]]
             base_day = date(2025, 1, 1)
             bars: list[Bar] = []
@@ -533,6 +535,26 @@ class DeterministicFallbackMarketDataProvider(MarketDataProvider):
                         )
                     )
                     idx += 1
+            return bars[-limit:]
+
+        if tf == "1W":
+            base = date(2025, 1, 3)
+            bars: list[Bar] = []
+            for idx in range(max(10, limit)):
+                week_start = base + timedelta(days=idx * 7)
+                price = 100 + idx * 1.25
+                bars.append(
+                    Bar(
+                        date=week_start,
+                        open=price,
+                        high=price + 2.4,
+                        low=price - 2.0,
+                        close=price + 0.75,
+                        volume=5_000_000 + idx * 25_000,
+                        rel_volume=1.0,
+                        provider="fallback",
+                    )
+                )
             return bars[-limit:]
 
         base = date(2025, 1, 1)
@@ -631,7 +653,7 @@ class AlpacaMarketDataProvider(MarketDataProvider):
 
     def _map_timeframe(self, timeframe: str) -> str:
         tf = timeframe.upper()
-        mapping = {"1D": "1Day", "1H": "1Hour", "4H": "4Hour"}
+        mapping = {"1W": "1Week", "1D": "1Day", "30M": "30Min", "1H": "1Hour", "4H": "4Hour"}
         return mapping.get(tf, "1Day")
 
     def _normalize_bar(self, bar: dict[str, Any]) -> Bar:
@@ -779,6 +801,10 @@ class PolygonMarketDataProvider(MarketDataProvider):
     def _map_polygon_range(self, timeframe: str, limit: int) -> tuple[int, str, str, str, int]:
         tf = timeframe.upper()
         now = datetime.now(tz=UTC)
+        if tf == "30M":
+            calendar_days = max(20, int((limit / 13) * 1.8) + 10)
+            start = now - timedelta(days=calendar_days)
+            return RTH_SOURCE_MULTIPLIER, RTH_SOURCE_TIMESPAN, str(int(start.timestamp() * 1000)), str(int(now.timestamp() * 1000)), POLYGON_AGGREGATE_MAX_LIMIT
         if tf == "1H":
             calendar_days = max(20, int((limit / 7) * 1.8) + 10)
             start = now - timedelta(days=calendar_days)
@@ -787,6 +813,9 @@ class PolygonMarketDataProvider(MarketDataProvider):
             calendar_days = max(40, int((limit / 2) * 1.8) + 10)
             start = now - timedelta(days=calendar_days)
             return RTH_SOURCE_MULTIPLIER, RTH_SOURCE_TIMESPAN, str(int(start.timestamp() * 1000)), str(int(now.timestamp() * 1000)), POLYGON_AGGREGATE_MAX_LIMIT
+        if tf == "1W":
+            start = (now - timedelta(days=(max(limit, 1) * 7) + 14)).date().isoformat()
+            return 1, "week", start, now.date().isoformat(), limit
         if tf == "1M":
             start = now - timedelta(minutes=max(limit, 1) + 5)
             return 1, "minute", str(int(start.timestamp() * 1000)), str(int(now.timestamp() * 1000)), limit
@@ -794,7 +823,7 @@ class PolygonMarketDataProvider(MarketDataProvider):
         return 1, "day", start, now.date().isoformat(), limit
 
     def _is_intraday_timeframe(self, timeframe: str) -> bool:
-        return timeframe.upper() in {"1M", "1H", "4H"}
+        return timeframe.upper() == "1M" or is_intraday_chart_timeframe(timeframe)
 
     def _normalize_polygon_bar(self, bar: dict[str, Any]) -> Bar:
         ts_ms = int(bar.get("t") or 0)

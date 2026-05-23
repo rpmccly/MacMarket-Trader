@@ -19,6 +19,7 @@ from macmarket_trader.domain.schemas import (
     MomentumVisualParityPoint,
     MomentumVisualParitySnapshot,
 )
+from macmarket_trader.domain.timeframes import is_intraday_chart_timeframe
 from macmarket_trader.indicators.hilo_elite import compute_hilo_elite
 from macmarket_trader.indicators.true_momentum import compute_true_momentum
 from macmarket_trader.indicators.true_momentum_score import compute_true_momentum_score
@@ -34,7 +35,7 @@ class MomentumChartService:
 
     @staticmethod
     def _is_intraday_timeframe(timeframe: str) -> bool:
-        return timeframe.upper() != "1D"
+        return is_intraday_chart_timeframe(timeframe)
 
     @classmethod
     def _chart_time(cls, bar: Bar, timeframe: str) -> str | int:

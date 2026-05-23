@@ -12,6 +12,7 @@ from typing import Literal, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.timeframes import ChartTimeframe, INTRADAY_CHART_TIMEFRAME_SET
 from macmarket_trader.indicators.common import atr, ema, sma
 from macmarket_trader.indicators.hilo_elite import HiLoEliteSeries, compute_hilo_elite
 from macmarket_trader.indicators.true_momentum import (
@@ -19,7 +20,7 @@ from macmarket_trader.indicators.true_momentum import (
     compute_true_momentum,
 )
 
-Timeframe = Literal["1D", "4H", "1H"]
+Timeframe = ChartTimeframe
 ScoreState = Literal[
     "max_bull",
     "bull",
@@ -320,7 +321,7 @@ def compute_true_momentum_score(
     if len(hilo_series.points) != len(bars_list):
         raise ValueError("hilo_series length must match bar count")
 
-    is_intraday = timeframe in ("4H", "1H")
+    is_intraday = timeframe in INTRADAY_CHART_TIMEFRAME_SET
 
     points: list[MomentumScorePoint] = []
     prev_total_score: int | None = None

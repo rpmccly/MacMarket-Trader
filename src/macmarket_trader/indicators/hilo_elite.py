@@ -13,13 +13,16 @@ from typing import Literal, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.domain.timeframes import ChartTimeframe
 from macmarket_trader.indicators.common import crosses_above, crosses_below, stochastic_full
 
-Timeframe = Literal["1D", "4H", "1H"]
+Timeframe = ChartTimeframe
 PresetCategory = Literal["above_day", "day", "intraday"]
 
 
 def _preset_category(timeframe: Timeframe) -> PresetCategory:
+    if timeframe == "1W":
+        return "above_day"
     if timeframe == "1D":
         return "day"
     return "intraday"

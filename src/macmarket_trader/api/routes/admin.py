@@ -50,6 +50,7 @@ from macmarket_trader.data.providers.market_data import (
 from macmarket_trader.data.providers.registry import build_email_provider, build_market_data_service
 from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
 from macmarket_trader.domain.time import calendar_days_to_expiration, utc_now
+from macmarket_trader.domain.timeframes import chart_timeframe_error_message, validate_chart_timeframe
 from macmarket_trader.domain.schemas import (
     ApprovalActionRequest,
     Bar,
@@ -1337,9 +1338,10 @@ def ranked_recommendation_queue(req: dict[str, object], _user=Depends(require_ap
         req.get("symbols") or ["AAPL", "MSFT", "NVDA"],
         max_items=MAX_BULK_SYMBOLS,
     )
-    timeframe = capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4).upper()
-    if timeframe not in {"1D", "1H", "4H"}:
-        raise HTTPException(status_code=400, detail="timeframe must be one of: 1D, 1H, 4H.")
+    try:
+        timeframe = validate_chart_timeframe(capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{chart_timeframe_error_message()}.") from exc
     selected_strategies = [
         capped_text(item, field_name="strategies", max_length=80)
         for item in (req.get("strategies") or [])
@@ -1458,9 +1460,10 @@ def promote_queue_candidate(req: dict[str, object], _user=Depends(require_approv
 
     action = str(req.get("action") or "make_active")
 
-    timeframe = capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4).upper()
-    if timeframe not in {"1D", "1H", "4H"}:
-        raise HTTPException(status_code=400, detail="timeframe must be one of: 1D, 1H, 4H.")
+    try:
+        timeframe = validate_chart_timeframe(capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{chart_timeframe_error_message()}.") from exc
     bars, source, fallback_mode = _workflow_bars(symbol, timeframe=timeframe)
     session_metadata = _workflow_session_metadata(bars, timeframe=timeframe)
     event_text = capped_text(req.get("thesis") or f"Queue promotion for {strategy}", field_name="thesis")
@@ -1563,9 +1566,10 @@ def generate_recommendations(req: dict[str, object], _user=Depends(require_appro
     )
     market_mode = MarketMode(str(req.get("market_mode") or MarketMode.EQUITIES.value))
     strategy = capped_text(req.get("strategy") or "", field_name="strategy", max_length=80)
-    timeframe = capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4).upper()
-    if timeframe not in {"1D", "1H", "4H"}:
-        raise HTTPException(status_code=400, detail="timeframe must be one of: 1D, 1H, 4H.")
+    try:
+        timeframe = validate_chart_timeframe(capped_text(req.get("timeframe") or "1D", field_name="timeframe", max_length=4))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{chart_timeframe_error_message()}.") from exc
     workflow_source = capped_text(req.get("workflow_source") or req.get("source") or "", field_name="workflow_source", max_length=80)
     approval_status = getattr(_user.approval_status, "value", _user.approval_status)
     user_is_approved = str(approval_status) == ApprovalStatus.APPROVED.value

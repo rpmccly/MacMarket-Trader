@@ -1,9 +1,9 @@
 # Chart history ranges
 
 Every chart rendered in the operator console now supports an explicit
-**history range** selector. Picking a wider range asks the backend for
-more historical bars so the operator can pan the chart farther back in
-time without losing the existing zoom / pan behavior.
+**history range** selector. The selected range is echoed back as operator
+context, while provider calls stay capped by timeframe so chart requests
+remain bounded.
 
 The selector is research-only context. It does **not** affect ranking
 math, recommendation queue sorting, recommendation approval, paper-order
@@ -64,15 +64,17 @@ response:
 | `lookback_days` | Resolved day count (31 / 93 / 186 / 366 / 732 / 1830). |
 | `bars_returned` | Number of bars in the response payload (after provider/fallback resolution). |
 
-The provider bar-fetch limit is derived per-timeframe from the
-selected range:
+The provider bar-fetch limit is capped per timeframe:
 
-- `1D`: `max(lookback_days, 60)` bars.
-- `1H`: `min(max(lookback_days * 7, 400), 4000)` bars.
-- `4H`: `min(max(lookback_days * 2, 200), 2000)` bars.
+- `1W`: up to `156` weekly bars.
+- `1D`: up to `120` daily bars.
+- `4H`: `200` regular-hours bars.
+- `1H`: `400` regular-hours bars.
+- `30M`: `500` regular-hours bars.
 
-Intraday limits are deliberately capped to keep provider calls bounded
-even when the operator selects `5Y`.
+Intraday limits are deliberately capped to keep provider calls bounded.
+`30M`, `1H`, and `4H` use regular-hours chart bars sourced from 30-minute
+provider aggregates where the provider supports that path.
 
 ## Persistence
 
