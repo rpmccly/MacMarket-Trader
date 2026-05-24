@@ -365,6 +365,7 @@ export default function MomentumHeatmapPage() {
   const [changedOnly, setChangedOnly] = useState(false);
   const [deltaDirection, setDeltaDirection] = useState<"all" | "positive" | "negative">("all");
   const [showDeltas, setShowDeltas] = useState(true);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [schedule, setSchedule] = useState<MomentumHeatmapSchedulePreferences | null>(null);
   const [timingSuggestions, setTimingSuggestions] = useState<Array<{ time: string; label: string; note: string }>>([]);
   const [emailRecipients, setEmailRecipients] = useState("");
@@ -1002,18 +1003,34 @@ export default function MomentumHeatmapPage() {
     return null;
   }
 
+  function resetFilters() {
+    setSearch("");
+    setFilterMode("all");
+    setSupportedOnly(false);
+    setHideUnavailable(false);
+    setStrengthMin("");
+    setStrengthMax("");
+    setChangedOnly(false);
+    setDeltaDirection("all");
+  }
+
   function renderFilterControls() {
     return (
-      <div className="hm-filter-bar" data-testid="momentum-heatmap-filter-bar">
-        <div className="op-row hm-filter-controls">
-          <label>Sort selector
-            <select value={sortMode} onChange={(event) => { setSortMode(event.target.value); persistProfile(categories, colorRanges, { sort: event.target.value }); }}>
+      <div className="hm-filter-bar hm-filter-bar-compact" data-testid="momentum-heatmap-filter-bar">
+        <div className="hm-filter-toolbar">
+          <label className="hm-filter-search">
+            <span>Search</span>
+            <input aria-label="Search symbol/label" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Symbol or label" />
+          </label>
+          <label>
+            <span>Sort</span>
+            <select aria-label="Sort selector" value={sortMode} onChange={(event) => { setSortMode(event.target.value); persistProfile(categories, colorRanges, { sort: event.target.value }); }}>
               {SORT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
-          <label>Search symbol/label <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="SPY or ALL U.S." /></label>
-          <label>Alignment filter
-            <select value={filterMode} onChange={(event) => setFilterMode(event.target.value as FilterMode)}>
+          <label>
+            <span>Alignment</span>
+            <select aria-label="Alignment filter" value={filterMode} onChange={(event) => setFilterMode(event.target.value as FilterMode)}>
               <option value="all">All rows</option>
               <option value="bullish">Bullish alignment</option>
               <option value="bearish">Bearish alignment</option>
@@ -1021,20 +1038,44 @@ export default function MomentumHeatmapPage() {
               <option value="reversal">Long-term weak + short-term improving</option>
             </select>
           </label>
-          <label>Strength % minimum threshold <input type="number" value={strengthMin} onChange={(event) => setStrengthMin(event.target.value)} /></label>
-          <label>Strength % maximum threshold <input type="number" value={strengthMax} onChange={(event) => setStrengthMax(event.target.value)} /></label>
-          <label><input type="checkbox" checked={supportedOnly} onChange={(event) => setSupportedOnly(event.target.checked)} /> Supported only</label>
-          <label><input type="checkbox" checked={hideUnavailable} onChange={(event) => setHideUnavailable(event.target.checked)} /> Hide unsupported/unavailable</label>
-          <label><input type="checkbox" checked={changedOnly} onChange={(event) => setChangedOnly(event.target.checked)} /> Show rows changed since last snapshot</label>
-          <label>Delta direction
-            <select value={deltaDirection} onChange={(event) => setDeltaDirection(event.target.value as "all" | "positive" | "negative")}>
-              <option value="all">All deltas</option>
-              <option value="positive">Show positive delta only</option>
-              <option value="negative">Show negative delta only</option>
-            </select>
+          <label className="hm-inline-check hm-filter-check">
+            <input type="checkbox" checked={hideUnavailable} onChange={(event) => setHideUnavailable(event.target.checked)} />
+            Hide unsupported/unavailable
           </label>
-          <label><input type="checkbox" checked={showDeltas} onChange={(event) => { setShowDeltas(event.target.checked); persistProfile(categories, colorRanges, { showDeltas: event.target.checked }); }} /> Toggle delta columns</label>
+          <button
+            type="button"
+            className="hm-filter-toggle"
+            aria-expanded={showAdvancedFilters}
+            aria-controls="momentum-advanced-filters"
+            onClick={() => setShowAdvancedFilters((value) => !value)}
+          >
+            Advanced filters
+          </button>
         </div>
+        {showAdvancedFilters ? (
+          <div className="hm-filter-advanced" id="momentum-advanced-filters" data-testid="momentum-advanced-filters">
+            <label className="hm-inline-check"><input type="checkbox" checked={supportedOnly} onChange={(event) => setSupportedOnly(event.target.checked)} /> Supported only</label>
+            <label className="hm-inline-check"><input type="checkbox" checked={changedOnly} onChange={(event) => setChangedOnly(event.target.checked)} /> Show rows changed since last snapshot</label>
+            <label>
+              <span>Strength min</span>
+              <input aria-label="Strength % minimum threshold" type="number" value={strengthMin} onChange={(event) => setStrengthMin(event.target.value)} placeholder="Min" />
+            </label>
+            <label>
+              <span>Strength max</span>
+              <input aria-label="Strength % maximum threshold" type="number" value={strengthMax} onChange={(event) => setStrengthMax(event.target.value)} placeholder="Max" />
+            </label>
+            <label>
+              <span>Delta direction</span>
+              <select aria-label="Delta direction" value={deltaDirection} onChange={(event) => setDeltaDirection(event.target.value as "all" | "positive" | "negative")}>
+                <option value="all">All deltas</option>
+                <option value="positive">Show positive delta only</option>
+                <option value="negative">Show negative delta only</option>
+              </select>
+            </label>
+            <label className="hm-inline-check"><input type="checkbox" checked={showDeltas} onChange={(event) => { setShowDeltas(event.target.checked); persistProfile(categories, colorRanges, { showDeltas: event.target.checked }); }} /> Toggle delta columns</label>
+            <button type="button" className="hm-filter-reset" onClick={resetFilters}>Reset filters</button>
+          </div>
+        ) : null}
         {showDeltas && (deltaNotice || !hasComparableDeltas) ? (
           <div className="hm-delta-notice" data-testid="momentum-heatmap-delta-notice">
             {deltaNotice ?? "No comparable numeric deltas are available for this snapshot."}

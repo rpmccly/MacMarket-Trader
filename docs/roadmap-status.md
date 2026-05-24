@@ -2,6 +2,59 @@
 
 Last updated: 2026-05-24
 
+## 2026-05-24 Update - Heatmap Compact Sticky Filters
+HACO Direction Heatmap and Momentum Heatmap now use a compact sticky filter
+toolbar so search, sort, direction/alignment, and unsupported-row controls
+stay available while scrolling without consuming a tall block of vertical
+space. Less-used threshold and change/delta filters moved into an expandable
+advanced filter panel with reset controls. This is a UI polish pass only; it
+does not change HACO calculations, True Momentum scoring, Squeeze Pro,
+heatmap formulas, snapshots, account scoping, report/CSV behavior,
+recommendation approval, paper trading, broker-routing, live-trading,
+automated execution, or order-placement behavior.
+
+## 2026-05-24 Update - HACO Heatmap Refresh Contract Hardening
+HACO Direction Heatmap refresh now normalizes saved-view category/row objects
+into the backend refresh contract before POSTing, and the backend refresh
+schema ignores harmless saved-view metadata on rows/categories instead of
+rejecting the whole request. Valid equity/ETF rows such as `SPY`, `QQQ`, and
+`GLD` can refresh while unsupported workbook rows remain row-level
+unsupported/unavailable results. The HACO row label UI now avoids duplicate
+display/provider text and shows provider symbols only as secondary context.
+No HACO algorithm, alignment formula, Momentum Heatmap behavior, True Momentum
+scoring, Squeeze Pro behavior, recommendation approval, paper trading,
+broker-routing, live-trading, automated execution, or order-placement behavior
+changed.
+
+## 2026-05-24 Update - Three-Pass Pre-Deploy Reconciliation
+Welcome/onboarding copy now reflects the landed saved Momentum Heatmap views
+and active HACO Direction Heatmap Phase 1 rather than treating them as planned
+work. The reconciliation also preserves the current deployment boundary:
+Momentum Heatmap schedules remain persisted preferences unless the documented
+runner is installed, HACO email/scheduling remains deferred, Squeeze Pro arrows
+remain deferred, and neither heatmap adds recommendation, paper-order,
+broker-routing, live-trading, automated-execution, or order-placement behavior.
+
+## 2026-05-24 Update - HACO Direction Heatmap Phase 1
+HACO Direction Heatmap is now started as a Phase 1 research dashboard at
+`/haco-heatmap`. It reuses the existing HACO chart service rather than adding
+a second HACO algorithm, and it shows per-timeframe `LONG` / `SHORT` state
+across `1W`, `1D`, `4H`, `1H`, and `30M`. Overall HACO Alignment uses
+`1W*3 + 1D*3 + 4H*2 + 1H + 30M` over available state weight; Short-Term
+Alignment uses `4H*2 + 1H + 30M`. Bias labels are `LONG` at `>= 60`,
+`SHORT` at `<= -60`, and `MIXED` otherwise.
+
+The implementation adds user-scoped HACO heatmap profiles and snapshots in
+separate tables from Momentum Heatmap, seeds the same saved-view names
+(`Morning Macro`, `Growth Leaders`, `Commodities`, `Pullback Watch`, and
+`Custom Watchlist`) per account, preserves unsupported workbook rows with
+fast unsupported/unavailable status, and supports manual chunked refresh,
+latest-snapshot loading, change/delta labels when two snapshots exist, report
+preview, and CSV export. Email and active scheduling are deferred for HACO
+Heatmap Phase 1. No True Momentum scoring, Squeeze Pro, Momentum Heatmap
+formulas, recommendation approval, paper trading, broker routing, live
+trading, automated execution, or order-placement behavior changed.
+
 ## 2026-05-24 Update - Momentum Heatmap Saved Views
 Momentum Heatmap now seeds user-scoped saved views for Morning Macro, Growth
 Leaders, Commodities, Pullback Watch, and Custom Watchlist using the existing
@@ -25,9 +78,10 @@ The operator Welcome Guide now documents Momentum Intelligence, expanded chart
 timeframes (`1W`, `1D`, `4H`, `1H`, `30M`), the Squeeze Pro lower panel,
 Momentum Heatmap, server-backed/account-scoped heatmap profiles and snapshots,
 report preview, CSV export, configured-only email delivery, persisted schedule
-preferences, and planned/deferred saved heatmap views. The update is onboarding
-copy only and does not change True Momentum scoring, Squeeze Pro logic,
-heatmap formulas, recommendation approval, paper trading, broker routing, live
+preferences, active saved Momentum Heatmap views, and the active HACO Direction
+Heatmap Phase 1 dashboard. The update is onboarding copy only and does not
+change True Momentum scoring, Squeeze Pro logic, heatmap formulas, HACO
+algorithm logic, recommendation approval, paper trading, broker routing, live
 trading, automated execution, or order-placement behavior.
 
 ## 2026-05-24 Update - Momentum Heatmap Profile Isolation Audit

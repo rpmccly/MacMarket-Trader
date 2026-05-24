@@ -1657,7 +1657,7 @@ class HacoHeatmapDirectionCell(BaseModel):
 
 
 class HacoHeatmapRowRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     id: str = Field(max_length=120)
     symbol: str = Field(max_length=80)
@@ -1673,7 +1673,7 @@ class HacoHeatmapRowRequest(BaseModel):
 
 
 class HacoHeatmapCategoryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     category_id: str = Field(alias="categoryId", max_length=80)
     category_label: str = Field(alias="categoryLabel", max_length=120)

@@ -403,6 +403,12 @@ test("Momentum Heatmap operator workflow stays manual, chunked, and reportable",
   await page.getByLabel("Search symbol/label").fill("SPY");
   await page.getByLabel("Sort selector").selectOption("strength-desc");
   await page.getByLabel("Alignment filter").selectOption("bullish");
+  await page.getByRole("button", { name: "Advanced filters" }).click();
+  await expect(page.getByTestId("momentum-advanced-filters")).toBeVisible();
+  await expect(page.getByLabel("Strength % minimum threshold")).toBeVisible();
+  await expect(page.getByLabel("Strength % maximum threshold")).toBeVisible();
+  await page.getByRole("button", { name: "Advanced filters" }).click();
+  await expect(page.getByTestId("momentum-advanced-filters")).toHaveCount(0);
   await expect(page.getByTestId("momentum-heatmap-delta-notice")).toContainText("Deltas need two successful snapshots.");
 
   await page.getByRole("button", { name: "Refresh visible heatmap" }).click();

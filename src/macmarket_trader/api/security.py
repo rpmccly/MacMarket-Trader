@@ -53,6 +53,7 @@ HIGH_COST_ROUTE_LIMITS: dict[str, RateLimit] = {
     "/user/options/paper-structures/open": RateLimit(limit=120, window_seconds=60),
     "/user/momentum-heatmap/report/email": RateLimit(limit=10, window_seconds=60),
     "/user/momentum-heatmap/refresh": RateLimit(limit=120, window_seconds=60),
+    "/user/haco-heatmap/refresh": RateLimit(limit=120, window_seconds=60),
 }
 
 

@@ -95,6 +95,8 @@ body { background: var(--bg); color: var(--text); font-family: Inter, Arial, san
 .hm-score-unavailable { color: var(--muted); background: transparent; }
 .hm-score-cell.is-stale, tr.is-stale .hm-score-cell { outline: 1px dashed #f7b267; }
 .hm-symbol-cell { min-width: 170px; font-weight: 700; }
+.hm-symbol-cell strong { display: block; }
+.hm-symbol-provider { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 500; }
 .hm-muted { color: var(--muted); }
 .hm-color-table { min-width: 720px; }
 .hm-color-table input { max-width: 150px; }
@@ -119,11 +121,22 @@ body { background: var(--bg); color: var(--text); font-family: Inter, Arial, san
 .hm-progress { border: 1px solid #785931; border-radius: 8px; padding: 8px 10px; background: rgba(247, 178, 103, .08); display: grid; gap: 6px; }
 .hm-progress-track { height: 6px; background: var(--input-bg); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
 .hm-progress-track span { display: block; height: 100%; background: #56f08a; transition: width .2s ease; }
+.hm-panel-grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 8px; align-items: flex-end; }
+.hm-inline-check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.hm-inline-check input { width: auto; }
 .hm-panel-heading { justify-content: space-between; }
 .hm-panel-actions { margin-top: 10px; }
 .hm-panel-table { margin-top: 10px; }
-.hm-filter-bar { position: sticky; top: 34px; z-index: 5; border: 1px solid var(--card-border); background: var(--card-bg); border-radius: 8px; padding: 10px; display: grid; gap: 8px; }
-.hm-filter-controls { align-items: end; }
+.hm-filter-bar { position: sticky; top: 38px; z-index: 5; border: 1px solid var(--card-border); background: color-mix(in srgb, var(--card-bg) 94%, transparent); border-radius: 8px; padding: 6px 8px; display: grid; gap: 6px; box-shadow: 0 8px 22px rgba(0, 0, 0, .18); backdrop-filter: blur(10px); }
+.hm-filter-toolbar { display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(150px, 1fr) minmax(140px, .9fr) auto auto; gap: 7px; align-items: flex-end; }
+.hm-filter-toolbar label, .hm-filter-advanced label { min-width: 0; display: grid; gap: 2px; color: var(--muted); font-size: 11px; }
+.hm-filter-toolbar input, .hm-filter-toolbar select, .hm-filter-advanced input, .hm-filter-advanced select { min-height: 30px; padding: 5px 8px; font-size: 12px; }
+.hm-filter-search { min-width: 170px; }
+.hm-filter-check { min-height: 30px; align-self: flex-end; white-space: nowrap; }
+.hm-filter-toggle, .hm-filter-reset { min-height: 30px; align-self: flex-end; padding: 5px 9px; white-space: nowrap; }
+.hm-filter-advanced { border-top: 1px solid var(--table-border); padding-top: 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.hm-filter-advanced label:not(.hm-inline-check) { min-width: 120px; max-width: 180px; }
+.hm-filter-controls { align-items: flex-end; }
 .hm-delta-notice { border: 1px solid var(--table-border); border-radius: 6px; color: var(--muted); padding: 6px 8px; font-size: 12px; background: var(--input-bg); }
 .hm-table-workflow { display: grid; gap: 8px; }
 .hm-category-card { padding: 10px; }
@@ -149,6 +162,17 @@ body { background: var(--bg); color: var(--text); font-family: Inter, Arial, san
 .hm-squeeze-none { background: #21c06e; color: #06150b; }
 .hm-squeeze-unavailable { background: transparent; color: var(--muted); }
 .hm-report-preview .mh-report { color: #d7dee8; }
+.haco-heatmap-table { min-width: 1320px; }
+.haco-state-cell { text-align: center; font-weight: 800; border-radius: 4px; }
+.haco-state-long { background: rgba(86, 240, 138, .18); color: #7ee787; border-left: 3px solid #2fba63; }
+.haco-state-short { background: rgba(255, 75, 75, .16); color: #ff8b8b; border-left: 3px solid #d04b4b; }
+.haco-state-unavailable { color: var(--muted); background: transparent; }
+.haco-tag-cell { min-width: 210px; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 980px) {
+  .hm-filter-toolbar { grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr); }
+  .hm-filter-check, .hm-filter-toggle { justify-self: start; }
+}
 
 @media print {
   .op-aside, .op-topbar, .op-page-header, .hm-command-center, .hm-filter-bar, .hm-status-strip, .hm-progress { display: none !important; }

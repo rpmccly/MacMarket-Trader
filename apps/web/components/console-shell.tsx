@@ -27,6 +27,7 @@ const navSections = [
       ["/analyze", "Symbol Snapshot"],
       ["/charts/haco", "HACO Context"],
       ["/momentum-heatmap", "Momentum Heatmap"],
+      ["/haco-heatmap", "HACO Direction Heatmap"],
       ["/charts/momentum", "Momentum Intelligence"],
     ],
   },

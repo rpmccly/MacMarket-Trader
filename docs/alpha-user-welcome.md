@@ -69,7 +69,8 @@ evidence.
 ### Where to go
 
 Dashboard, [Momentum Intelligence](/charts/momentum),
-[Momentum Heatmap](/momentum-heatmap), Analysis, [Recommendations](/recommendations),
+[Momentum Heatmap](/momentum-heatmap),
+[HACO Direction Heatmap](/haco-heatmap), Analysis, [Recommendations](/recommendations),
 [Orders / Paper positions](/orders), Provider Health, and Settings.
 
 ## 1. What MacMarket-Trader is
@@ -259,6 +260,28 @@ Saved heatmap views include Morning Macro, Growth Leaders, Commodities,
 Pullback Watch, and Custom Watchlist. Each view is account-scoped; switching
 views loads that view's rows/settings and latest snapshot without
 auto-refreshing.
+
+### HACO Direction Heatmap
+
+[HACO Direction Heatmap](/haco-heatmap) is a workbook-style, multi-symbol
+direction dashboard built on the existing HACO chart path. It shows HACO
+states as `LONG` or `SHORT` across `1W`, `1D`, `4H`, `1H`, and `30M`.
+Conflicting alignment is labeled `MIXED`, missing/unsupported rows are labeled
+`UNAVAILABLE` or unsupported, and the page does not use BUY/SELL as its main
+direction language.
+
+It is not a True Momentum strength page. The dashboard summarizes directional
+alignment, Daily Context, Short-Term Bias, tags such as All LONG / All SHORT /
+Mixed-Chop, and changes when at least two successful snapshots exist.
+
+HACO Heatmap profiles and snapshots are server-backed and account-scoped in
+their own HACO tables. Unsupported workbook rows remain visible and are labeled
+unsupported/unavailable instead of breaking refresh. The page does not
+auto-refresh on load; the operator chooses when to refresh included categories.
+
+Phase 1 supports report preview and CSV export for the active HACO view.
+HACO email delivery and active scheduling are deferred until approved
+infrastructure is wired.
 
 Safety reminders:
 

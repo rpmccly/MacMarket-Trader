@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from macmarket_trader.api.routes.admin import router as admin_router
 from macmarket_trader.api.routes.admin import user_router
 from macmarket_trader.api.routes.charts import router as charts_router
+from macmarket_trader.api.routes.haco_heatmap import router as haco_heatmap_router
 from macmarket_trader.api.routes.health import router as health_router
 from macmarket_trader.api.routes.momentum_heatmap import router as momentum_heatmap_router
 from macmarket_trader.api.routes.recommendations import router as recommendation_router
@@ -69,6 +70,7 @@ app.include_router(recommendation_router)
 app.include_router(replay_router)
 app.include_router(charts_router)
 app.include_router(momentum_heatmap_router)
+app.include_router(haco_heatmap_router)
 
 app.include_router(user_router)
 app.include_router(admin_router)

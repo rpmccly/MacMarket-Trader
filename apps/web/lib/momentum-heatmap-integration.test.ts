@@ -71,6 +71,8 @@ describe("Momentum Heatmap page integration", () => {
     expect(source).toContain("Refresh this category");
     expect(source).toContain("momentum-heatmap-refresh-progress");
     expect(source).toContain("momentum-heatmap-status-strip");
+    expect(source).toContain("momentum-advanced-filters");
+    expect(source).toContain("Advanced filters");
     expect(source).toContain("Sort selector");
     expect(source).toContain("Strength % high to low");
     expect(source).toContain("Bullish alignment");
@@ -81,6 +83,7 @@ describe("Momentum Heatmap page integration", () => {
     expect(source).toContain("Show positive delta only");
     expect(source).toContain("Show negative delta only");
     expect(source).toContain("Toggle delta columns");
+    expect(source).toContain("Reset filters");
     expect(source).toContain("Deltas need two successful snapshots.");
     expect(source).toContain("momentum-heatmap-delta-notice");
     expect(source).toContain("Average Strength %");
@@ -112,5 +115,56 @@ describe("Momentum Heatmap page integration", () => {
     expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Commodities");
     expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Pullback Watch");
     expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Custom Watchlist");
+  });
+});
+
+describe("HACO Direction Heatmap page integration", () => {
+  it("exposes the Research nav link and user-scoped proxy routes", () => {
+    expect(read("components/console-shell.tsx")).toContain("/haco-heatmap");
+    expect(read("components/console-shell.tsx")).toContain("HACO Direction Heatmap");
+    expect(read("app/api/user/haco-heatmap/profile/route.ts")).toContain("/user/haco-heatmap/profile");
+    expect(read("app/api/user/haco-heatmap/refresh/route.ts")).toContain("/user/haco-heatmap/refresh");
+    expect(read("app/api/user/haco-heatmap/snapshots/latest/route.ts")).toContain("/user/haco-heatmap/snapshots/latest");
+    expect(read("app/api/user/haco-heatmap/report/preview/route.ts")).toContain("/user/haco-heatmap/report/preview");
+    expect(read("app/api/user/haco-heatmap/report/csv/route.ts")).toContain("/user/haco-heatmap/report/csv");
+  });
+
+  it("includes compact HACO workflow controls, LONG/SHORT labels, filters, and manual refresh copy", () => {
+    const source = read("app/(console)/haco-heatmap/page.tsx");
+    expect(source).toContain("HACO Direction Heatmap");
+    expect(source).toContain("Research dashboard only");
+    expect(source).toContain("No auto-refresh on load");
+    expect(source).toContain("haco-heatmap-command-center");
+    expect(source).toContain("haco-heatmap-view-selector");
+    expect(source).toContain("Refresh included");
+    expect(source).toContain("Refresh this category");
+    expect(source).toContain("Generate report preview");
+    expect(source).toContain("Download CSV");
+    expect(source).toContain("Manage symbols");
+    expect(source).toContain("Show LONG only");
+    expect(source).toContain("Show SHORT only");
+    expect(source).toContain("Show Mixed/Chop");
+    expect(source).toContain("Hide unsupported");
+    expect(source).toContain("haco-advanced-filters");
+    expect(source).toContain("Advanced filters");
+    expect(source).toContain("Alignment minimum");
+    expect(source).toContain("Alignment maximum");
+    expect(source).toContain("Reset filters");
+    expect(source).toContain("Changes need two successful snapshots.");
+    expect(source).toContain("LONG");
+    expect(source).toContain("SHORT");
+    expect(source).toContain("chunkHacoHeatmapCategory");
+    expect(source).toContain("mergeHacoHeatmapResponse");
+  });
+
+  it("keeps HACO saved views and backend implementation separate from Momentum Heatmap", () => {
+    expect(read("lib/haco-heatmap-api.ts")).toContain("/api/user/haco-heatmap");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_defaults.py")).toContain("Morning Macro");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_defaults.py")).toContain("Growth Leaders");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_defaults.py")).toContain("Commodities");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_defaults.py")).toContain("Pullback Watch");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_defaults.py")).toContain("Custom Watchlist");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_service.py")).toContain("HacoChartService");
+    expect(read("../../src/macmarket_trader/charts/haco_heatmap_service.py")).toContain("HACO_ALIGNMENT_WEIGHTS");
   });
 });

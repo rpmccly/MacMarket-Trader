@@ -51,6 +51,15 @@ describe("WelcomeClient", () => {
     expect(html).toContain("Arrow logic is deferred");
     expect(html).toContain("Momentum Heatmap");
     expect(html).toContain("/momentum-heatmap");
+    expect(html).toContain("HACO Direction Heatmap");
+    expect(html).toContain("/haco-heatmap");
+    expect(html).toContain("states as");
+    expect(html).toContain("MIXED");
+    expect(html).toContain("UNAVAILABLE");
+    expect(markdown).toMatch(/does not use BUY\/SELL as its main\s+direction language/);
+    expect(html).toContain("Daily Context");
+    expect(html).toContain("Short-Term Bias");
+    expect(html).toContain("HACO email delivery and active scheduling are deferred");
     expect(html).toContain("workbook-style");
     expect(html).toContain("Long-Term Score");
     expect(html).toContain("Short-Term Score");

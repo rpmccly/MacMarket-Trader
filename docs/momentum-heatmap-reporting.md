@@ -5,6 +5,11 @@ Intelligence / True Momentum score path. It does not create trade
 recommendations, approve trades, size positions, route orders, or add execution
 support.
 
+HACO Direction Heatmap is documented separately in
+`docs/haco-direction-heatmap.md`. It uses the existing HACO chart path and
+separate HACO profile/snapshot tables so directional LONG/SHORT state history
+does not mix with Momentum Heatmap scoring history.
+
 ## Operator dashboard polish
 
 The Momentum Heatmap page now uses a compact command-center layout instead of
