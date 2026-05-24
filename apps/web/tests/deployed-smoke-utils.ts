@@ -68,7 +68,7 @@ export const DEPLOYED_SMOKE_PAGES: SmokePageDefinition[] = [
   {
     path: "/charts/haco",
     name: "HACO Charts",
-    anyText: ["HACO", "AAPL", "Session"],
+    anyText: ["HACO", "SPY", "Session"],
   },
   {
     path: "/analysis",

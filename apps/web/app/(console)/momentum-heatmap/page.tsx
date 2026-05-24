@@ -20,7 +20,10 @@ import {
 import {
   addMomentumHeatmapRow,
   chunkMomentumHeatmapCategory,
+  createMomentumHeatmapProfile,
+  deleteMomentumHeatmapProfile,
   downloadMomentumHeatmapCsv,
+  duplicateMomentumHeatmapProfile,
   emailMomentumHeatmapReport,
   fetchLatestMomentumHeatmapSnapshot,
   fetchMomentumHeatmapProfile,
@@ -29,6 +32,7 @@ import {
   mergeMomentumHeatmapResponse,
   refreshMomentumHeatmapSnapshot,
   removeMomentumHeatmapRow,
+  resetMomentumHeatmapProfile,
   saveMomentumHeatmapProfile,
   saveMomentumHeatmapSchedule,
   type MomentumHeatmapCategorySummary,
@@ -40,7 +44,9 @@ import {
   type MomentumHeatmapSchedulePreferences,
   type MomentumHeatmapScoreCell,
   type MomentumHeatmapServerProfile,
+  type MomentumHeatmapSqueezeCell,
 } from "@/lib/momentum-heatmap-api";
+import { squeezeProStateLabel } from "@/lib/squeeze-pro";
 import type { SupportedTimeframe } from "@/lib/timeframes";
 
 const WORKBOOK_TIMEFRAME_LABELS: Array<{ key: SupportedTimeframe; label: string }> = [
@@ -113,25 +119,6 @@ function profileCategories(profile: MomentumHeatmapServerProfile): MomentumHeatm
   return (profile.categories ?? []).map((category) => toCategoryConfig(category as MomentumHeatmapCategoryConfig));
 }
 
-function mergeLocalCategories(
-  serverCategories: MomentumHeatmapCategoryConfig[],
-  localCategories: MomentumHeatmapCategoryConfig[],
-): MomentumHeatmapCategoryConfig[] {
-  const localByCategory = new Map(localCategories.map((category) => [category.categoryId, toCategoryConfig(category)]));
-  return serverCategories.map((serverCategory) => {
-    const localCategory = localByCategory.get(serverCategory.categoryId);
-    if (!localCategory) return serverCategory;
-    const seen = new Set(serverCategory.rows.map((row) => row.providerSymbol.trim().toUpperCase()));
-    const additions = localCategory.rows.filter((row) => {
-      const normalized = row.providerSymbol.trim().toUpperCase();
-      if (seen.has(normalized)) return false;
-      seen.add(normalized);
-      return true;
-    });
-    return { ...serverCategory, rows: [...serverCategory.rows, ...additions] };
-  });
-}
-
 function formatScore(value: number | null | undefined, suffix = ""): string {
   if (value == null || Number.isNaN(value)) return "--";
   return `${Math.round(value)}${suffix}`;
@@ -159,6 +146,37 @@ function scoreTitle(cell: MomentumHeatmapScoreCell | null | undefined): string |
     cell.as_of ? `as of ${cell.as_of}` : null,
   ].filter(Boolean);
   return parts.join(" | ");
+}
+
+function squeezeTitle(cell: MomentumHeatmapSqueezeCell | null | undefined): string | undefined {
+  if (!cell) return undefined;
+  const timeframeDetails = Object.entries(cell.timeframes ?? {})
+    .map(([timeframe, detail]) => {
+      const bits = [
+        timeframe,
+        detail.value ?? detail.state ?? detail.status,
+        detail.reason,
+        detail.oscillator_value != null ? `osc ${Number(detail.oscillator_value).toFixed(2)}` : null,
+        detail.as_of ? `as of ${detail.as_of}` : null,
+      ].filter(Boolean);
+      return bits.join(": ");
+    })
+    .filter(Boolean);
+  return [cell.value ?? cell.status, cell.reason, cell.as_of ? `as of ${cell.as_of}` : null, ...timeframeDetails]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function SqueezeCell({ cell }: { cell: MomentumHeatmapSqueezeCell | null | undefined }) {
+  const state = cell?.status === "ok" ? cell.state ?? "none" : null;
+  const label = cell?.status === "ok" ? cell.value ?? squeezeProStateLabel(state) : "Unavailable";
+  return (
+    <td className="hm-squeeze-cell" title={squeezeTitle(cell) ?? "Squeeze Pro unavailable"}>
+      <span className={`hm-squeeze-badge hm-squeeze-${state ?? "unavailable"}`}>
+        {label}
+      </span>
+    </td>
+  );
 }
 
 function scoreStyle(value: number | null | undefined, ranges: MomentumHeatmapScoreRange[]): CSSProperties | undefined {
@@ -330,6 +348,7 @@ function sortRows(
 
 export default function MomentumHeatmapPage() {
   const [profile, setProfile] = useState<MomentumHeatmapServerProfile | null>(null);
+  const [profiles, setProfiles] = useState<MomentumHeatmapServerProfile[]>([]);
   const [categories, setCategories] = useState<MomentumHeatmapCategoryConfig[]>(() => cloneDefaultCategories());
   const [selectedCategoryId, setSelectedCategoryId] = useState(DEFAULT_MOMENTUM_HEATMAP_CATEGORIES[0]?.categoryId ?? "");
   const [symbolInput, setSymbolInput] = useState("");
@@ -367,6 +386,56 @@ export default function MomentumHeatmapPage() {
   const [categorySummaries, setCategorySummaries] = useState<MomentumHeatmapCategorySummary[]>([]);
   const [reportPreviewHtml, setReportPreviewHtml] = useState<string | null>(null);
 
+  function activeProfileId(nextProfile = profile): string | undefined {
+    return nextProfile?.profileId ?? nextProfile?.id;
+  }
+
+  function applyProfile(nextProfile: MomentumHeatmapServerProfile, nextSchedule?: MomentumHeatmapSchedulePreferences | null) {
+    const nextCategories = profileCategories(nextProfile);
+    const filters = (nextProfile.viewSettings?.filters ?? {}) as Record<string, unknown>;
+    setProfile(nextProfile);
+    setCategories(nextCategories);
+    setSelectedCategoryId(nextCategories[0]?.categoryId ?? selectedCategoryId);
+    setColorRanges(normalizeMomentumHeatmapScoreRanges(nextProfile.colorRanges));
+    setSortMode(nextProfile.viewSettings?.sort ?? "workbook");
+    setShowDeltas(typeof nextProfile.viewSettings?.showDeltas === "boolean" ? nextProfile.viewSettings.showDeltas : true);
+    setSearch(typeof filters.search === "string" ? filters.search : "");
+    setSupportedOnly(filters.supportedOnly === true);
+    setHideUnavailable(filters.hideUnavailable === true);
+    setFilterMode(typeof filters.alignment === "string" ? filters.alignment as FilterMode : "all");
+    setStrengthMin(filters.strengthMin == null ? "" : String(filters.strengthMin));
+    setStrengthMax(filters.strengthMax == null ? "" : String(filters.strengthMax));
+    setChangedOnly(filters.changedOnly === true);
+    setDeltaDirection(filters.positiveDeltaOnly === true ? "positive" : filters.negativeDeltaOnly === true ? "negative" : "all");
+    if (nextSchedule) setSchedule(nextSchedule);
+  }
+
+  async function loadSnapshotAndScheduleForProfile(profileId: string | undefined) {
+    const latest = await fetchLatestMomentumHeatmapSnapshot(profileId).catch(() => null);
+    if (latest?.snapshot?.payload) {
+      setHeatmap(latest.snapshot.payload);
+      setLatestSnapshotId(latest.snapshot.id);
+      setCategorySummaries(latest.snapshot.categorySummaries ?? []);
+      setLastSnapshotMessage(latest.message);
+      setHasPreviousSnapshot(Boolean(latest.previousSnapshot));
+      setDeltas(latest.deltas ?? {});
+      setDeltaNotice(latest.previousSnapshot ? (hasAnyNumericDelta(latest.deltas ?? {}) ? null : "No comparable numeric deltas are available for this snapshot.") : "Deltas need two successful snapshots.");
+    } else {
+      setHeatmap(null);
+      setLatestSnapshotId(undefined);
+      setCategorySummaries([]);
+      setLastSnapshotMessage(latest?.message ?? "No Momentum Heatmap snapshot stored yet.");
+      setHasPreviousSnapshot(false);
+      setDeltas({});
+      setDeltaNotice("Deltas need two successful snapshots.");
+    }
+    const schedulePayload = await fetchMomentumHeatmapSchedule(profileId).catch(() => null);
+    if (schedulePayload) {
+      setSchedule(schedulePayload.schedulePreferences);
+      setTimingSuggestions(schedulePayload.timingSuggestions ?? []);
+    }
+  }
+
   useEffect(() => {
     let active = true;
     async function load() {
@@ -378,49 +447,17 @@ export default function MomentumHeatmapPage() {
         const server = await fetchMomentumHeatmapProfile();
         if (!active) return;
         let nextProfile = server.profile;
-        let nextCategories = profileCategories(nextProfile);
-        let nextColors = normalizeMomentumHeatmapScoreRanges(nextProfile.colorRanges);
 
         if (nextProfile.isDefaultSeed && (localSymbolRaw || localColorRaw)) {
-          try {
-            const localCategories = localSymbolRaw ? JSON.parse(localSymbolRaw) as MomentumHeatmapCategoryConfig[] : [];
-            const localColors = localColorRaw ? normalizeMomentumHeatmapScoreRanges(JSON.parse(localColorRaw)) : nextColors;
-            nextCategories = Array.isArray(localCategories) && localCategories.length > 0
-              ? mergeLocalCategories(nextCategories, localCategories)
-              : nextCategories;
-            nextColors = localColors;
-            const saved = await saveMomentumHeatmapProfile({ ...nextProfile, categories: nextCategories, colorRanges: nextColors });
-            nextProfile = saved.profile;
-            setMigrationWarning("Imported browser-local Momentum Heatmap settings into the server profile without duplicating symbols.");
-          } catch {
-            setMigrationWarning("Browser-local settings were found but could not be imported. Server profile remains the source of truth.");
-          }
+          setMigrationWarning(
+            "Browser-local Momentum Heatmap settings were found but not automatically imported, so another account cannot overwrite this server profile. Server profile remains the source of truth.",
+          );
         }
 
-        setProfile(nextProfile);
-        setCategories(nextCategories);
-        setSelectedCategoryId(nextCategories[0]?.categoryId ?? selectedCategoryId);
-        setColorRanges(nextColors);
-        if (nextProfile.viewSettings?.sort) setSortMode(nextProfile.viewSettings.sort);
-        if (typeof nextProfile.viewSettings?.showDeltas === "boolean") setShowDeltas(nextProfile.viewSettings.showDeltas);
-        if (server.schedulePreferences) setSchedule(server.schedulePreferences);
-
-        const latest = await fetchLatestMomentumHeatmapSnapshot().catch(() => null);
-        if (!active || !latest) return;
-        if (latest.snapshot?.payload) {
-          setHeatmap(latest.snapshot.payload);
-          setLatestSnapshotId(latest.snapshot.id);
-          setCategorySummaries(latest.snapshot.categorySummaries ?? []);
-          setLastSnapshotMessage(latest.message);
-          setHasPreviousSnapshot(Boolean(latest.previousSnapshot));
-          setDeltas(latest.deltas ?? {});
-          setDeltaNotice(latest.previousSnapshot ? (hasAnyNumericDelta(latest.deltas ?? {}) ? null : "No comparable numeric deltas are available for this snapshot.") : "Deltas need two successful snapshots.");
-        }
-        const schedulePayload = await fetchMomentumHeatmapSchedule().catch(() => null);
-        if (active && schedulePayload) {
-          setSchedule(schedulePayload.schedulePreferences);
-          setTimingSuggestions(schedulePayload.timingSuggestions ?? []);
-        }
+        setProfiles(server.profiles ?? [nextProfile]);
+        applyProfile(nextProfile, server.schedulePreferences ?? null);
+        await loadSnapshotAndScheduleForProfile(activeProfileId(nextProfile));
+        if (!active) return;
       } catch (err) {
         if (!active) return;
         setMigrationWarning("Server heatmap profile unavailable. Using browser-local/default settings as an emergency fallback.");
@@ -477,7 +514,11 @@ export default function MomentumHeatmapPage() {
       },
     };
     setProfile(nextProfile);
-    void saveMomentumHeatmapProfile(nextProfile).catch((err) => {
+    setProfiles((current) => current.map((item) => (activeProfileId(item) === activeProfileId(nextProfile) ? nextProfile : item)));
+    void saveMomentumHeatmapProfile(nextProfile).then((saved) => {
+      setProfiles(saved.profiles ?? [saved.profile]);
+      setProfile(saved.profile);
+    }).catch((err) => {
       setMigrationWarning("Server profile save failed. Latest changes are retained in this browser until the next successful save.");
       window.localStorage.setItem(MOMENTUM_HEATMAP_STORAGE_KEY, JSON.stringify(nextCategories));
       window.localStorage.setItem(MOMENTUM_HEATMAP_COLOR_STORAGE_KEY, JSON.stringify(nextRanges));
@@ -506,6 +547,115 @@ export default function MomentumHeatmapPage() {
         {label}
       </button>
     );
+  }
+
+  async function switchProfile(profileId: string) {
+    if (!profileId || profileId === activeProfileId()) return;
+    setLoading(true);
+    setReportPreviewHtml(null);
+    setFeedback({ state: "loading", message: "Loading selected Momentum Heatmap view." });
+    try {
+      const payload = await fetchMomentumHeatmapProfile(profileId);
+      setProfiles(payload.profiles ?? [payload.profile]);
+      applyProfile(payload.profile, payload.schedulePreferences ?? null);
+      await loadSnapshotAndScheduleForProfile(activeProfileId(payload.profile));
+      setFeedback({ state: "success", message: `Loaded ${payload.profile.name}. Refresh to update when ready.` });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not load selected view." });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createView() {
+    const name = window.prompt("Name the new Momentum Heatmap view", "Custom Research View")?.trim();
+    if (!name) return;
+    setFeedback({ state: "loading", message: "Creating Momentum Heatmap view." });
+    try {
+      const payload = await createMomentumHeatmapProfile({
+        name,
+        description: "User-created heatmap view.",
+        categories,
+        colorRanges,
+        viewSettings: profile?.viewSettings,
+        reportPreferences: profile?.reportPreferences,
+      });
+      setProfiles(payload.profiles ?? [payload.profile]);
+      applyProfile(payload.profile, payload.schedulePreferences ?? null);
+      await loadSnapshotAndScheduleForProfile(activeProfileId(payload.profile));
+      setFeedback({ state: "success", message: `${payload.profile.name} created. It will not auto-refresh until you choose refresh.` });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not create view." });
+    }
+  }
+
+  async function renameView() {
+    if (!profile) return;
+    const name = window.prompt("Rename this Momentum Heatmap view", profile.name)?.trim();
+    if (!name || name === profile.name) return;
+    const nextProfile = { ...profile, name };
+    setProfile(nextProfile);
+    setProfiles((current) => current.map((item) => (activeProfileId(item) === activeProfileId(profile) ? nextProfile : item)));
+    try {
+      const payload = await saveMomentumHeatmapProfile(nextProfile);
+      setProfiles(payload.profiles ?? [payload.profile]);
+      setProfile(payload.profile);
+      setFeedback({ state: "success", message: "Momentum Heatmap view renamed." });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not rename view." });
+    }
+  }
+
+  async function duplicateView() {
+    const profileId = activeProfileId();
+    if (!profileId || !profile) return;
+    const name = window.prompt("Name the duplicated Momentum Heatmap view", `Copy of ${profile.name}`)?.trim();
+    if (!name) return;
+    setFeedback({ state: "loading", message: "Duplicating Momentum Heatmap view." });
+    try {
+      const payload = await duplicateMomentumHeatmapProfile({ profileId, name });
+      setProfiles(payload.profiles ?? [payload.profile]);
+      applyProfile(payload.profile, payload.schedulePreferences ?? null);
+      await loadSnapshotAndScheduleForProfile(activeProfileId(payload.profile));
+      setFeedback({ state: "success", message: `${payload.profile.name} duplicated. Refresh remains manual.` });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not duplicate view." });
+    }
+  }
+
+  async function resetSeededView() {
+    const profileId = activeProfileId();
+    if (!profileId || !profile?.isSystemSeeded) return;
+    if (!window.confirm(`Reset ${profile.name} to its seeded defaults?`)) return;
+    setFeedback({ state: "loading", message: "Resetting seeded Momentum Heatmap view." });
+    try {
+      const payload = await resetMomentumHeatmapProfile(profileId);
+      setProfiles(payload.profiles ?? [payload.profile]);
+      applyProfile(payload.profile, payload.schedulePreferences ?? null);
+      setHeatmap(null);
+      setLatestSnapshotId(undefined);
+      setDeltas({});
+      setDeltaNotice("Deltas need two successful snapshots.");
+      setFeedback({ state: "success", message: `${payload.profile.name} reset to seeded defaults.` });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not reset seeded view." });
+    }
+  }
+
+  async function deleteCustomView() {
+    const profileId = activeProfileId();
+    if (!profileId || !profile || profile.isSystemSeeded || profile.isDefault) return;
+    if (!window.confirm(`Delete ${profile.name}? This only removes this saved view for your account.`)) return;
+    setFeedback({ state: "loading", message: "Deleting custom Momentum Heatmap view." });
+    try {
+      const payload = await deleteMomentumHeatmapProfile(profileId);
+      setProfiles(payload.profiles ?? [payload.profile]);
+      applyProfile(payload.profile, payload.schedulePreferences ?? null);
+      await loadSnapshotAndScheduleForProfile(activeProfileId(payload.profile));
+      setFeedback({ state: "success", message: "Custom Momentum Heatmap view deleted." });
+    } catch (err) {
+      setFeedback({ state: "error", message: err instanceof Error ? err.message : "Could not delete custom view." });
+    }
   }
 
   function saveColorRanges() {
@@ -558,7 +708,7 @@ export default function MomentumHeatmapPage() {
       let categoryFailed = false;
       for (const chunk of chunkMomentumHeatmapCategory(toRequestCategory(category))) {
         try {
-          const payload = await refreshMomentumHeatmapSnapshot([chunk]);
+          const payload = await refreshMomentumHeatmapSnapshot([chunk], activeProfileId());
           setHeatmap((current) => mergeMomentumHeatmapResponse(current, payload.heatmap));
           setLatestSnapshotId(payload.snapshot?.id ?? latestSnapshotId);
           setHasPreviousSnapshot(Boolean(payload.previousSnapshot));
@@ -655,7 +805,7 @@ export default function MomentumHeatmapPage() {
     setReporting(true);
     setFeedback({ state: "loading", message: "Generating Momentum Heatmap report preview." });
     try {
-      const payload = await generateMomentumHeatmapReportPreview(latestSnapshotId);
+      const payload = await generateMomentumHeatmapReportPreview(latestSnapshotId, activeProfileId());
       setReportPreviewHtml(payload.html);
       setSecondaryPanel("report");
       setFeedback({ state: "success", message: "Report preview generated from the latest stored snapshot." });
@@ -670,7 +820,7 @@ export default function MomentumHeatmapPage() {
     setReporting(true);
     setFeedback({ state: "loading", message: "Preparing Momentum Heatmap CSV export." });
     try {
-      const payload = await downloadMomentumHeatmapCsv(latestSnapshotId);
+      const payload = await downloadMomentumHeatmapCsv(latestSnapshotId, activeProfileId());
       const blob = new Blob([payload.csv], { type: "text/csv;charset=utf-8" });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -695,7 +845,7 @@ export default function MomentumHeatmapPage() {
     setReporting(true);
     setFeedback({ state: "loading", message: "Sending Momentum Heatmap report through the configured email provider." });
     try {
-      const payload = await emailMomentumHeatmapReport({ snapshotId: latestSnapshotId, recipients });
+      const payload = await emailMomentumHeatmapReport({ snapshotId: latestSnapshotId, profileId: activeProfileId(), recipients });
       setFeedback({ state: "success", message: `Momentum Heatmap report emailed to ${(payload.sentTo ?? recipients).join(", ")}.` });
     } catch (err) {
       setFeedback({ state: "error", message: err instanceof Error ? err.message : "Email report failed." });
@@ -705,7 +855,7 @@ export default function MomentumHeatmapPage() {
   }
 
   async function saveSchedule(patch: Partial<MomentumHeatmapSchedulePreferences>) {
-    const next = { ...(schedule ?? {}), ...patch } as MomentumHeatmapSchedulePreferences;
+    const next = { ...(schedule ?? {}), ...patch, profileId: activeProfileId() } as MomentumHeatmapSchedulePreferences;
     setSchedule(next);
     try {
       const saved = await saveMomentumHeatmapSchedule(next);
@@ -763,7 +913,7 @@ export default function MomentumHeatmapPage() {
     return (
       <Card title="Report settings panel">
         <div className="op-row hm-panel-heading">
-          <span className="hm-muted">Preview/export uses stored snapshots. It does not create recommendations or execution actions.</span>
+          <span className="hm-muted">Preview/export uses stored snapshots for active view: {profile?.name ?? "not loaded"}. It does not create recommendations or execution actions.</span>
           <button type="button" onClick={() => setSecondaryPanel(null)}>Collapse</button>
         </div>
         <div className="op-row hm-panel-actions">
@@ -786,7 +936,7 @@ export default function MomentumHeatmapPage() {
     return (
       <Card title="Scheduled report settings">
         <div className="op-row hm-panel-heading">
-          <span className="hm-muted">User chooses the schedule. Intraday scores depend on latest available completed bars.</span>
+          <span className="hm-muted">Schedule preferences apply to active view: {profile?.name ?? "not loaded"}. Intraday scores depend on latest available completed bars.</span>
           <button type="button" onClick={() => setSecondaryPanel(null)}>Collapse</button>
         </div>
         <div className="op-stack hm-panel-table">
@@ -839,7 +989,7 @@ export default function MomentumHeatmapPage() {
           <label>Display label <input value={labelInput} onChange={(event) => setLabelInput(event.target.value)} placeholder="Optional" /></label>
           <button type="button" onClick={() => void addSymbol()} disabled={loading || reporting}>Add</button>
         </div>
-        <p className="hm-muted">Squeeze column deferred until approved squeeze algorithm is added.</p>
+        <p className="hm-muted">Squeeze column now summarizes MacMarket Squeeze Pro research states. It is not part of True Momentum scoring.</p>
       </Card>
     );
   }
@@ -998,7 +1148,7 @@ export default function MomentumHeatmapPage() {
                       {WORKBOOK_TIMEFRAME_LABELS.slice(2).map(({ key }) => <HeatmapScoreCell key={key} cell={result?.scores?.[key]} colorRanges={colorRanges} showStale={showDeltas} />)}
                       <DerivedScoreCell value={result?.strength_percent} title="Strength % = (Weekly*3 + Daily*3 + 4HR + 1HR + 30M) / 9" colorRanges={colorRanges} suffix="%" />
                       {showDeltas ? <DeltaCell value={delta?.strength_percent} delta={delta} hasPreviousSnapshot={hasPreviousSnapshot} /> : null}
-                      <td title={result?.squeeze.reason ?? "squeeze_algorithm_not_implemented"}>{result?.squeeze.status === "ok" ? result.squeeze.value : "Deferred"}</td>
+                      <SqueezeCell cell={result?.squeeze} />
                       <td><button type="button" className="hm-row-action" title={`Remove ${row.displayName}`} onClick={() => void removeRow(category.categoryId, row.id)} disabled={actionsDisabled}>Remove</button></td>
                     </tr>
                   );
@@ -1021,10 +1171,29 @@ export default function MomentumHeatmapPage() {
       <section className="hm-command-center" data-testid="momentum-heatmap-command-center">
         <div className="hm-command-meta">
           <div>
-            <span className="hm-kicker">Active profile</span>
+            <span className="hm-kicker">Active view</span>
             <strong>{profile?.name ?? "Default Momentum Heatmap"}</strong>
+            {profile?.description ? <span className="hm-muted">{profile.description}</span> : null}
           </div>
+          <label className="hm-view-selector">Active view
+            <select
+              data-testid="momentum-heatmap-view-selector"
+              value={activeProfileId() ?? ""}
+              onChange={(event) => void switchProfile(event.target.value)}
+              disabled={actionsDisabled}
+            >
+              {profiles.map((item) => {
+                const itemId = item.profileId ?? item.id;
+                return (
+                  <option key={itemId} value={itemId}>
+                    {item.name}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
           <StatusBadge tone={profile ? "good" : "warn"}>{profile ? "Server profile" : "Local fallback"}</StatusBadge>
+          {profile?.isSystemSeeded ? <StatusBadge tone="neutral">Seeded view</StatusBadge> : <StatusBadge tone="warn">Custom view</StatusBadge>}
           {heatmap?.generated_at ? <span className="hm-muted">Last refreshed: {new Date(heatmap.generated_at).toLocaleString()}</span> : null}
           {lastSnapshotMessage ? <span className="hm-muted">{lastSnapshotMessage}</span> : null}
         </div>
@@ -1034,6 +1203,11 @@ export default function MomentumHeatmapPage() {
           </button>
           <button type="button" className="op-btn op-btn-secondary" onClick={() => void previewReport()} disabled={actionsDisabled}>Generate report preview</button>
           <button type="button" className="op-btn op-btn-secondary" onClick={() => void downloadCsv()} disabled={actionsDisabled}>Download CSV</button>
+          <button type="button" className="op-btn op-btn-ghost" onClick={() => void createView()} disabled={actionsDisabled}>Create new view</button>
+          <button type="button" className="op-btn op-btn-ghost" onClick={() => void renameView()} disabled={actionsDisabled || !profile}>Rename view</button>
+          <button type="button" className="op-btn op-btn-ghost" onClick={() => void duplicateView()} disabled={actionsDisabled || !profile}>Duplicate view</button>
+          <button type="button" className="op-btn op-btn-ghost" onClick={() => void resetSeededView()} disabled={actionsDisabled || !profile?.isSystemSeeded}>Reset seeded view to defaults</button>
+          <button type="button" className="op-btn op-btn-ghost" onClick={() => void deleteCustomView()} disabled={actionsDisabled || !profile || profile.isSystemSeeded || profile.isDefault}>Delete custom view</button>
           {panelButton("symbols", "Manage symbols")}
           {panelButton("colors", "Score color ranges")}
           {panelButton("report", "Report settings")}

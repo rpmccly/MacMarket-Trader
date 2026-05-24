@@ -35,7 +35,7 @@ function response(categoryId: string, rowIds: string[]): MomentumHeatmapResponse
           long_term_score: 1,
           short_term_score: 1,
           strength_percent: 1,
-          squeeze: { value: null, status: "deferred" },
+          squeeze: { value: "No squeeze", status: "ok", state: "none" },
         })),
       },
     ],
@@ -77,6 +77,7 @@ describe("Momentum Heatmap chunked refresh helpers", () => {
     const failed = response("indexes", ["SPY"]);
     failed.categories[0].rows[0].scores["1D"] = { value: null, status: "unsupported", reason: "unsupported_symbol_format" };
     failed.categories[0].rows[0].long_term_score = null;
+    failed.categories[0].rows[0].squeeze = { value: null, status: "unavailable", reason: "unsupported_symbol_format" };
 
     const merged = mergeMomentumHeatmapResponse(previous, failed);
 
@@ -86,5 +87,6 @@ describe("Momentum Heatmap chunked refresh helpers", () => {
       stale: true,
     });
     expect(merged.categories[0].rows[0].long_term_score).toBe(1);
+    expect(merged.categories[0].rows[0].squeeze.value).toBe("No squeeze");
   });
 });

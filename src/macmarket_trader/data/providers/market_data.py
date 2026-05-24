@@ -1339,7 +1339,7 @@ class PolygonMarketDataProvider(MarketDataProvider):
             warnings=tuple(warnings),
         )
 
-    def get_provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+    def get_provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
         return self.health_check(sample_symbol=sample_symbol)
 
     def health_check(self, sample_symbol: str) -> MarketProviderHealth:
@@ -2232,7 +2232,7 @@ class MarketDataService:
         self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
         return result
 
-    def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+    def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
         health = self._provider.health_check(sample_symbol=sample_symbol)
         if health.status == "ok":
             return health

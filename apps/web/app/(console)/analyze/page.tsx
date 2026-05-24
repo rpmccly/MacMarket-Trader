@@ -37,7 +37,7 @@ type AnalyzePayload = {
 };
 
 export default function AnalyzePage() {
-  const [symbol, setSymbol] = useState("AAPL");
+  const [symbol, setSymbol] = useState("SPY");
   const [payload, setPayload] = useState<AnalyzePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message: string }>({ state: "idle", message: "" });

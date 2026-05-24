@@ -928,7 +928,7 @@ def dashboard(user=Depends(require_approved_user)):
     orders = order_repo.list_with_fills(limit=5, app_user_id=user.id)
     pending_users = user_repo.list_by_status(ApprovalStatus.PENDING) if is_admin else []
     provider_health = provider_health_summary()
-    latest_snapshot = market_data_service.latest_snapshot(symbol="AAPL", timeframe="1D")
+    latest_snapshot = market_data_service.latest_snapshot(symbol="SPY", timeframe="1D")
     macro_context = build_macro_context_summary()
     index_context = _current_index_context()
     risk_calendar = risk_calendar_service.assess(symbol="SPY", timeframe="1D", index_context=_current_index_context_for_risk())
@@ -1335,7 +1335,7 @@ def recommendation_opportunity_intelligence(
 def ranked_recommendation_queue(req: dict[str, object], _user=Depends(require_approved_user)):
     market_mode = MarketMode(str(req.get("market_mode") or MarketMode.EQUITIES.value))
     symbols = normalize_symbol_list(
-        req.get("symbols") or ["AAPL", "MSFT", "NVDA"],
+        req.get("symbols") or ["SPY", "MSFT", "NVDA"],
         max_items=MAX_BULK_SYMBOLS,
     )
     try:
@@ -1559,7 +1559,7 @@ def promote_queue_candidate(req: dict[str, object], _user=Depends(require_approv
 
 @user_router.post("/recommendations/generate")
 def generate_recommendations(req: dict[str, object], _user=Depends(require_approved_user)):
-    symbol = normalize_symbol(req.get("symbol") or "AAPL", field_name="symbol")
+    symbol = normalize_symbol(req.get("symbol") or "SPY", field_name="symbol")
     event_text = capped_text(
         req.get("event_text") or "Operator-triggered deterministic refresh run.",
         field_name="event_text",
@@ -5204,7 +5204,7 @@ def reopen_paper_trade(trade_id: int, _user=Depends(require_approved_user)):
 
 @user_router.get("/analysis/setup")
 def analysis_setup(
-    req_symbol: str = "AAPL",
+    req_symbol: str = "SPY",
     strategy: str | None = None,
     timeframe: str = "1D",
     market_mode: MarketMode = MarketMode.EQUITIES,
@@ -5834,7 +5834,7 @@ def create_strategy_schedule(req: dict[str, object], user=Depends(require_approv
     market_mode = MarketMode(str(req.get("market_mode") or MarketMode.EQUITIES.value))
     default_strategies = [entry.display_name for entry in list_strategies(market_mode)[:3]]
     symbols = normalize_symbol_list(
-        req.get("symbols") or ["AAPL", "MSFT", "NVDA"],
+        req.get("symbols") or ["SPY", "MSFT", "NVDA"],
         max_items=MAX_BULK_SYMBOLS,
         field_name="symbols",
     )
@@ -6213,7 +6213,7 @@ def list_invites(_admin=Depends(require_admin)):
 
 
 def provider_health_summary() -> dict[str, str]:
-    market_health = market_data_service.provider_health(sample_symbol="AAPL")
+    market_health = market_data_service.provider_health(sample_symbol="SPY")
     configured_provider = "fallback"
     if settings.polygon_enabled:
         configured_provider = "polygon"
@@ -6454,7 +6454,7 @@ def _news_readiness() -> dict[str, object]:
         probe_state = "skipped"
         details = "Provider-backed news configuration appears present. Live probe skipped because NEWS_PROVIDER is not polygon."
     elif configured:
-        query = urlencode({"ticker": "AAPL", "limit": "1", "apiKey": settings.polygon_api_key.strip()})
+        query = urlencode({"ticker": "SPY", "limit": "1", "apiKey": settings.polygon_api_key.strip()})
         try:
             payload, latency_ms = _readiness_json_probe(
                 f"{settings.polygon_base_url.rstrip('/')}/v2/reference/news?{query}",
@@ -6464,7 +6464,7 @@ def _news_readiness() -> dict[str, object]:
             if not isinstance(results, list):
                 raise ValueError("Polygon news probe returned malformed results")
             probe_state = "ok"
-            details = "Polygon news read-only probe succeeded for AAPL with limit=1. " + selected_note
+            details = "Polygon news read-only probe succeeded for SPY with limit=1. " + selected_note
         except Exception as exc:
             probe_state = "failed"
             details = f"Polygon news read-only probe failed. Sanitized error: {_sanitize_provider_error(exc)}"
@@ -6479,7 +6479,7 @@ def _news_readiness() -> dict[str, object]:
         "selected_provider": news_mode,
         "probe_status": probe_state,
         "readiness_scope": "news_context",
-        "sample_symbol": "AAPL" if configured else None,
+        "sample_symbol": "SPY" if configured else None,
         "latency_ms": latency_ms,
         "operational_impact": (
             "Use this to verify provider-backed news context readiness before deeper provider expansion. "
@@ -6793,7 +6793,7 @@ def provider_health(
     probe_llm: bool = False,
 ):
     summary = provider_health_summary()
-    market_health = market_data_service.provider_health(sample_symbol="AAPL")
+    market_health = market_data_service.provider_health(sample_symbol="SPY")
     market_config_state = _config_state(configured=bool(market_health.configured))
     market_probe_state = "ok" if market_health.status == "ok" else "failed"
     workflow_mode = summary["workflow_execution_mode"]

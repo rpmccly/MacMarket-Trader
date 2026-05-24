@@ -22,6 +22,7 @@ describe("Momentum Heatmap page integration", () => {
     expect(read("components/console-shell.tsx")).toContain("Momentum Heatmap");
     expect(read("app/api/charts/momentum-heatmap/route.ts")).toContain("/charts/momentum-heatmap");
     expect(read("app/api/user/momentum-heatmap/profile/route.ts")).toContain("/user/momentum-heatmap/profile");
+    expect(read("app/api/user/momentum-heatmap/profile/duplicate/route.ts")).toContain("/user/momentum-heatmap/profile/duplicate");
     expect(read("app/api/user/momentum-heatmap/refresh/route.ts")).toContain("/user/momentum-heatmap/refresh");
   });
 
@@ -43,10 +44,19 @@ describe("Momentum Heatmap page integration", () => {
     expect(source).toContain("fetchMomentumHeatmapProfile");
     expect(source).toContain("refreshMomentumHeatmapSnapshot");
     expect(source).toContain("Server profile");
+    expect(source).toContain("Active view");
+    expect(source).toContain("momentum-heatmap-view-selector");
+    expect(source).toContain("Create new view");
+    expect(source).toContain("Rename view");
+    expect(source).toContain("Duplicate view");
+    expect(source).toContain("Reset seeded view to defaults");
+    expect(source).toContain("Delete custom view");
+    expect(source).toContain("not automatically imported");
     expect(source).toContain("Long-Term Score = (Weekly + Daily) / 2");
     expect(source).toContain("Short-Term Score = (4HR + 1HR + 30M) / 3");
     expect(source).toContain("Strength % = (Weekly*3 + Daily*3 + 4HR + 1HR + 30M) / 9");
-    expect(source).toContain("Squeeze column deferred until approved squeeze algorithm is added.");
+    expect(source).toContain("Squeeze column now summarizes MacMarket Squeeze Pro research states.");
+    expect(source).toContain("SqueezeCell");
   });
 
   it("includes server-backed operator controls for sorting, filtering, deltas, reports, and scheduling", () => {
@@ -79,9 +89,28 @@ describe("Momentum Heatmap page integration", () => {
     expect(source).toContain("Email report now");
     expect(source).toContain("Email recipients");
     expect(source).toContain("Scheduled report settings");
+    expect(source).toContain("Schedule preferences apply to active view");
     expect(source).toContain("7:00 AM ET");
     expect(source).toContain("10:15 AM ET");
     expect(source).toContain("3:30 PM ET");
     expect(source).toContain("4:30 PM ET");
+  });
+
+  it("keeps saved heatmap view names and profile-scoped API calls visible in the implementation", () => {
+    const source = read("app/(console)/momentum-heatmap/page.tsx");
+    const api = read("lib/momentum-heatmap-api.ts");
+    expect(source).toContain("switchProfile");
+    expect(source).toContain("loadSnapshotAndScheduleForProfile");
+    expect(api).toContain("profileQuery");
+    expect(api).toContain("createMomentumHeatmapProfile");
+    expect(api).toContain("duplicateMomentumHeatmapProfile");
+    expect(api).toContain("deleteMomentumHeatmapProfile");
+    expect(api).toContain("resetMomentumHeatmapProfile");
+    expect(api).toContain("refreshMomentumHeatmapSnapshot(categories: MomentumHeatmapRequestCategory[], profileId?: string)");
+    expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Morning Macro");
+    expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Growth Leaders");
+    expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Commodities");
+    expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Pullback Watch");
+    expect(read("../../src/macmarket_trader/charts/momentum_heatmap_defaults.py")).toContain("Custom Watchlist");
   });
 });

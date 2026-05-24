@@ -14,12 +14,12 @@ export type MergedManualSymbols = {
 
 export const SYMBOL_ENTRY_HELP_COPY = {
   separators: "Enter tickers separated by commas, spaces, tabs, or new lines.",
-  example: "Example: SPY, QQQ, AAPL, MSFT",
+  example: "Example: SPY, QQQ, NVDA, MSFT",
   substitutes: "Use SPY/QQQ as ETF substitutes when index data for SPX/NDX is unavailable.",
   temporaryUniverse: "This is a temporary manual universe until watchlist management is implemented.",
   futureWatchlists: "Future watchlist management will add provider-backed discovery, active/inactive symbols, tags, and recommendation-universe selectors.",
   providerDiscoveryDeferred: "Future provider-backed discovery remains deferred.",
-  singleSymbolHint: "Use ticker symbols such as SPY, QQQ, AAPL. Index symbols such as SPX may require index data access.",
+  singleSymbolHint: "Use ticker symbols such as SPY, QQQ, NVDA. Index symbols such as SPX may require index data access.",
 } as const;
 
 export function parseManualSymbolEntry(value: string): ParsedManualSymbols {

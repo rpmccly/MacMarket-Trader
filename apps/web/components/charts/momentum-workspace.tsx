@@ -9,7 +9,9 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type Range,
   type Time,
+  type WhitespaceData,
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 
@@ -40,6 +42,10 @@ import {
   type MomentumPanelMarker,
   type MomentumSignalMarker,
 } from "@/lib/momentum-api";
+import {
+  SQUEEZE_PRO_COLORS,
+  squeezeProStateLabel,
+} from "@/lib/squeeze-pro";
 import { SUPPORTED_TIMEFRAME_OPTIONS, type SupportedTimeframe } from "@/lib/timeframes";
 
 const COLORS = {
@@ -55,6 +61,8 @@ const COLORS = {
   scoreBear: "#c64242",
   scoreNeutral: "#54708b",
 };
+
+type VisibleTimeRange = Range<Time>;
 
 function markerProps(marker: MomentumSignalMarker): {
   position: "belowBar" | "aboveBar";
@@ -97,8 +105,26 @@ function PanelHeading({ title, hint }: { title: string; hint: string }) {
   );
 }
 
+function SqueezeProLegend({ payload }: { payload: MomentumChartPayload["squeeze_pro"] | null | undefined }) {
+  const latest = payload?.series?.slice().reverse().find((point) => point.status === "ok");
+  return (
+    <div
+      className="op-row"
+      data-testid="squeeze-pro-legend"
+      style={{ flexWrap: "wrap", gap: 6, marginBottom: 4, alignItems: "center" }}
+    >
+      <StatusBadge tone={payload?.status === "ok" ? "good" : "neutral"}>Squeeze Pro</StatusBadge>
+      <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.76rem" }}>Histogram momentum</span>
+      <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.76rem" }}>Squeeze state dots</span>
+      {latest ? (
+        <StatusBadge tone="neutral">Latest: {squeezeProStateLabel(latest.squeeze_state)}</StatusBadge>
+      ) : null}
+    </div>
+  );
+}
+
 export function MomentumWorkspace() {
-  const [symbol, setSymbol] = useState("AAPL");
+  const [symbol, setSymbol] = useState("SPY");
   const [timeframe, setTimeframe] = useState<SupportedTimeframe>("1D");
   const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
     defaultChartHistoryRange(),
@@ -108,6 +134,7 @@ export function MomentumWorkspace() {
   const [error, setError] = useState<string | null>(null);
 
   const priceRef = useRef<HTMLDivElement | null>(null);
+  const squeezeRef = useRef<HTMLDivElement | null>(null);
   const trueMomentumRef = useRef<HTMLDivElement | null>(null);
   const hiloRef = useRef<HTMLDivElement | null>(null);
   const scoreRef = useRef<HTMLDivElement | null>(null);
@@ -152,21 +179,23 @@ export function MomentumWorkspace() {
   useEffect(() => {
     if (!data) return;
     const priceContainer = priceRef.current;
+    const squeezeContainer = squeezeRef.current;
     const trueContainer = trueMomentumRef.current;
     const hiloContainer = hiloRef.current;
     const scoreContainer = scoreRef.current;
     const thrustContainer = thrustRef.current;
-    if (!priceContainer || !trueContainer || !hiloContainer || !scoreContainer || !thrustContainer) return;
+    if (!priceContainer || !squeezeContainer || !trueContainer || !hiloContainer || !scoreContainer || !thrustContainer) return;
 
     const baseOptions = {
       layout: { background: { type: ColorType.Solid, color: "#0b1219" }, textColor: "#d9e2ef" },
       grid: { vertLines: { color: "#1f2a36" }, horzLines: { color: "#1f2a36" } },
-      rightPriceScale: { borderColor: "#26303a" },
-      timeScale: { borderColor: "#26303a" },
+      rightPriceScale: { borderColor: "#26303a", minimumWidth: 64 },
+      timeScale: { borderColor: "#26303a", timeVisible: true, secondsVisible: false },
       autoSize: true,
     };
 
     const priceChart = createChart(priceContainer, { ...baseOptions, height: 320 });
+    const squeezeChart = createChart(squeezeContainer, { ...baseOptions, height: 130 });
     const trueChart = createChart(trueContainer, { ...baseOptions, height: 130 });
     const hiloChart = createChart(hiloContainer, { ...baseOptions, height: 130 });
     const scoreChart = createChart(scoreContainer, { ...baseOptions, height: 110 });
@@ -194,6 +223,64 @@ export function MomentumWorkspace() {
             text: m.text,
           };
         }),
+      );
+    }
+
+    const squeezePoints = data.squeeze_pro?.series ?? [];
+    const squeezeOkPoints = squeezePoints.filter(
+      (point) => point.status === "ok" && typeof point.oscillator_value === "number",
+    );
+    if (squeezePoints.length > 0) {
+      const squeezeHist = squeezeChart.addHistogramSeries({
+        base: 0,
+        color: SQUEEZE_PRO_COLORS.oscillator.up,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const squeezeHistogramData: Array<HistogramData<Time> | WhitespaceData<Time>> = squeezePoints.map((point) => {
+        if (point.status !== "ok" || typeof point.oscillator_value !== "number") {
+          return { time: point.time as Time };
+        }
+        return {
+          time: point.time as Time,
+          value: Number(point.oscillator_value),
+          color:
+            point.oscillator_color ??
+            SQUEEZE_PRO_COLORS.oscillator[point.oscillator_state ?? "up"],
+        };
+      });
+      squeezeHist.setData(
+        squeezeHistogramData,
+      );
+      const zeroData: LineData<Time>[] = squeezePoints.map((point) => ({
+        time: point.time as Time,
+        value: 0,
+      }));
+      const zeroLine = squeezeChart.addLineSeries({
+        color: "rgba(159,176,195,0.45)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      zeroLine.setData(zeroData);
+
+      const dotCarrier = squeezeChart.addLineSeries({
+        color: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      dotCarrier.setData(zeroData);
+      dotCarrier.setMarkers(
+        squeezeOkPoints.map((point) => ({
+          time: point.time as Time,
+          position: "inBar" as const,
+          color:
+            point.squeeze_color ??
+            SQUEEZE_PRO_COLORS.squeeze[point.squeeze_state ?? "unavailable"],
+          shape: "circle" as const,
+          text: "",
+        })),
       );
     }
 
@@ -309,7 +396,23 @@ export function MomentumWorkspace() {
     }
 
     let syncing = false;
-    const charts: IChartApi[] = [priceChart, trueChart, hiloChart, scoreChart, thrustChart];
+    const charts: IChartApi[] = [priceChart, squeezeChart, trueChart, hiloChart, scoreChart, thrustChart];
+    const syncVisibleRange = (source: IChartApi, range: VisibleTimeRange | null) => {
+      if (!range || syncing) return;
+      syncing = true;
+      try {
+        for (const chart of charts) {
+          if (chart === source) continue;
+          try {
+            chart.timeScale().setVisibleRange(range);
+          } catch {
+            // Peer chart may have been disposed, empty, or unable to resolve the range.
+          }
+        }
+      } finally {
+        syncing = false;
+      }
+    };
     const syncFrom = (source: IChartApi) => {
       source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
         // Phase A3 hardening: sparse/empty payloads must not crash the
@@ -330,9 +433,15 @@ export function MomentumWorkspace() {
           syncing = false;
         }
       });
+      source.timeScale().subscribeVisibleTimeRangeChange((range) => {
+        syncVisibleRange(source, range);
+      });
     };
     for (const chart of charts) syncFrom(chart);
-    if (candles.length > 0) priceChart.timeScale().fitContent();
+    if (candles.length > 0) {
+      priceChart.timeScale().fitContent();
+      syncVisibleRange(priceChart, priceChart.timeScale().getVisibleRange());
+    }
 
     return () => {
       for (const chart of charts) chart.remove();
@@ -430,7 +539,15 @@ export function MomentumWorkspace() {
             testId="workspace-candle-status-badges"
           />
         </div>
-        <div ref={priceRef} role="img" aria-label="Price candles" style={{ minHeight: 200 }} />
+        <div ref={priceRef} role="img" aria-label="Price candles" data-testid="momentum-price-panel" style={{ minHeight: 200 }} />
+        <PanelHeading title="Squeeze Pro" hint="Histogram + compression dots (research indicator)" />
+        <SqueezeProLegend payload={data?.squeeze_pro ?? null} />
+        <div ref={squeezeRef} role="img" aria-label="Squeeze Pro panel" data-testid="squeeze-pro-panel" style={{ minHeight: 80 }} />
+        {data && data.squeeze_pro?.status !== "ok" ? (
+          <p style={{ margin: "4px 0 0", color: "#9fb0c3", fontSize: "0.8rem" }} data-testid="squeeze-pro-unavailable">
+            Squeeze Pro unavailable for this symbol/timeframe{data.squeeze_pro?.reason ? `: ${data.squeeze_pro.reason}` : "."}
+          </p>
+        ) : null}
         <PanelHeading title="True Momentum vs EMA" hint="Lower-pane lines (green=above EMA, red=below)" />
         <div style={{ marginBottom: 4 }}>
           <TrueMomentumPanelStatusBadges
@@ -438,7 +555,7 @@ export function MomentumWorkspace() {
             testId="workspace-true-momentum-status-badges"
           />
         </div>
-        <div ref={trueMomentumRef} role="img" aria-label="True Momentum and EMA panel" style={{ minHeight: 90 }} />
+        <div ref={trueMomentumRef} role="img" aria-label="True Momentum and EMA panel" data-testid="momentum-true-panel" style={{ minHeight: 90 }} />
         <PanelHeading title="HiLo SlowD vs SlowD_X" hint="Stochastic cycle context" />
         <div style={{ marginBottom: 4 }}>
           <HiloPanelStatusBadges
@@ -446,11 +563,11 @@ export function MomentumWorkspace() {
             testId="workspace-hilo-status-badges"
           />
         </div>
-        <div ref={hiloRef} role="img" aria-label="HiLo SlowD and SlowD X panel" style={{ minHeight: 90 }} />
+        <div ref={hiloRef} role="img" aria-label="HiLo SlowD and SlowD X panel" data-testid="momentum-hilo-panel" style={{ minHeight: 90 }} />
         <PanelHeading title="Composite total score" hint="Histogram (-130…+130)" />
-        <div ref={scoreRef} role="img" aria-label="Composite score histogram" style={{ minHeight: 80 }} />
+        <div ref={scoreRef} role="img" aria-label="Composite score histogram" data-testid="momentum-score-panel" style={{ minHeight: 80 }} />
         <PanelHeading title="HiLo thrust strip" hint="Bullish / bearish / neutral" />
-        <div ref={thrustRef} role="img" aria-label="HiLo thrust strip" style={{ minHeight: 60 }} />
+        <div ref={thrustRef} role="img" aria-label="HiLo thrust strip" data-testid="momentum-thrust-panel" style={{ minHeight: 60 }} />
         <div style={{ marginTop: 8 }}>
           <MomentumContextLegend testId="workspace-context-legend" />
         </div>

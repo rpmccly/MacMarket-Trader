@@ -470,7 +470,7 @@ export default function RecommendationsPage() {
   const [queueSummary, setQueueSummary] = useState<QueueSummary | null>(null);
   const [selectedQueueKey, setSelectedQueueKey] = useState<string | null>(null);
   const [selectedRecommendationId, setSelectedRecommendationId] = useState<number | null>(null);
-  const [symbols, setSymbols] = useState("AAPL,MSFT,NVDA,AMZN");
+  const [symbols, setSymbols] = useState("SPY,MSFT,NVDA,AMZN");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState({ queue: false, recommendations: false, promote: false, saveAlt: false, approve: false, opportunity: false });
   const [chartPayload, setChartPayload] = useState<HacoChartPayload | null>(null);
@@ -1385,7 +1385,7 @@ export default function RecommendationsPage() {
                 setUniversePreview(null);
               }}
               rows={2}
-              placeholder="SPY, QQQ, AAPL, MSFT"
+              placeholder="SPY, QQQ, NVDA, MSFT"
               style={{ width: "100%", minWidth: 0, resize: "vertical" }}
             />
           </label>

@@ -36,7 +36,9 @@ Stored profile fields include:
 
 - profile id (`profile_uid`)
 - owning app user id
-- profile name, default `Default Momentum Heatmap`
+- profile name, default active seeded view `Morning Macro`
+- description, slug, view type, and system-seeded/custom metadata stored in
+  profile view settings
 - workbook-derived categories and rows
 - include/exclude and collapsed category state
 - row display label, provider symbol, original/workbook symbol, workbook order,
@@ -52,15 +54,41 @@ every cell. Duplicate prevention is deterministic: provider symbols are trimmed
 and uppercased, duplicates in the same category are blocked, and duplicates in
 another category are allowed with a warning.
 
+## Saved heatmap views
+
+On first Momentum Heatmap setup, each approved user receives independent
+server-owned saved views. They are not global mutable profiles:
+
+- **Morning Macro**: broad morning market regime read using INDEXES, SECTORS,
+  BONDS + MISC, and COMMODITIES workbook categories.
+- **Growth Leaders**: growth, high-beta, and leadership scan using selected
+  index, sector, and major-stock rows such as QQQ, SMH, XLK, NVDA, MSFT,
+  META, TSLA, and related leadership names.
+- **Commodities**: commodity/rates/inflation-sensitive scan using the
+  COMMODITIES workbook category plus related dollar, rates, energy, metals,
+  and miner tickers. Unsupported futures, dollar-index, and FRED-style rows
+  remain visible and fail fast where provider support is unavailable.
+- **Pullback Watch**: research-candidate view for long-term bullish rows where
+  shorter-term momentum is weaker or cooling. Its default filters hide
+  unsupported rows and favor long-term bullish plus short-term weak context.
+- **Custom Watchlist**: lightly seeded SPY, QQQ, IWM, NVDA, and TSLA view
+  intended as the easiest user-editable watchlist.
+
+The UI exposes an active view selector plus create, rename, duplicate, reset
+seeded view, and delete custom view actions. Seeded views are protected from
+deletion; custom duplicated/created views are user-owned and can be removed.
+Switching views loads that view's rows, settings, schedule preferences, and
+latest snapshot without auto-refreshing.
+
 The frontend still reads the legacy localStorage keys once:
 
 - `macmarket-momentum-heatmap-symbols-v1`
 - `macmarket-momentum-heatmap-colors-v1`
 
-If the server profile is still the default seed, local browser customizations
-are merged without duplicating symbols and then saved server-side. If the
-server profile cannot load, localStorage is used only as an emergency fallback
-with a visible warning.
+Legacy browser customizations are not automatically imported into a server
+profile on page load, which prevents one shared browser from overwriting a
+different account's saved Heatmap views. If the server profile cannot load,
+localStorage is used only as an emergency fallback with a visible warning.
 
 ## Snapshot behavior
 
@@ -73,14 +101,16 @@ Momentum Heatmap refreshes now use:
 - partial result preservation
 
 `POST /user/momentum-heatmap/refresh` produces the same heatmap scores as the
-chart heatmap path and stores a snapshot in `momentum_heatmap_snapshots` when a
-non-empty chunk completes. Snapshot rows preserve:
+chart heatmap path and stores a snapshot in `momentum_heatmap_snapshots` for
+the selected profile/view when a non-empty chunk completes. Snapshot rows
+preserve:
 
 - per-cell score, status, reason, data source, fallback flag, and `as_of`
 - Long-Term Score
 - Short-Term Score
 - Strength %
-- squeeze status, currently deferred
+- Squeeze Pro state summary and per-timeframe Squeeze Pro details when
+  available
 - category summaries
 - unsupported/unavailable summary
 - previous snapshot linkage where available
@@ -105,7 +135,7 @@ hours and is stored with the profile view settings for future enforcement.
 ## Delta definitions
 
 Deltas compare the current stored snapshot with the previous successful
-snapshot for the same profile.
+snapshot for the same profile/view.
 
 Current delta fields:
 
@@ -152,8 +182,8 @@ These labels are not trade recommendations.
 
 ## Report sections
 
-The backend report generator consumes stored profile/snapshot payloads and
-produces preview HTML plus CSV data. It includes:
+The backend report generator consumes the selected stored profile/view and
+snapshot payload and produces preview HTML plus CSV data. It includes:
 
 1. Generated timestamp
 2. Data-as-of note
@@ -171,8 +201,7 @@ produces preview HTML plus CSV data. It includes:
 14. Full heatmap table
 15. Notes:
     - Intraday timeframe scores use latest completed regular-hours bars.
-    - Squeeze remains deferred until an approved squeeze algorithm/version is
-      added.
+    - Squeeze Pro is a research indicator and is not an execution signal.
 
 CSV export includes category, display label, provider symbol, all workbook
 score columns, deltas, squeeze status, row tags, statuses/reasons, and as-of
@@ -186,6 +215,34 @@ sections, pullback/reversal research sections, unsupported/unavailable summary,
 and the full heatmap table with score colors and delta badges. Email also
 includes a plain text research summary fallback through the existing email
 provider boundary.
+
+## Squeeze Pro integration
+
+The heatmap now replaces the former deferred squeeze placeholder with
+MacMarket Squeeze Pro research states where provider bars are available.
+Squeeze Pro is computed separately from True Momentum and does not change:
+
+- Long-Term Score
+- Short-Term Score
+- Strength %
+- Momentum Intelligence parity
+- recommendation approval, sizing, paper-order, or execution behavior
+
+For each row/timeframe, the backend computes the latest Squeeze Pro state:
+
+- High squeeze
+- Mid squeeze
+- Low squeeze
+- No squeeze
+- Unavailable
+
+The displayed Squeezes column summarizes the strongest active state across the
+requested timeframes and preserves per-timeframe details for tooltips, CSV, and
+report rendering. Unsupported workbook labels still fail fast and show
+unavailable Squeeze Pro state with a reason.
+
+The report HTML, CSV, and email text include Squeeze Pro state when available.
+They label it as research context only.
 
 ## Email behavior
 
@@ -233,8 +290,10 @@ python -m macmarket_trader.cli run-due-momentum-heatmap-reports
 
 Implemented:
 
-- server-backed default profile seeding
+- server-backed saved view seeding for Morning Macro, Growth Leaders,
+  Commodities, Pullback Watch, and Custom Watchlist
 - profile update/reset
+- create, rename, duplicate, seeded-view reset, and custom-view delete
 - add/remove row server-side
 - duplicate prevention and cross-category warnings
 - refresh snapshots
@@ -250,10 +309,7 @@ Implemented:
 
 Deferred:
 
-- multiple independently created profile/view management beyond the seeded
-  default profile
 - automatic installed Momentum Heatmap scheduler execution
-- approved squeeze algorithm/version
 - user-editable stale threshold enforcement beyond stored profile settings
 - provider support mapping for composite, futures, `$` index, currency-pair,
   and FRED-style workbook labels

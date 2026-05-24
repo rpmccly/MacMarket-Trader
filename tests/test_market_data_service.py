@@ -53,7 +53,7 @@ def _ok_provider_health_urlopen(request, timeout: float = 8.0):  # noqa: ANN001
             {"observations": [{"date": "2026-05-01", "value": "4.20"}]}
         )
     if "/v2/reference/news" in url:
-        return _FakeProviderHealthProbeResponse({"results": [{"id": "n1", "title": "AAPL headline"}]})
+        return _FakeProviderHealthProbeResponse({"results": [{"id": "n1", "title": "SPY headline"}]})
     raise AssertionError(f"unexpected provider-health probe URL: {url}")
 
 
@@ -967,7 +967,7 @@ def test_provider_health_result_structure(monkeypatch) -> None:
                 fallback_mode=False,
             )
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1041,7 +1041,7 @@ def test_provider_health_result_structure(monkeypatch) -> None:
     assert news_entry["selected_provider"] == "polygon"
     assert news_entry["probe_status"] == "ok"
     assert news_entry["readiness_scope"] == "news_context"
-    assert news_entry["sample_symbol"] == "AAPL"
+    assert news_entry["sample_symbol"] == "SPY"
 
     market_entry = next(item for item in payload["providers"] if item["provider"] == "market_data")
     assert market_entry["configured_provider"] == "polygon"
@@ -1052,14 +1052,14 @@ def test_provider_health_result_structure(monkeypatch) -> None:
     assert market_entry["config_state"] == "configured"
     assert market_entry["probe_state"] == "ok"
     assert market_entry["feed"] == "stocks"
-    assert market_entry["sample_symbol"] == "AAPL"
+    assert market_entry["sample_symbol"] == "SPY"
     assert market_entry["latency_ms"] == 12.4
     assert market_entry["last_success_at"].startswith("2026-04-02")
 
 
 def test_provider_health_reports_blocked_workflows_when_probe_fails_and_demo_fallback_disabled(monkeypatch) -> None:
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1197,7 +1197,7 @@ def test_alpaca_paper_probe_is_read_only_and_does_not_enable_routing(monkeypatch
 
 def test_provider_health_reports_options_data_probe_ok(monkeypatch) -> None:
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1208,7 +1208,7 @@ def test_provider_health_reports_options_data_probe_ok(monkeypatch) -> None:
                 sample_symbol=sample_symbol,
             )
 
-        def options_data_health(self, sample_symbol: str = "AAPL") -> dict[str, object]:
+        def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
             return {
                 "probe_state": "ok",
                 "probe_status": "ok",
@@ -1241,7 +1241,7 @@ def test_provider_health_reports_options_data_probe_ok(monkeypatch) -> None:
 
 def test_provider_health_reports_indices_data_probe_ok(monkeypatch) -> None:
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1289,7 +1289,7 @@ def test_provider_health_indices_not_entitled_is_sanitized(monkeypatch) -> None:
     secret = "polygon-secret-index-value"
 
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1328,7 +1328,7 @@ def test_provider_health_options_data_probe_failure_sanitizes_error(monkeypatch)
     secret = "polygon-secret-health"
 
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1339,7 +1339,7 @@ def test_provider_health_options_data_probe_failure_sanitizes_error(monkeypatch)
                 sample_symbol=sample_symbol,
             )
 
-        def options_data_health(self, sample_symbol: str = "AAPL") -> dict[str, object]:
+        def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
             return {
                 "probe_state": "failed",
                 "probe_status": "failed",
@@ -1367,7 +1367,7 @@ def test_provider_health_options_data_probe_failure_sanitizes_error(monkeypatch)
 
 def test_provider_health_options_data_not_entitled_is_clear_without_enabling_execution(monkeypatch) -> None:
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1378,7 +1378,7 @@ def test_provider_health_options_data_not_entitled_is_clear_without_enabling_exe
                 sample_symbol=sample_symbol,
             )
 
-        def options_data_health(self, sample_symbol: str = "AAPL") -> dict[str, object]:
+        def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
             return {
                 "probe_state": "failed_not_entitled",
                 "probe_status": "failed_not_entitled",
@@ -1409,7 +1409,7 @@ def test_provider_health_reports_index_options_data_probe_ok(monkeypatch) -> Non
     seen_samples: list[str] = []
 
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1420,7 +1420,7 @@ def test_provider_health_reports_index_options_data_probe_ok(monkeypatch) -> Non
                 sample_symbol=sample_symbol,
             )
 
-        def options_data_health(self, sample_symbol: str = "AAPL") -> dict[str, object]:
+        def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
             seen_samples.append(sample_symbol)
             return {
                 "probe_state": "ok",
@@ -1474,7 +1474,7 @@ def test_provider_health_index_options_not_entitled_is_sanitized_and_actionable(
     secret = "polygon-secret-index-health"
 
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",
@@ -1485,7 +1485,7 @@ def test_provider_health_index_options_not_entitled_is_sanitized_and_actionable(
                 sample_symbol=sample_symbol,
             )
 
-        def options_data_health(self, sample_symbol: str = "AAPL") -> dict[str, object]:
+        def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
             return {
                 "probe_state": "failed_not_entitled",
                 "probe_status": "failed_not_entitled",
@@ -1679,7 +1679,7 @@ def test_workflow_bars_returns_400_for_unknown_symbol(monkeypatch) -> None:
                 source="fallback", fallback_mode=True,
             )
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="fallback", status="warning",
                 details="stub", configured=False, feed="none", sample_symbol=sample_symbol,
@@ -1729,7 +1729,7 @@ def test_analysis_setup_passes_requested_timeframe_to_market_data(monkeypatch) -
         def options_chain_preview(self, symbol: str, limit: int = 50):  # type: ignore[override]
             return None
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="polygon", status="ok",
                 details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol,
@@ -1818,7 +1818,7 @@ def test_workflow_bars_returns_402_for_entitled_data(monkeypatch) -> None:
         def options_chain_preview(self, symbol: str, limit: int = 50):  # type: ignore[override]
             return None
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="polygon", status="ok",
                 details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol,
@@ -2061,7 +2061,7 @@ def test_analysis_setup_includes_options_chain_preview_for_options_mode(monkeypa
         def options_chain_preview(self, symbol: str, limit: int = 50):  # type: ignore[override]
             return chain_preview
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="fallback", status="warning",
                 details="stub", configured=False, feed="none", sample_symbol=sample_symbol,
@@ -2117,7 +2117,7 @@ def test_analysis_setup_options_chain_preview_none_when_provider_not_polygon(mon
         def options_chain_preview(self, symbol: str, limit: int = 50):  # type: ignore[override]
             return None  # Non-Polygon provider
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="fallback", status="warning",
                 details="stub", configured=False, feed="none", sample_symbol=sample_symbol,
@@ -2148,7 +2148,7 @@ def test_analysis_setup_options_chain_preview_none_when_provider_not_polygon(mon
 
 def test_provider_health_reports_demo_fallback_when_probe_fails_and_demo_fallback_enabled(monkeypatch) -> None:
     class StubMarketDataService:
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data",
                 mode="polygon",

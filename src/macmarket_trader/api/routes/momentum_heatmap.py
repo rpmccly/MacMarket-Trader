@@ -45,13 +45,15 @@ def _dt(value: Any) -> str | None:
 
 
 def _is_default_seed(profile) -> bool:  # noqa: ANN001
-    if not profile.is_default:
-        return False
     from macmarket_trader.charts.momentum_heatmap_defaults import (
-        DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES,
-        default_momentum_heatmap_view_settings,
+        seeded_momentum_heatmap_profile_payload,
     )
 
+    view_settings = profile.view_settings or {}
+    slug = str(view_settings.get("slug") or "").strip().lower() if isinstance(view_settings, dict) else ""
+    seed_payload = seeded_momentum_heatmap_profile_payload(slug)
+    if seed_payload is None:
+        return False
     for category in profile.categories or []:
         if not isinstance(category, dict):
             continue
@@ -59,23 +61,30 @@ def _is_default_seed(profile) -> bool:  # noqa: ANN001
             if isinstance(row, dict) and row.get("userAdded") is True:
                 return False
     return (
-        str(profile.name or "") == "Default Momentum Heatmap"
-        and (profile.color_ranges or []) == DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES
-        and (profile.view_settings or {}) == default_momentum_heatmap_view_settings()
+        str(profile.name or "") == str(seed_payload["name"])
+        and (profile.categories or []) == seed_payload["categories"]
+        and (profile.color_ranges or []) == seed_payload["color_ranges"]
+        and (profile.view_settings or {}) == seed_payload["view_settings"]
     )
 
 
 def _profile_payload(profile) -> dict[str, Any]:  # noqa: ANN001
+    view_settings = profile.view_settings or {}
+    metadata = view_settings if isinstance(view_settings, dict) else {}
     return {
         "id": profile.profile_uid,
         "profileId": profile.profile_uid,
         "databaseId": profile.id,
         "name": profile.name,
+        "description": metadata.get("description"),
+        "slug": metadata.get("slug"),
+        "viewType": metadata.get("viewType"),
         "categories": profile.categories or [],
         "colorRanges": profile.color_ranges or [],
-        "viewSettings": profile.view_settings or {},
+        "viewSettings": view_settings,
         "reportPreferences": profile.report_preferences or {},
         "isDefault": bool(profile.is_default),
+        "isSystemSeeded": bool(metadata.get("isSystemSeeded") is True),
         "isDefaultSeed": _is_default_seed(profile),
         "createdAt": _dt(profile.created_at),
         "updatedAt": _dt(profile.updated_at),
@@ -200,9 +209,7 @@ def _profile_for_request(user, profile_id: str | None = None):  # noqa: ANN001
     return heatmap_repo.get_or_create_default_profile(app_user_id=user.id, user_email=user.email)
 
 
-@router.get("/profile")
-def get_profile(user=Depends(require_approved_user)):
-    profile = _profile_for_request(user)
+def _profile_response(user, profile) -> dict[str, Any]:  # noqa: ANN001
     profiles = heatmap_repo.list_profiles(app_user_id=user.id)
     schedule = heatmap_repo.get_or_create_schedule_preferences(app_user_id=user.id, profile_id=profile.id, user_email=user.email)
     return {
@@ -210,12 +217,39 @@ def get_profile(user=Depends(require_approved_user)):
         "profiles": [_profile_payload(item) for item in profiles],
         "schedulePreferences": _schedule_payload(schedule),
         "source": "server",
+    }
+
+
+@router.get("/profile")
+def get_profile(profileId: str | None = None, user=Depends(require_approved_user)):  # noqa: N803
+    profile = _profile_for_request(user, profileId)
+    payload = _profile_response(user, profile)
+    payload.update({
+        "source": "server",
         "localStorageMigration": {
             "supported": True,
             "symbolKey": "macmarket-momentum-heatmap-symbols-v1",
             "colorKey": "macmarket-momentum-heatmap-colors-v1",
         },
-    }
+    })
+    return payload
+
+
+@router.post("/profile")
+def create_profile(req: dict[str, Any], user=Depends(require_approved_user)):
+    name = str(req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="momentum_heatmap_profile_name_required")
+    profile = heatmap_repo.create_profile(
+        app_user_id=user.id,
+        name=name,
+        description=str(req.get("description") or "").strip() or None,
+        categories=req.get("categories") if isinstance(req.get("categories"), list) else None,
+        color_ranges=req.get("colorRanges") if isinstance(req.get("colorRanges"), list) else None,
+        view_settings=req.get("viewSettings") if isinstance(req.get("viewSettings"), dict) else None,
+        report_preferences=req.get("reportPreferences") if isinstance(req.get("reportPreferences"), dict) else None,
+    )
+    return _profile_response(user, profile)
 
 
 @router.put("/profile")
@@ -224,7 +258,36 @@ def update_profile(req: dict[str, Any], user=Depends(require_approved_user)):
     profile = heatmap_repo.update_profile(app_user_id=user.id, profile_uid=profile_id, updates=req)
     if profile is None:
         raise HTTPException(status_code=404, detail="momentum_heatmap_profile_not_found")
-    return {"profile": _profile_payload(profile), "source": "server"}
+    return _profile_response(user, profile)
+
+
+@router.post("/profile/duplicate")
+def duplicate_profile(req: dict[str, Any], user=Depends(require_approved_user)):
+    profile_id = str(req.get("profileId") or req.get("id") or "").strip()
+    if not profile_id:
+        raise HTTPException(status_code=400, detail="momentum_heatmap_profile_id_required")
+    profile = heatmap_repo.duplicate_profile(
+        app_user_id=user.id,
+        source_profile_uid=profile_id,
+        name=str(req.get("name") or "").strip() or None,
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="momentum_heatmap_profile_not_found")
+    return _profile_response(user, profile)
+
+
+@router.delete("/profile/{profile_id}")
+def delete_profile(profile_id: str, user=Depends(require_approved_user)):
+    status, profile = heatmap_repo.delete_profile(app_user_id=user.id, profile_uid=profile_id)
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="momentum_heatmap_profile_not_found")
+    if status == "protected":
+        raise HTTPException(status_code=409, detail="momentum_heatmap_seeded_or_default_profile_protected")
+    if profile is None:
+        profile = _profile_for_request(user)
+    payload = _profile_response(user, profile)
+    payload["deleted"] = True
+    return payload
 
 
 @router.post("/profile/reset")
@@ -233,7 +296,7 @@ def reset_profile(req: dict[str, Any] | None = None, user=Depends(require_approv
     profile = heatmap_repo.reset_profile(app_user_id=user.id, profile_uid=profile_id, user_email=user.email)
     if profile is None:
         raise HTTPException(status_code=404, detail="momentum_heatmap_profile_not_found")
-    return {"profile": _profile_payload(profile), "source": "server"}
+    return _profile_response(user, profile)
 
 
 @router.post("/rows")
@@ -274,7 +337,7 @@ def remove_row(row_id: str, profileId: str | None = None, user=Depends(require_a
 
 @router.post("/refresh")
 def refresh_heatmap(req: MomentumHeatmapRequest, user=Depends(require_approved_user)):
-    profile = _profile_for_request(user)
+    profile = _profile_for_request(user, req.profile_id)
     request_categories = req.model_dump(mode="json", by_alias=True).get("categories", [])
     requested_rows = _flatten_requested_rows(request_categories)
     if not requested_rows:
@@ -313,8 +376,8 @@ def refresh_heatmap(req: MomentumHeatmapRequest, user=Depends(require_approved_u
 
 
 @router.get("/snapshots/latest")
-def latest_snapshot(user=Depends(require_approved_user)):
-    profile = _profile_for_request(user)
+def latest_snapshot(profileId: str | None = None, user=Depends(require_approved_user)):  # noqa: N803
+    profile = _profile_for_request(user, profileId)
     snapshot = heatmap_repo.latest_snapshot(app_user_id=user.id, profile_id=profile.id)
     previous = (
         heatmap_repo.latest_snapshot(app_user_id=user.id, profile_id=profile.id, successful_only=True, before_id=snapshot.id)
@@ -413,8 +476,8 @@ def report_email(req: dict[str, Any], user=Depends(require_approved_user)):
 
 
 @router.get("/schedule")
-def get_schedule_preferences(user=Depends(require_approved_user)):
-    profile = _profile_for_request(user)
+def get_schedule_preferences(profileId: str | None = None, user=Depends(require_approved_user)):  # noqa: N803
+    profile = _profile_for_request(user, profileId)
     schedule = heatmap_repo.get_or_create_schedule_preferences(app_user_id=user.id, profile_id=profile.id, user_email=user.email)
     return {
         "profile": _profile_payload(profile),

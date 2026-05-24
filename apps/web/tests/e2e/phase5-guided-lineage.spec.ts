@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 //   Test 1 — Guided /analysis hero: WorkflowBanner + step states + TopbarContext guided hint
 //   Test 2 — /recommendations guided empty state + queue collapse/toggle
 //   Test 3 — /recommendations guided no silent rows[0] fallback (regression for Fix 2, 2026-04-28)
-//   Test 4 — /replay-runs guided empty state hero with lineage symbol (no AAPL fallback)
+//   Test 4 — /replay-runs guided empty state hero with lineage symbol (no static default fallback)
 //   Test 5 — /replay-runs zero-fill messaging + equity curve suppression
 //   Test 6 — /replay-runs stageability gating with op-error block + reason
 //   Test 7 — /orders guided empty state hero + threaded lineage IDs
@@ -26,7 +26,7 @@ function chartPayload() {
       volume: 1_000_000 + idx * 1_000,
     };
   });
-  return { symbol: "AAPL", timeframe: "1D", data_source: "polygon", fallback_mode: false, candles, heikin_ashi_candles: candles };
+  return { symbol: "SPY", timeframe: "1D", data_source: "polygon", fallback_mode: false, candles, heikin_ashi_candles: candles };
 }
 
 // Catch-all 404 for any /api/** request not explicitly mocked, preventing the Next.js dev
@@ -83,13 +83,13 @@ test("guided /analysis renders banner step states, topbar guided hint, and Refre
   await expect(page.getByTestId("analysis-refresh-button")).toBeVisible();
   await expect(page.getByTestId("analysis-refresh-button")).toBeEnabled();
 
-  // Click refresh (default symbol AAPL, default strategy Event Continuation)
+  // Click refresh (default symbol SPY, default strategy Event Continuation)
   await page.getByTestId("analysis-refresh-button").click();
 
   // After applied state propagates, WorkflowBanner chip reflects the applied symbol/strategy.
   // Note: TopbarContext is URL-driven (verified separately in Test 8); refreshAnalysis updates
   // page state without pushing to URL, so the banner chip is the canonical post-refresh signal.
-  await expect(page.getByTestId("workflow-banner").getByText(/AAPL · Event Continuation/)).toBeVisible();
+  await expect(page.getByTestId("workflow-banner").getByText(/SPY · Event Continuation/)).toBeVisible();
 });
 
 test("guided /analysis topbar reflects applied symbol/strategy after Refresh analysis pushes URL", async ({ page }) => {
@@ -128,11 +128,11 @@ test("guided /analysis topbar reflects applied symbol/strategy after Refresh ana
   // Click Refresh — refreshAnalysis pushes applied state into the URL via router.replace
   await page.getByTestId("analysis-refresh-button").click();
 
-  // Post-refresh: URL now carries symbol+strategy; TopbarContext reflects "AAPL · Event Continuation"
-  await expect(page).toHaveURL(/\/analysis\?.*symbol=AAPL/);
+  // Post-refresh: URL now carries symbol+strategy; TopbarContext reflects "SPY · Event Continuation"
+  await expect(page).toHaveURL(/\/analysis\?.*symbol=SPY/);
   await expect(page).toHaveURL(/strategy=Event\+Continuation/);
   await expect(page).toHaveURL(/guided=1/);
-  await expect(page.getByText("AAPL · Event Continuation").first()).toBeVisible();
+  await expect(page.getByText("SPY · Event Continuation").first()).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ test("guided /recommendations: no silent rows[0] fallback when recommendation id
 // ---------------------------------------------------------------------------
 // Test 4 — /replay-runs guided empty-state hero + lineage symbol (no fallback default)
 // ---------------------------------------------------------------------------
-test("guided /replay-runs empty state shows lineage symbol from active recommendation, not default AAPL", async ({ page }) => {
+test("guided /replay-runs empty state shows lineage symbol from active recommendation, not static default symbol", async ({ page }) => {
   const recId = "rec-nvda-lineage";
 
   await page.route("**/api/user/recommendations**", async (route) => {
@@ -276,7 +276,7 @@ test("guided /replay-runs empty state shows lineage symbol from active recommend
   // Guided empty-state hero renders
   await expect(page.getByText("No replay run yet for this recommendation")).toBeVisible();
 
-  // Symbol comes from active recommendation lineage (NVDA) — NOT a static AAPL fallback.
+  // Symbol comes from active recommendation lineage (NVDA), not a static default fallback.
   // Scope to the empty-state card to avoid matching unrelated text.
   const heroCard = page.locator("div.op-card").filter({ hasText: "No replay run yet for this recommendation" });
   await expect(heroCard.getByText(/symbol:.*NVDA/)).toBeVisible();

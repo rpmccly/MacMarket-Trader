@@ -178,6 +178,35 @@ export type MomentumPanelMarker = {
   reason: string;
 };
 
+export type SqueezeProPoint = {
+  index: number;
+  time: ChartTime;
+  oscillator_value: number | null;
+  oscillator_state: "up" | "up_decreasing" | "down" | "down_decreasing" | null;
+  oscillator_color: string | null;
+  squeeze_state: "high" | "mid" | "low" | "none" | "unavailable";
+  squeeze_color: string | null;
+  delta_high: number | null;
+  delta_mid: number | null;
+  delta_low: number | null;
+  arrow?: "bullish" | "bearish" | null;
+  arrow_reason?: string | null;
+  status: "ok" | "unavailable";
+  reason?: string | null;
+};
+
+export type SqueezeProPayload = {
+  enabled: boolean;
+  status: "ok" | "unavailable";
+  reason?: string | null;
+  parameters: Record<string, number | string>;
+  version: string;
+  histogram_mode: string;
+  arrow_mode: string;
+  show_arrows?: boolean;
+  series: SqueezeProPoint[];
+};
+
 export type MomentumChartCandle = {
   index: number;
   time: ChartTime;
@@ -224,6 +253,7 @@ export type MomentumChartPayload = {
   visual_parity_series?: MomentumVisualParityPoint[];
   true_momentum_panel_markers?: MomentumPanelMarker[];
   hilo_panel_markers?: MomentumPanelMarker[];
+  squeeze_pro?: SqueezeProPayload | null;
 };
 
 export async function fetchMomentumChart(request: MomentumChartRequest): Promise<MomentumChartPayload> {

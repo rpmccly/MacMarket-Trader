@@ -22,6 +22,7 @@ import {
   type VisualParityBadge,
 } from "@/lib/momentum-chart";
 import type { MomentumChartPayload } from "@/lib/momentum-api";
+import { squeezeProOscillatorLabel, squeezeProStateLabel } from "@/lib/squeeze-pro";
 
 const NOTE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -200,6 +201,7 @@ export function MomentumSummaryPanel({
         </div>
 
         <VisualParityStrip payload={payload} />
+        <SqueezeProSummaryStrip payload={payload} />
 
         <p style={NOTE_STYLE} data-testid="momentum-deterministic-note">
           {MOMENTUM_DETERMINISTIC_NOTE}
@@ -208,6 +210,46 @@ export function MomentumSummaryPanel({
         <MomentumContextLegend testId="momentum-summary-context-legend" />
       </div>
     </Card>
+  );
+}
+
+function SqueezeProSummaryStrip({ payload }: { payload: MomentumChartPayload }) {
+  const squeeze = payload.squeeze_pro ?? null;
+  if (!squeeze) return null;
+  const latest = squeeze.series?.slice().reverse().find((point) => point.status === "ok") ?? null;
+  const unavailable = squeeze.status !== "ok" || !latest;
+  return (
+    <div
+      role="region"
+      aria-label="Squeeze Pro research snapshot"
+      data-testid="momentum-summary-squeeze-pro"
+      style={{
+        display: "grid",
+        gap: 6,
+        padding: "8px 10px",
+        borderRadius: 8,
+        background: "rgba(15, 24, 34, 0.55)",
+        border: "1px solid rgba(115, 138, 163, 0.22)",
+      }}
+    >
+      <div className="op-row" style={{ flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+        <strong style={{ fontSize: "0.8rem" }}>Squeeze Pro</strong>
+        <ToneBadge tone={unavailable ? "neutral" : "good"}>
+          {unavailable ? "Unavailable" : squeezeProStateLabel(latest?.squeeze_state)}
+        </ToneBadge>
+        {latest?.oscillator_value != null ? (
+          <ToneBadge tone="neutral">
+            Histogram {Number(latest.oscillator_value).toFixed(2)} ({squeezeProOscillatorLabel(latest.oscillator_state)})
+          </ToneBadge>
+        ) : null}
+      </div>
+      <p style={NOTE_STYLE}>
+        Research indicator only. Histogram uses MacMarket's documented approximation.
+      </p>
+      {unavailable ? (
+        <p style={NOTE_STYLE}>Squeeze Pro unavailable for this symbol/timeframe{squeeze.reason ? `: ${squeeze.reason}` : "."}</p>
+      ) : null}
+    </div>
   );
 }
 

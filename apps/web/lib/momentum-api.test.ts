@@ -16,7 +16,7 @@ describe("fetchMomentumChart", () => {
     fetchSpy.mockResolvedValue(
       new Response(
         JSON.stringify({
-          symbol: "AAPL",
+          symbol: "SPY",
           timeframe: "1D",
           candles: [],
           true_momentum_line: [],
@@ -38,7 +38,7 @@ describe("fetchMomentumChart", () => {
       ),
     );
 
-    await fetchMomentumChart({ symbol: "AAPL", timeframe: "1D" });
+    await fetchMomentumChart({ symbol: "SPY", timeframe: "1D" });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
@@ -49,7 +49,7 @@ describe("fetchMomentumChart", () => {
     expect(init?.credentials).toBe("include");
     expect(typeof init?.body).toBe("string");
     expect(JSON.parse(String(init?.body))).toEqual({
-      symbol: "AAPL",
+      symbol: "SPY",
       timeframe: "1D",
       history_range: "1Y",
     });
@@ -59,7 +59,7 @@ describe("fetchMomentumChart", () => {
     fetchSpy.mockResolvedValue(
       new Response(
         JSON.stringify({
-          symbol: "AAPL",
+          symbol: "SPY",
           timeframe: "1D",
           candles: [],
           true_momentum_line: [],
@@ -81,13 +81,13 @@ describe("fetchMomentumChart", () => {
       ),
     );
     await fetchMomentumChart({
-      symbol: "AAPL",
+      symbol: "SPY",
       timeframe: "1D",
       history_range: "5Y",
     });
     const [, init] = fetchSpy.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toEqual({
-      symbol: "AAPL",
+      symbol: "SPY",
       timeframe: "1D",
       history_range: "5Y",
     });
@@ -97,7 +97,7 @@ describe("fetchMomentumChart", () => {
     fetchSpy.mockResolvedValue(
       new Response(
         JSON.stringify({
-          symbol: "AAPL",
+          symbol: "SPY",
           timeframe: "1D",
           candles: [],
           true_momentum_line: [],
@@ -119,7 +119,7 @@ describe("fetchMomentumChart", () => {
       ),
     );
     await fetchMomentumChart({
-      symbol: "AAPL",
+      symbol: "SPY",
       timeframe: "1D",
       history_range: "garbage" as never,
     });
@@ -129,11 +129,11 @@ describe("fetchMomentumChart", () => {
 
   it("maps HTTP 425 to AUTH_NOT_READY", async () => {
     fetchSpy.mockResolvedValue(new Response(JSON.stringify({ detail: "auth init" }), { status: 425 }));
-    await expect(fetchMomentumChart({ symbol: "AAPL", timeframe: "1D" })).rejects.toThrow("AUTH_NOT_READY");
+    await expect(fetchMomentumChart({ symbol: "SPY", timeframe: "1D" })).rejects.toThrow("AUTH_NOT_READY");
   });
 
   it("throws a clear error for non-OK responses", async () => {
     fetchSpy.mockResolvedValue(new Response("nope", { status: 503 }));
-    await expect(fetchMomentumChart({ symbol: "AAPL", timeframe: "1D" })).rejects.toThrow("Failed to load Momentum chart: 503");
+    await expect(fetchMomentumChart({ symbol: "SPY", timeframe: "1D" })).rejects.toThrow("Failed to load Momentum chart: 503");
   });
 });

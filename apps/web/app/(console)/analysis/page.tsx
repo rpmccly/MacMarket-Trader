@@ -256,12 +256,12 @@ export default function Page() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const [draftSymbol, setDraftSymbol] = useState("AAPL");
+  const [draftSymbol, setDraftSymbol] = useState("SPY");
   const [draftMarketMode, setDraftMarketMode] = useState<MarketMode>("equities");
   const [draftTimeframe, setDraftTimeframe] = useState<SupportedTimeframe>("1D");
   const [draftStrategy, setDraftStrategy] = useState("Event Continuation");
 
-  const [appliedSymbol, setAppliedSymbol] = useState("AAPL");
+  const [appliedSymbol, setAppliedSymbol] = useState("SPY");
   const [appliedMarketMode, setAppliedMarketMode] = useState<MarketMode>("equities");
   const [appliedTimeframe, setAppliedTimeframe] = useState<SupportedTimeframe>("1D");
   const [appliedStrategy, setAppliedStrategy] = useState("Event Continuation");
@@ -398,7 +398,7 @@ export default function Page() {
   }, [draftStrategy, strategiesForDraftMode]);
 
   async function refreshAnalysis() {
-    const nextSymbol = draftSymbol.trim().toUpperCase() || "AAPL";
+    const nextSymbol = draftSymbol.trim().toUpperCase() || "SPY";
     setAppliedSymbol(nextSymbol);
     setAppliedMarketMode(draftMarketMode);
     setAppliedTimeframe(draftTimeframe);

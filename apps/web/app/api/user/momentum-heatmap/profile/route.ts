@@ -5,6 +5,16 @@ export async function GET(request: Request) {
     request,
     backendPath: "/user/momentum-heatmap/profile",
     method: "GET",
+    includeSearchParams: true,
+  });
+}
+
+export async function POST(request: Request) {
+  return proxyWorkflowRequest({
+    request,
+    backendPath: "/user/momentum-heatmap/profile",
+    method: "POST",
+    bodyText: await request.text(),
   });
 }
 

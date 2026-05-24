@@ -18,6 +18,19 @@ export type MomentumHeatmapSqueezeCell = {
   value: string | null;
   status: "deferred" | "ok" | "unavailable";
   reason?: string | null;
+  state?: "high" | "mid" | "low" | "none" | null;
+  as_of?: string | null;
+  timeframes?: Record<string, {
+    status?: string | null;
+    state?: string | null;
+    value?: string | null;
+    reason?: string | null;
+    oscillator_value?: number | null;
+    oscillator_state?: string | null;
+    as_of?: string | null;
+    data_source?: string | null;
+    fallback_mode?: boolean | null;
+  }>;
 };
 
 export type MomentumHeatmapRequestRow = {
@@ -41,6 +54,7 @@ export type MomentumHeatmapRequestCategory = {
 };
 
 export type MomentumHeatmapRequest = {
+  profileId?: string;
   categories: MomentumHeatmapRequestCategory[];
   timeframes: SupportedTimeframe[];
 };
@@ -82,6 +96,11 @@ export type MomentumHeatmapViewSettings = {
   filters?: Record<string, unknown>;
   showDeltas?: boolean;
   staleThresholdHours?: number;
+  slug?: string;
+  viewType?: string;
+  description?: string;
+  purpose?: string;
+  isSystemSeeded?: boolean;
 };
 
 export type MomentumHeatmapReportPreferences = {
@@ -95,11 +114,15 @@ export type MomentumHeatmapServerProfile = {
   profileId: string;
   databaseId?: number;
   name: string;
+  description?: string | null;
+  slug?: string | null;
+  viewType?: string | null;
   categories: MomentumHeatmapProfileCategory[];
   colorRanges: unknown[];
   viewSettings: MomentumHeatmapViewSettings;
   reportPreferences: MomentumHeatmapReportPreferences;
   isDefault?: boolean;
+  isSystemSeeded?: boolean;
   isDefaultSeed?: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -107,6 +130,7 @@ export type MomentumHeatmapServerProfile = {
 
 export type MomentumHeatmapSchedulePreferences = {
   id?: string;
+  profileId?: string;
   enabled: boolean;
   timezone: string;
   runTime: string;
@@ -258,6 +282,7 @@ export function mergeMomentumHeatmapResponse(
         long_term_score: nextRow.long_term_score ?? previousRow.long_term_score,
         short_term_score: nextRow.short_term_score ?? previousRow.short_term_score,
         strength_percent: nextRow.strength_percent ?? previousRow.strength_percent,
+        squeeze: nextRow.squeeze?.status === "ok" ? nextRow.squeeze : previousRow.squeeze,
         stale: Object.values(scores).some((cell) => cell?.stale),
       });
     }
@@ -289,8 +314,28 @@ export async function fetchMomentumHeatmap(categories: MomentumHeatmapRequestCat
   return response.json() as Promise<MomentumHeatmapResponse>;
 }
 
-export async function fetchMomentumHeatmapProfile(): Promise<MomentumHeatmapProfilePayload> {
-  const response = await fetch("/api/user/momentum-heatmap/profile", { cache: "no-store" });
+function profileQuery(profileId?: string): string {
+  return profileId ? `?profileId=${encodeURIComponent(profileId)}` : "";
+}
+
+export async function fetchMomentumHeatmapProfile(profileId?: string): Promise<MomentumHeatmapProfilePayload> {
+  const response = await fetch(`/api/user/momentum-heatmap/profile${profileQuery(profileId)}`, { cache: "no-store" });
+  return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
+}
+
+export async function createMomentumHeatmapProfile(input: {
+  name: string;
+  description?: string;
+  categories?: MomentumHeatmapProfileCategory[];
+  colorRanges?: unknown[];
+  viewSettings?: MomentumHeatmapViewSettings;
+  reportPreferences?: MomentumHeatmapReportPreferences;
+}): Promise<MomentumHeatmapProfilePayload> {
+  const response = await fetch("/api/user/momentum-heatmap/profile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
   return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
 }
 
@@ -308,6 +353,31 @@ export async function saveMomentumHeatmapProfile(profile: Partial<MomentumHeatma
     }),
   });
   return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
+}
+
+export async function duplicateMomentumHeatmapProfile(input: { profileId: string; name?: string }): Promise<MomentumHeatmapProfilePayload> {
+  const response = await fetch("/api/user/momentum-heatmap/profile/duplicate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
+}
+
+export async function resetMomentumHeatmapProfile(profileId: string): Promise<MomentumHeatmapProfilePayload> {
+  const response = await fetch("/api/user/momentum-heatmap/profile/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profileId }),
+  });
+  return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
+}
+
+export async function deleteMomentumHeatmapProfile(profileId: string): Promise<MomentumHeatmapProfilePayload & { deleted?: boolean }> {
+  const response = await fetch(`/api/user/momentum-heatmap/profile/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
+  return parseJsonResponse<MomentumHeatmapProfilePayload & { deleted?: boolean }>(response);
 }
 
 export async function addMomentumHeatmapRow(input: {
@@ -333,11 +403,12 @@ export async function removeMomentumHeatmapRow(input: { profileId?: string; rowI
   return parseJsonResponse<MomentumHeatmapProfilePayload>(response);
 }
 
-export async function refreshMomentumHeatmapSnapshot(categories: MomentumHeatmapRequestCategory[]): Promise<MomentumHeatmapRefreshResponse> {
+export async function refreshMomentumHeatmapSnapshot(categories: MomentumHeatmapRequestCategory[], profileId?: string): Promise<MomentumHeatmapRefreshResponse> {
   const response = await fetch("/api/user/momentum-heatmap/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      profileId,
       categories,
       timeframes: [...SUPPORTED_TIMEFRAME_VALUES],
     } satisfies MomentumHeatmapRequest),
@@ -345,30 +416,30 @@ export async function refreshMomentumHeatmapSnapshot(categories: MomentumHeatmap
   return parseJsonResponse<MomentumHeatmapRefreshResponse>(response);
 }
 
-export async function fetchLatestMomentumHeatmapSnapshot(): Promise<MomentumHeatmapLatestSnapshotResponse> {
-  const response = await fetch("/api/user/momentum-heatmap/snapshots/latest", { cache: "no-store" });
+export async function fetchLatestMomentumHeatmapSnapshot(profileId?: string): Promise<MomentumHeatmapLatestSnapshotResponse> {
+  const response = await fetch(`/api/user/momentum-heatmap/snapshots/latest${profileQuery(profileId)}`, { cache: "no-store" });
   return parseJsonResponse<MomentumHeatmapLatestSnapshotResponse>(response);
 }
 
-export async function generateMomentumHeatmapReportPreview(snapshotId?: string): Promise<MomentumHeatmapReportPreviewResponse> {
+export async function generateMomentumHeatmapReportPreview(snapshotId?: string, profileId?: string): Promise<MomentumHeatmapReportPreviewResponse> {
   const response = await fetch("/api/user/momentum-heatmap/report/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ snapshotId }),
+    body: JSON.stringify({ snapshotId, profileId }),
   });
   return parseJsonResponse<MomentumHeatmapReportPreviewResponse>(response);
 }
 
-export async function downloadMomentumHeatmapCsv(snapshotId?: string): Promise<{ csv: string; filename: string }> {
+export async function downloadMomentumHeatmapCsv(snapshotId?: string, profileId?: string): Promise<{ csv: string; filename: string }> {
   const response = await fetch("/api/user/momentum-heatmap/report/csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ snapshotId }),
+    body: JSON.stringify({ snapshotId, profileId }),
   });
   return parseJsonResponse<{ csv: string; filename: string }>(response);
 }
 
-export async function emailMomentumHeatmapReport(input: { snapshotId?: string; recipients: string[] }): Promise<{ emailStatus: string; sentTo?: string[] }> {
+export async function emailMomentumHeatmapReport(input: { snapshotId?: string; profileId?: string; recipients: string[] }): Promise<{ emailStatus: string; sentTo?: string[] }> {
   const response = await fetch("/api/user/momentum-heatmap/report/email", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -377,8 +448,8 @@ export async function emailMomentumHeatmapReport(input: { snapshotId?: string; r
   return parseJsonResponse<{ emailStatus: string; sentTo?: string[] }>(response);
 }
 
-export async function fetchMomentumHeatmapSchedule(): Promise<{ schedulePreferences: MomentumHeatmapSchedulePreferences; timingSuggestions: Array<{ time: string; label: string; note: string }>; schedulerActive: boolean; runnerHook: string }> {
-  const response = await fetch("/api/user/momentum-heatmap/schedule", { cache: "no-store" });
+export async function fetchMomentumHeatmapSchedule(profileId?: string): Promise<{ schedulePreferences: MomentumHeatmapSchedulePreferences; timingSuggestions: Array<{ time: string; label: string; note: string }>; schedulerActive: boolean; runnerHook: string }> {
+  const response = await fetch(`/api/user/momentum-heatmap/schedule${profileQuery(profileId)}`, { cache: "no-store" });
   return parseJsonResponse(response);
 }
 

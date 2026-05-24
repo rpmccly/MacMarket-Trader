@@ -335,7 +335,7 @@ def build_report_payload(
         "deltas": deltas,
         "notes": [
             "Intraday timeframe scores use latest completed regular-hours bars.",
-            "Squeeze remains deferred until an approved squeeze algorithm/version is added.",
+            "Squeeze Pro is a research indicator based on MacMarket's documented implementation; it is not an execution signal.",
             "Momentum Heatmap labels are research context, not trade recommendations.",
         ],
         "email_status": "email_not_configured_for_heatmap_reports",
@@ -361,7 +361,9 @@ def heatmap_csv(report_payload: dict[str, Any]) -> str:
             "delta_strength_percent",
             "delta_long_term_score",
             "delta_short_term_score",
+            "squeeze_value",
             "squeeze_status",
+            "squeeze_state",
             "row_tags",
             "statuses_reasons",
             "as_of_timestamps",
@@ -386,6 +388,7 @@ def heatmap_csv(report_payload: dict[str, Any]) -> str:
                         reasons.append(f"{timeframe}:{cell.get('status')}:{cell.get('reason') or ''}")
                     if cell.get("as_of"):
                         as_of.append(f"{timeframe}:{cell.get('as_of')}")
+            squeeze = row.get("squeeze") if isinstance(row.get("squeeze"), dict) else {}
             writer.writerow(
                 {
                     "category": category.get("categoryLabel"),
@@ -402,7 +405,9 @@ def heatmap_csv(report_payload: dict[str, Any]) -> str:
                     "delta_strength_percent": row_delta.get("strength_percent") if isinstance(row_delta, dict) else None,
                     "delta_long_term_score": row_delta.get("long_term_score") if isinstance(row_delta, dict) else None,
                     "delta_short_term_score": row_delta.get("short_term_score") if isinstance(row_delta, dict) else None,
-                    "squeeze_status": (row.get("squeeze") or {}).get("status") if isinstance(row.get("squeeze"), dict) else None,
+                    "squeeze_value": squeeze.get("value") if isinstance(squeeze, dict) else None,
+                    "squeeze_status": squeeze.get("status") if isinstance(squeeze, dict) else None,
+                    "squeeze_state": squeeze.get("state") if isinstance(squeeze, dict) else None,
                     "row_tags": "; ".join(str(tag) for tag in row.get("row_tags") or []),
                     "statuses_reasons": "; ".join(reasons),
                     "as_of_timestamps": "; ".join(as_of),
@@ -413,7 +418,13 @@ def heatmap_csv(report_payload: dict[str, Any]) -> str:
 
 def heatmap_html(report_payload: dict[str, Any]) -> str:
     def esc(value: object) -> str:
-        return str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return (
+            str(value or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
 
     def fmt(value: object, suffix: str = "") -> str:
         number = _num(value)
@@ -442,6 +453,29 @@ def heatmap_html(report_payload: dict[str, Any]) -> str:
         return (
             f'<td style="padding:6px 8px;border-top:1px solid #25303b;text-align:right;'
             f'font-weight:700;background:{bg};color:{fg};">{esc(fmt(value, suffix))}</td>'
+        )
+
+    def squeeze_cell(squeeze: dict[str, Any]) -> str:
+        status = str(squeeze.get("status") or "unavailable")
+        value = str(squeeze.get("value") or ("Unavailable" if status != "ok" else "No squeeze"))
+        state = str(squeeze.get("state") or "")
+        color_by_state = {
+            "high": ("#f2a03f", "#10151d"),
+            "mid": ("#d14b4b", "#ffffff"),
+            "low": ("#10151d", "#d7dee8"),
+            "none": ("#21c06e", "#06150b"),
+        }
+        bg, fg = color_by_state.get(state, ("#17202b", "#9fb0c3"))
+        details = squeeze.get("timeframes") if isinstance(squeeze.get("timeframes"), dict) else {}
+        title = "; ".join(
+            f"{timeframe}:{detail.get('value') or detail.get('status')}:{detail.get('reason') or ''}"
+            for timeframe, detail in details.items()
+            if isinstance(detail, dict)
+        )
+        return (
+            f'<td title="{esc(title)}" style="padding:6px 8px;border-top:1px solid #25303b;">'
+            f'<span style="display:inline-block;border-radius:999px;padding:3px 7px;'
+            f'background:{bg};color:{fg};font-weight:700;font-size:11px;">{esc(value)}</span></td>'
         )
 
     def delta_badge(row: dict[str, Any], key: str) -> str:
@@ -526,7 +560,7 @@ def heatmap_html(report_payload: dict[str, Any]) -> str:
                 f'{score_cell(row.get("strength_percent"), "%")}'
                 f'<td style="padding:6px 8px;border-top:1px solid #25303b;">{delta_badge(row, "strength_percent")}</td>'
                 f'<td style="padding:6px 8px;border-top:1px solid #25303b;">{esc("; ".join(str(tag) for tag in row.get("row_tags") or []))}</td>'
-                f'<td style="padding:6px 8px;border-top:1px solid #25303b;color:#9fb0c3;">{esc(squeeze.get("status") or "deferred")}</td>'
+                f'{squeeze_cell(squeeze)}'
                 "</tr>"
             )
     unsupported = report_payload.get("unsupported_summary") if isinstance(report_payload.get("unsupported_summary"), dict) else {}
@@ -588,7 +622,7 @@ def heatmap_html(report_payload: dict[str, Any]) -> str:
         '<div style="margin-top:16px;color:#9fb0c3;font-size:12px;line-height:1.5;">'
         '<p style="margin:0 0 4px;color:#d7dee8;font-weight:700;">Research dashboard only. Not trade execution or investment advice.</p>'
         '<p style="margin:0 0 4px;">Intraday scores use latest available completed bars.</p>'
-        '<p style="margin:0;">Squeeze remains deferred until an approved squeeze algorithm/version is added.</p>'
+        '<p style="margin:0;">Squeeze Pro is research context only and is not a trade execution signal.</p>'
         '</div></div></body></html>'
     )
 
@@ -611,6 +645,6 @@ def heatmap_text(report_payload: dict[str, Any]) -> str:
             "Top strongest rows by Strength %:",
             *(strongest_lines or ["- No rows available."]),
             "",
-            "Squeeze remains deferred until an approved squeeze algorithm/version is added.",
+            "Squeeze Pro is research context only and is not a trade execution signal.",
         ]
     )

@@ -458,6 +458,52 @@ class MomentumHeatmapSchedulePreferenceModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
 
 
+class HacoHeatmapProfileModel(Base):
+    __tablename__ = "haco_heatmap_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "app_user_id",
+            "profile_uid",
+            name="uq_haco_heatmap_profiles_user_uid",
+        ),
+        Index("ix_haco_heatmap_profiles_user_updated", "app_user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_uid: Mapped[str] = mapped_column(String(64), index=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128), default="Morning Macro", index=True)
+    categories: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    view_settings: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    report_preferences: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
+
+
+class HacoHeatmapSnapshotModel(Base):
+    __tablename__ = "haco_heatmap_snapshots"
+    __table_args__ = (
+        Index("ix_haco_heatmap_snapshots_profile_generated", "profile_id", "generated_at"),
+        Index("ix_haco_heatmap_snapshots_user_generated", "app_user_id", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("haco_heatmap_profiles.id"), index=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="partial", index=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    report_label: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    requested_categories: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
+    requested_rows: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    category_summaries: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    unsupported_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    previous_snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class PaperPositionModel(Base):
     __tablename__ = "paper_positions"
 

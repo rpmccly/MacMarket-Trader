@@ -1,6 +1,95 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-05-23
+Last updated: 2026-05-24
+
+## 2026-05-24 Update - Momentum Heatmap Saved Views
+Momentum Heatmap now seeds user-scoped saved views for Morning Macro, Growth
+Leaders, Commodities, Pullback Watch, and Custom Watchlist using the existing
+server-backed profile table and per-profile JSON settings. Each account gets
+its own copies; editing, adding/removing rows, refreshing, reporting, CSV
+export, email report requests, snapshots, deltas, and schedule preferences
+remain scoped to the selected profile/view.
+
+The `/momentum-heatmap` page now has an active view selector plus create,
+rename, duplicate, reset seeded view, and delete custom view actions. Switching
+views loads that view's rows/settings and latest snapshot without
+auto-refreshing. No DB migration was required for this pass because the
+existing profile model already carries user ownership, categories, rows, color
+ranges, view settings, and report preferences. True Momentum scoring, Squeeze
+Pro state, heatmap aggregate formulas, recommendation approval, paper trading,
+broker routing, live trading, automated execution, and order-placement
+behavior were not changed.
+
+## 2026-05-24 Update - Welcome Guide Momentum Orientation
+The operator Welcome Guide now documents Momentum Intelligence, expanded chart
+timeframes (`1W`, `1D`, `4H`, `1H`, `30M`), the Squeeze Pro lower panel,
+Momentum Heatmap, server-backed/account-scoped heatmap profiles and snapshots,
+report preview, CSV export, configured-only email delivery, persisted schedule
+preferences, and planned/deferred saved heatmap views. The update is onboarding
+copy only and does not change True Momentum scoring, Squeeze Pro logic,
+heatmap formulas, recommendation approval, paper trading, broker routing, live
+trading, automated execution, or order-placement behavior.
+
+## 2026-05-24 Update - Momentum Heatmap Profile Isolation Audit
+Momentum Heatmap profile, row, color-range, report-preference, schedule, and
+snapshot/report access paths were verified and regression-tested as
+authenticated user-scoped. Default profiles are seeded per local app user,
+profile and row mutations are filtered by `app_user_id`, and snapshot/report
+ID lookups now have explicit cross-account denial coverage.
+
+The browser-local heatmap fallback remains available for emergency server-load
+failure, but legacy localStorage settings are no longer automatically imported
+into a default server profile on page load. This avoids carrying one browser
+account's local Heatmap settings into another account's server profile on a
+shared machine. No True Momentum scoring, Squeeze Pro, heatmap aggregate
+formulas, recommendation approval, paper trading, broker routing, live trading,
+automated execution, or order-placement behavior changed.
+
+## 2026-05-23 Update - Default Chart Symbol
+User-facing chart/workspace defaults now start on `SPY` instead of `AAPL`
+across Strategy Workbench / Analysis, Symbol Analyze, HACO Context, Momentum
+Intelligence, recommendation/schedule default symbol inputs, shared symbol
+entry examples, and chart smoke/default tests. Existing saved user settings
+are not migrated or overwritten, and `AAPL` remains in legitimate universes,
+heatmap Major Stocks, watchlist/multi-symbol fixtures, options fixtures, and
+historical test data. No scoring, Squeeze Pro, True Momentum, recommendation,
+paper-trading, broker-routing, live-trading, automated-execution, or
+order-placement behavior changed.
+
+## 2026-05-23 Update - Squeeze Pro Timeline Alignment
+Momentum Intelligence Squeeze Pro chart rendering now preserves the same
+canonical source-bar timeline as the candle, True Momentum, HiLo, score, and
+thrust panels. Warmup bars remain in the Squeeze Pro payload/rendering path as
+null/unavailable values rather than shortening the lower-panel time domain,
+and the stacked chart panels use synchronized visible ranges with matching
+right price-scale width. Squeeze Pro arrows remain disabled/deferred. True
+Momentum scoring, Momentum Intelligence parity, heatmap formulas,
+recommendation approval, paper trading, broker routing, live trading,
+automated execution, and order-placement behavior were not changed.
+
+## 2026-05-23 Update - Squeeze Pro Research Indicator
+Squeeze Pro is now implemented as a first-class research indicator. The
+backend computes user-provided Squeeze Pro compression states from Bollinger
+upper band versus three Keltner upper bands, using existing deterministic
+ATR/SMA helpers. Because no exact TTM Squeeze histogram implementation exists
+in this repo, the histogram is explicitly labeled as MacMarket's
+linear-regression momentum approximation rather than Thinkorswim/TTM parity.
+Arrow logic is now hard-disabled and deferred until approved arrow rules are
+provided.
+
+Momentum Intelligence chart payloads now include a backward-compatible
+`squeeze_pro` lower-panel dataset, and the Momentum Intelligence workspace
+renders it below the main candle chart with histogram bars, squeeze-state
+dots, legend, and unavailable/insufficient-data states.
+Momentum Summary surfaces also show a compact Squeeze Pro research snapshot.
+
+Momentum Heatmap replaces the prior deferred Squeezes placeholder with real
+Squeeze Pro state where valid provider bars are available, while unsupported
+workbook labels still fail fast with unavailable reasons. Reports, CSV, and
+email-ready HTML now include Squeeze Pro state and keep research-only
+disclaimers. True Momentum math, Momentum Intelligence parity, heatmap score
+formulas, recommendation approval, paper trading, broker routing, live
+trading, automated execution, and order-placement behavior were not changed.
 
 ## 2026-05-23 Update - Momentum Heatmap Operator Polish And E2E Coverage
 Momentum Heatmap now has a denser operator-dashboard layout with a compact
@@ -66,8 +155,8 @@ HTML, CSV output, unsupported/unavailable summaries, and an explicit email-now
 path through the existing email provider boundary when recipients are supplied.
 Scheduled Heatmap report preferences are persisted, but automatic scheduled
 delivery remains deferred until a future runner pass wires due-time execution
-and audit logging. Squeeze remains deferred pending an approved
-algorithm/version.
+and audit logging. Squeeze Pro research-state reporting is now implemented in
+the Squeezes column and report surfaces.
 
 ## 2026-05-23 Update - Momentum Heatmap Runtime Hardening
 Momentum Heatmap refresh now sends bounded category/row chunks from the
@@ -100,8 +189,8 @@ with localStorage persistence, and manually refresh only included categories.
 The heatmap API reuses the existing deterministic True Momentum Score model for
 cell values and computes the workbook long-term, short-term, and strength
 formulas only when all required timeframe scores are numeric. Unsupported
-multi-asset symbols are isolated at the row/cell level. The squeeze column is
-explicitly deferred until an approved squeeze algorithm/version is added.
+multi-asset symbols are isolated at the row/cell level. The squeeze column now
+uses the later Squeeze Pro research indicator implementation where available.
 No live trading, broker routing, automated exits, or execution support was
 added.
 
@@ -311,7 +400,7 @@ evidence generation.
 
 Provider Health now runs live-safe readiness probes for optional providers only
 when that provider is selected: FRED fetches one `DGS10` observation, Polygon
-news fetches one AAPL news item, and Alpaca paper uses only read-only
+news fetches one SPY news item, and Alpaca paper uses only read-only
 `GET /v2/account`. Mock-mode Alpaca keeps paper routing disabled and skips the
 account probe. Probe failures are sanitized and do not imply live trading,
 broker routing, or provider execution readiness.

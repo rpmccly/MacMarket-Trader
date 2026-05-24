@@ -228,7 +228,7 @@ export default function SchedulesPage() {
 
   // Form state
   const [name, setName] = useState("Morning strategy scan");
-  const [symbols, setSymbols] = useState("AAPL,MSFT,NVDA");
+  const [symbols, setSymbols] = useState("SPY,MSFT,NVDA");
   const [marketMode, setMarketMode] = useState<MarketMode>("equities");
   const [frequency, setFrequency] = useState("weekdays");
   const [runTime, setRunTime] = useState("08:30");
@@ -671,7 +671,7 @@ export default function SchedulesPage() {
                 setSymbols(e.target.value.toUpperCase());
                 setScheduleUniversePreview(null);
               }}
-              placeholder="SPY, QQQ, AAPL, MSFT"
+              placeholder="SPY, QQQ, NVDA, MSFT"
               rows={2}
               style={{ minWidth: 260, resize: "vertical" }}
             />
@@ -766,7 +766,7 @@ export default function SchedulesPage() {
             <textarea
               value={wlSymbols}
               onChange={(e) => setWlSymbols(e.target.value.toUpperCase())}
-              placeholder="SPY, QQQ, AAPL, MSFT"
+              placeholder="SPY, QQQ, NVDA, MSFT"
               rows={2}
               style={{ minWidth: 260, resize: "vertical" }}
             />

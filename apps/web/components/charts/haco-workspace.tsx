@@ -27,7 +27,7 @@ function formatSessionPolicy(value: string | null | undefined): string | null {
 }
 
 export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
-  const [symbol, setSymbol] = useState("AAPL");
+  const [symbol, setSymbol] = useState("SPY");
   const [timeframe, setTimeframe] = useState<SupportedTimeframe>("1D");
   const [historyRange, setHistoryRange] = useState<ChartHistoryRangeId>(
     defaultChartHistoryRange(),

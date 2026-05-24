@@ -1472,6 +1472,8 @@ describe("Momentum visual parity chart polish guards", () => {
     expect(source).toContain("CandleStatusBadges");
     expect(source).toContain("MomentumContextLegend");
     expect(source).toContain("buildVisualParityFields");
+    expect(source).toContain("SqueezeProSummaryStrip");
+    expect(source).toContain("momentum-summary-squeeze-pro");
   });
 
   it("Momentum workspace wires status badges + legend on the canonical chart page", () => {
@@ -1483,6 +1485,24 @@ describe("Momentum visual parity chart polish guards", () => {
     expect(source).toContain("splitMomentumLineByDirection");
     expect(source).toContain("true_momentum_panel_markers");
     expect(source).toContain("hilo_panel_markers");
+  });
+
+  it("Momentum workspace renders the Squeeze Pro lower panel and legend", () => {
+    const source = read("components/charts/momentum-workspace.tsx");
+    expect(source).toContain("Squeeze Pro");
+    expect(source).toContain("squeeze-pro-panel");
+    expect(source).toContain("squeeze-pro-legend");
+    expect(source).toContain("Histogram momentum");
+    expect(source).toContain("Squeeze state dots");
+    expect(source).not.toContain("Derived arrow events");
+    expect(source).not.toContain("point.arrow");
+    expect(source).not.toContain("Squeeze Pro derived event");
+    expect(source).toContain("data.squeeze_pro");
+    expect(source).toContain("WhitespaceData");
+    expect(source).toContain("squeezeHistogramData");
+    expect(source).toContain("squeezePoints.map((point)");
+    expect(source).toContain("momentum-price-panel");
+    expect(source).toContain("subscribeVisibleTimeRangeChange");
   });
 
   it("Recommendations page imports MomentumSummaryPanel so the parity polish reaches the recommendation detail surface", () => {

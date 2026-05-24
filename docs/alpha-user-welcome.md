@@ -1,6 +1,6 @@
 # MacMarket-Trader Operator Welcome Guide
 
-Last updated: 2026-05-04
+Last updated: 2026-05-24
 
 This is the practical welcome/training guide for MacMarket-Trader operators.
 It is written for:
@@ -68,8 +68,9 @@ evidence.
 
 ### Where to go
 
-Dashboard, Charts, Analysis, Recommendations, Orders, Provider Health, and
-Settings.
+Dashboard, [Momentum Intelligence](/charts/momentum),
+[Momentum Heatmap](/momentum-heatmap), Analysis, [Recommendations](/recommendations),
+[Orders / Paper positions](/orders), Provider Health, and Settings.
 
 ## 1. What MacMarket-Trader is
 
@@ -185,6 +186,87 @@ Two workflow styles also matter:
 8. Use **Options Position Review** in Orders for open structures, mark status,
    expiration status, assignment/exercise risk, and paper-only settlement
    review.
+
+## 3A. Momentum Intelligence and Momentum Heatmap
+
+### Momentum Intelligence
+
+[Momentum Intelligence](/charts/momentum) is the main chart workspace for
+True Momentum research. It is designed for chart inspection, timeframe context,
+and repeatable research notes, not trade execution.
+
+Supported chart timeframes:
+
+- `1W`
+- `1D`
+- `4H`
+- `1H`
+- `30M`
+
+The Momentum Intelligence chart includes a lower **Squeeze Pro** panel. Squeeze
+Pro compression dots are implemented, and the histogram uses MacMarket's
+documented linear-regression momentum approximation unless exact TTM parity is
+added later. Arrow logic is deferred until approved arrow rules are provided.
+
+### Momentum Heatmap
+
+[Momentum Heatmap](/momentum-heatmap) is a workbook-style, multi-symbol
+momentum dashboard for scanning groups of indexes, sectors, stocks, bonds,
+currencies, volatility symbols, and commodities.
+
+The heatmap columns are:
+
+- Weekly
+- Daily
+- 4HR
+- 1HR
+- 30M
+- Long-Term Score
+- Short-Term Score
+- Strength %
+- Squeeze
+- Deltas where available
+
+The heatmap profile, symbols, color ranges, report preferences, schedule
+preferences, and snapshots are server-backed and account-scoped in the current
+branch. Browser localStorage is kept as migration/fallback convenience only.
+
+Unsupported or unavailable workbook symbols are labeled per row or cell instead
+of breaking the page. The page does not auto-refresh on load; the operator
+chooses when to refresh visible or included categories.
+
+### Heatmap reports and exports
+
+Momentum Heatmap supports report preview and CSV export from the current
+snapshot/profile context. Email report delivery is available only when the
+configured email provider is present; otherwise the UI should report that email
+is not configured.
+
+Scheduled report preferences can be saved, including timezone, run time, days,
+report mode, profile, recipients where email is configured, and CSV/full-table
+choices. Automatic scheduled delivery is not active unless an approved runner is
+installed and configured for the deployment.
+
+Premarket reports mostly reflect the prior completed session/intraday bars.
+Useful timing ideas:
+
+- 7:00 AM ET premarket read
+- 10:15 AM ET after early-session data
+- 3:30 PM ET late-session review
+- 4:30 PM ET post-close summary
+
+Saved heatmap views include Morning Macro, Growth Leaders, Commodities,
+Pullback Watch, and Custom Watchlist. Each view is account-scoped; switching
+views loads that view's rows/settings and latest snapshot without
+auto-refreshing.
+
+Safety reminders:
+
+- Research dashboard only.
+- Not trade execution.
+- Not investment advice.
+- Intraday scores depend on latest available completed bars.
+- Squeeze arrows are deferred until approved arrow rules are provided.
 
 ## 4. Options training
 

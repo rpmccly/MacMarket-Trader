@@ -43,7 +43,7 @@ def test_momentum_chart_payload_shape_and_layer_alignment() -> None:
     response = client.post(
         "/charts/momentum",
         headers={"Authorization": "Bearer user-token"},
-        json={"symbol": "AAPL", "timeframe": "1D", "bars": _daily_bars(80)},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars(80)},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -61,6 +61,22 @@ def test_momentum_chart_payload_shape_and_layer_alignment() -> None:
         layer = payload[layer_name]
         assert len(layer) == len(candle_times)
         assert [point["time"] for point in layer] == candle_times
+    assert payload["squeeze_pro"]["enabled"] is True
+    assert payload["squeeze_pro"]["status"] == "ok"
+    assert payload["squeeze_pro"]["show_arrows"] is False
+    assert payload["squeeze_pro"]["arrow_mode"] == "disabled_pending_approved_arrow_rules"
+    assert len(payload["squeeze_pro"]["series"]) == len(candle_times)
+    assert [point["time"] for point in payload["squeeze_pro"]["series"]] == candle_times
+    first_squeeze_ok_index = next(
+        index for index, point in enumerate(payload["squeeze_pro"]["series"]) if point["status"] == "ok"
+    )
+    assert first_squeeze_ok_index > 0
+    squeeze_warmup = payload["squeeze_pro"]["series"][:first_squeeze_ok_index]
+    assert [point["time"] for point in squeeze_warmup] == candle_times[:first_squeeze_ok_index]
+    assert all(point["oscillator_value"] is None for point in squeeze_warmup)
+    assert all(point["squeeze_state"] == "unavailable" for point in squeeze_warmup)
+    assert all(point["arrow"] is None for point in payload["squeeze_pro"]["series"])
+    assert all(point["arrow_reason"] is None for point in payload["squeeze_pro"]["series"])
 
     assert payload["latest_snapshot"] is not None
     assert "component_breakdown" in payload["latest_snapshot"]
@@ -76,7 +92,7 @@ def test_momentum_chart_payload_shape_and_layer_alignment() -> None:
 
 def test_momentum_chart_requires_auth() -> None:
     client = TestClient(app)
-    response = client.post("/charts/momentum", json={"symbol": "AAPL", "bars": _daily_bars(40)})
+    response = client.post("/charts/momentum", json={"symbol": "SPY", "bars": _daily_bars(40)})
     assert response.status_code == 401
 
 
@@ -94,7 +110,7 @@ def test_momentum_intraday_1h_uses_unique_unix_second_times() -> None:
         )
         for i in range(60)
     ]
-    payload = service.build_payload("AAPL", "1H", bars)
+    payload = service.build_payload("SPY", "1H", bars)
     times = [c.time for c in payload.candles]
     assert len(times) == len(set(times))
     assert all(isinstance(t, int) for t in times)
@@ -102,8 +118,8 @@ def test_momentum_intraday_1h_uses_unique_unix_second_times() -> None:
 
 
 def test_momentum_chart_request_accepts_weekly_and_30m_timeframes() -> None:
-    assert MomentumChartRequest(symbol="AAPL", timeframe="1W").timeframe == "1W"
-    assert MomentumChartRequest(symbol="AAPL", timeframe="30M").timeframe == "30M"
+    assert MomentumChartRequest(symbol="SPY", timeframe="1W").timeframe == "1W"
+    assert MomentumChartRequest(symbol="SPY", timeframe="30M").timeframe == "30M"
 
 
 def test_momentum_weekly_payload_keeps_date_time_values() -> None:
@@ -119,7 +135,7 @@ def test_momentum_weekly_payload_keeps_date_time_values() -> None:
         )
         for i in range(60)
     ]
-    payload = service.build_payload("AAPL", "1W", bars)
+    payload = service.build_payload("SPY", "1W", bars)
     times = [c.time for c in payload.candles]
     assert all(isinstance(t, str) for t in times)
     assert times == sorted(times)
@@ -139,7 +155,7 @@ def test_momentum_30m_payload_uses_unix_seconds() -> None:
         )
         for i in range(80)
     ]
-    payload = service.build_payload("AAPL", "30M", bars)
+    payload = service.build_payload("SPY", "30M", bars)
     times = [c.time for c in payload.candles]
     assert all(isinstance(t, int) for t in times)
     assert len(times) == len(set(times))
@@ -166,10 +182,13 @@ def test_momentum_daily_payload_keeps_date_time_values() -> None:
 
 def test_momentum_empty_bars_yield_neutral_payload() -> None:
     service = MomentumChartService()
-    payload = service.build_payload("AAPL", "1D", [])
+    payload = service.build_payload("SPY", "1D", [])
     assert payload.candles == []
     assert payload.latest_snapshot is None
     assert payload.higher_timeframe_source == "insufficient_data"
+    assert payload.squeeze_pro is not None
+    assert payload.squeeze_pro.status == "unavailable"
+    assert payload.squeeze_pro.reason == "no chart bars provided"
 
 
 def test_momentum_chart_marker_indices_align_to_candles_and_use_context_only_text() -> None:
@@ -186,7 +205,7 @@ def test_momentum_chart_marker_indices_align_to_candles_and_use_context_only_tex
         )
         for i, c in enumerate(closes)
     ]
-    payload = service.build_payload("AAPL", "1D", bars)
+    payload = service.build_payload("SPY", "1D", bars)
     candle_indices = {c.index for c in payload.candles}
     forbidden_substrings = ("buy", "sell", "short", "enter")
     for marker in payload.markers:
@@ -204,7 +223,7 @@ def test_momentum_chart_defaults_history_range_to_1Y() -> None:
     response = client.post(
         "/charts/momentum",
         headers={"Authorization": "Bearer user-token"},
-        json={"symbol": "AAPL", "timeframe": "1D", "bars": _daily_bars()},
+        json={"symbol": "SPY", "timeframe": "1D", "bars": _daily_bars()},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -222,7 +241,7 @@ def test_momentum_chart_accepts_supported_history_ranges() -> None:
             "/charts/momentum",
             headers={"Authorization": "Bearer user-token"},
             json={
-                "symbol": "AAPL",
+                "symbol": "SPY",
                 "timeframe": "1D",
                 "bars": _daily_bars(),
                 "history_range": range_id,
@@ -241,7 +260,7 @@ def test_momentum_chart_falls_back_to_1Y_on_invalid_history_range() -> None:
         "/charts/momentum",
         headers={"Authorization": "Bearer user-token"},
         json={
-            "symbol": "AAPL",
+            "symbol": "SPY",
             "timeframe": "1D",
             "bars": _daily_bars(),
             "history_range": "garbage",
@@ -260,7 +279,7 @@ def test_momentum_chart_metadata_includes_bars_returned_and_lookback_days() -> N
         "/charts/momentum",
         headers={"Authorization": "Bearer user-token"},
         json={
-            "symbol": "AAPL",
+            "symbol": "SPY",
             "timeframe": "1D",
             "bars": _daily_bars(),
             "history_range": "5Y",
@@ -506,6 +525,7 @@ def test_momentum_chart_payload_remains_backward_compatible() -> None:
         "visual_parity_series",
         "true_momentum_panel_markers",
         "hilo_panel_markers",
+        "squeeze_pro",
     ):
         assert new_field in payload, f"chart payload missing new field {new_field!r}"
 

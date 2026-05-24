@@ -239,7 +239,7 @@ def test_analysis_setup_snaps_options_research_legs_to_provider_contracts(monkey
             }
             return _quote_snapshot(option_symbol, marks.get(option_symbol, 0.50))
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(
                 provider="market_data", mode="polygon", status="ok",
                 details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol,
@@ -317,7 +317,7 @@ def test_analysis_setup_separates_prior_close_context_from_paper_open_readiness(
             del underlying_symbol
             return _prior_close_snapshot(option_symbol, 0.75)
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", PriorCloseOnlyOptionsService())
@@ -379,7 +379,7 @@ def test_analysis_setup_blocks_iron_condor_when_provider_chain_missing_puts(monk
                 {"ticker": "O:QQQ260516C00485000", "contract_type": "call", "strike_price": 485.0, "expiration_date": "2026-05-16"},
             ]
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", CallsOnlyOptionsService())
@@ -464,7 +464,7 @@ def test_analysis_setup_blocks_iron_condor_when_listed_contracts_are_far_from_ta
                 _row("call", 190.0),
             ]
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", LowStrikeOnlyService())
@@ -524,7 +524,7 @@ def test_analysis_setup_rejects_all_four_iron_condor_legs_at_same_strike(monkeyp
                 strike_snap_distance=abs(480.0 - target_strike),
             )
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", CollisionResolvingService())
@@ -600,7 +600,7 @@ def test_analysis_setup_selects_distinct_ordered_listed_iron_condor_contracts(mo
             }
             return _quote_snapshot(option_symbol, marks.get(option_symbol, 0.50))
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", ListedContractService())
@@ -732,7 +732,7 @@ def test_analysis_setup_spx_valid_provider_data_builds_index_option_structure(mo
             }
             return _quote_snapshot(option_symbol, marks[option_symbol])
 
-        def provider_health(self, sample_symbol: str = "AAPL") -> MarketProviderHealth:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
             return MarketProviderHealth(provider="market_data", mode="polygon", status="ok", details="stub", configured=True, feed="stocks", sample_symbol=sample_symbol)
 
     monkeypatch.setattr(admin_routes, "market_data_service", SpxOptionsService())

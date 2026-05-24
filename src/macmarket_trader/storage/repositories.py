@@ -2884,21 +2884,72 @@ class MomentumHeatmapRepository:
     @staticmethod
     def _default_profile_payload(user_email: str | None = None) -> dict[str, object]:
         from macmarket_trader.charts.momentum_heatmap_defaults import (
-            DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES,
-            DEFAULT_MOMENTUM_HEATMAP_PROFILE_NAME,
-            default_momentum_heatmap_categories,
-            default_momentum_heatmap_report_preferences,
-            default_momentum_heatmap_view_settings,
+            seeded_momentum_heatmap_profile_payload,
         )
 
-        return {
-            "name": DEFAULT_MOMENTUM_HEATMAP_PROFILE_NAME,
-            "categories": default_momentum_heatmap_categories(),
-            "color_ranges": deepcopy(DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES),
-            "view_settings": default_momentum_heatmap_view_settings(),
-            "report_preferences": default_momentum_heatmap_report_preferences(),
-            "user_email": user_email,
-        }
+        payload = seeded_momentum_heatmap_profile_payload("morning-macro")
+        if payload is None:
+            raise RuntimeError("momentum_heatmap_morning_macro_seed_missing")
+        payload = deepcopy(payload)
+        payload["user_email"] = user_email
+        return payload
+
+    @staticmethod
+    def _profile_slug(profile: MomentumHeatmapProfileModel) -> str:
+        settings = profile.view_settings or {}
+        if isinstance(settings, dict):
+            return str(settings.get("slug") or settings.get("viewSlug") or "").strip().lower()
+        return ""
+
+    @staticmethod
+    def _is_system_seeded_profile(profile: MomentumHeatmapProfileModel) -> bool:
+        settings = profile.view_settings or {}
+        return bool(isinstance(settings, dict) and settings.get("isSystemSeeded") is True)
+
+    @staticmethod
+    def _slugify_profile_name(name: str) -> str:
+        cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
+        while "--" in cleaned:
+            cleaned = cleaned.replace("--", "-")
+        return cleaned.strip("-") or "custom-view"
+
+    def _ensure_seeded_profiles(self, session, *, app_user_id: int, user_email: str | None = None) -> None:  # noqa: ANN001
+        from macmarket_trader.charts.momentum_heatmap_defaults import seeded_momentum_heatmap_profile_payloads
+
+        rows = list(
+            session.execute(
+                select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
+            ).scalars()
+        )
+        existing_slugs = {self._profile_slug(row) for row in rows if self._profile_slug(row)}
+        has_default = any(bool(row.is_default) for row in rows)
+        for payload in seeded_momentum_heatmap_profile_payloads():
+            slug = str(payload["slug"])
+            if slug in existing_slugs:
+                continue
+            row = MomentumHeatmapProfileModel(
+                profile_uid=self._new_profile_uid(),
+                app_user_id=app_user_id,
+                name=str(payload["name"]),
+                categories=deepcopy(payload["categories"]),  # type: ignore[arg-type]
+                color_ranges=deepcopy(payload["color_ranges"]),  # type: ignore[arg-type]
+                view_settings=deepcopy(payload["view_settings"]),  # type: ignore[arg-type]
+                report_preferences=deepcopy(payload["report_preferences"]),  # type: ignore[arg-type]
+                is_default=(not has_default and bool(payload.get("is_default"))),
+            )
+            session.add(row)
+            rows.append(row)
+            existing_slugs.add(slug)
+            has_default = has_default or bool(row.is_default)
+        if not has_default and rows:
+            for row in rows:
+                if self._profile_slug(row) == "morning-macro":
+                    row.is_default = True
+                    has_default = True
+                    break
+        if not has_default and rows:
+            rows[0].is_default = True
+        session.commit()
 
     def get_or_create_default_profile(
         self,
@@ -2907,12 +2958,15 @@ class MomentumHeatmapRepository:
         user_email: str | None = None,
     ) -> MomentumHeatmapProfileModel:
         with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id, user_email=user_email)
             row = session.execute(
-                select(MomentumHeatmapProfileModel).where(
+                select(MomentumHeatmapProfileModel)
+                .where(
                     MomentumHeatmapProfileModel.app_user_id == app_user_id,
                     MomentumHeatmapProfileModel.is_default.is_(True),
                 )
-            ).scalar_one_or_none()
+                .order_by(MomentumHeatmapProfileModel.updated_at.desc(), MomentumHeatmapProfileModel.id.asc())
+            ).scalars().first()
             if row is not None:
                 return row
             payload = self._default_profile_payload(user_email)
@@ -2933,19 +2987,113 @@ class MomentumHeatmapRepository:
 
     def list_profiles(self, *, app_user_id: int) -> list[MomentumHeatmapProfileModel]:
         with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id)
             stmt = select(MomentumHeatmapProfileModel).where(
                 MomentumHeatmapProfileModel.app_user_id == app_user_id
-            ).order_by(MomentumHeatmapProfileModel.is_default.desc(), MomentumHeatmapProfileModel.updated_at.desc())
+            ).order_by(MomentumHeatmapProfileModel.is_default.desc(), MomentumHeatmapProfileModel.created_at.asc(), MomentumHeatmapProfileModel.id.asc())
             return list(session.execute(stmt).scalars())
 
     def get_profile(self, *, app_user_id: int, profile_uid: str | None = None) -> MomentumHeatmapProfileModel | None:
         with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id)
             stmt = select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
             if profile_uid:
                 stmt = stmt.where(MomentumHeatmapProfileModel.profile_uid == profile_uid)
             else:
                 stmt = stmt.where(MomentumHeatmapProfileModel.is_default.is_(True))
-            return session.execute(stmt).scalar_one_or_none()
+            return session.execute(stmt.order_by(MomentumHeatmapProfileModel.updated_at.desc(), MomentumHeatmapProfileModel.id.asc())).scalars().first()
+
+    def create_profile(
+        self,
+        *,
+        app_user_id: int,
+        name: str,
+        categories: list[dict[str, object]] | None = None,
+        color_ranges: list[dict[str, object]] | None = None,
+        view_settings: dict[str, object] | None = None,
+        report_preferences: dict[str, object] | None = None,
+        description: str | None = None,
+    ) -> MomentumHeatmapProfileModel:
+        payload = self._default_profile_payload()
+        clean_name = name.strip()[:128] or "Custom Heatmap View"
+        settings = dict(view_settings or {})
+        settings["slug"] = f"custom-{uuid4().hex[:10]}"
+        settings["viewType"] = "custom"
+        settings["description"] = description or settings.get("description") or "User-created heatmap view."
+        settings["purpose"] = settings.get("purpose") or settings["description"]
+        settings["isSystemSeeded"] = False
+        with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id)
+            row = MomentumHeatmapProfileModel(
+                profile_uid=self._new_profile_uid(),
+                app_user_id=app_user_id,
+                name=clean_name,
+                categories=deepcopy(categories if categories is not None else payload["categories"]),  # type: ignore[arg-type]
+                color_ranges=deepcopy(color_ranges if color_ranges is not None else payload["color_ranges"]),  # type: ignore[arg-type]
+                view_settings=deepcopy(settings),
+                report_preferences=deepcopy(report_preferences if report_preferences is not None else payload["report_preferences"]),  # type: ignore[arg-type]
+                is_default=False,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def duplicate_profile(
+        self,
+        *,
+        app_user_id: int,
+        source_profile_uid: str,
+        name: str | None = None,
+    ) -> MomentumHeatmapProfileModel | None:
+        with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id)
+            source = session.execute(
+                select(MomentumHeatmapProfileModel).where(
+                    MomentumHeatmapProfileModel.app_user_id == app_user_id,
+                    MomentumHeatmapProfileModel.profile_uid == source_profile_uid,
+                )
+            ).scalar_one_or_none()
+            if source is None:
+                return None
+            settings = dict(source.view_settings or {})
+            settings["slug"] = f"custom-{uuid4().hex[:10]}"
+            settings["viewType"] = "custom"
+            settings["description"] = settings.get("description") or f"Copy of {source.name}."
+            settings["purpose"] = settings.get("purpose") or settings["description"]
+            settings["isSystemSeeded"] = False
+            row = MomentumHeatmapProfileModel(
+                profile_uid=self._new_profile_uid(),
+                app_user_id=app_user_id,
+                name=(name or f"Copy of {source.name}").strip()[:128] or f"Copy of {source.name}",
+                categories=deepcopy(source.categories or []),
+                color_ranges=deepcopy(source.color_ranges or []),
+                view_settings=settings,
+                report_preferences=deepcopy(source.report_preferences or {}),
+                is_default=False,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def delete_profile(self, *, app_user_id: int, profile_uid: str) -> tuple[str, MomentumHeatmapProfileModel | None]:
+        with self.session_factory() as session:
+            self._ensure_seeded_profiles(session, app_user_id=app_user_id)
+            row = session.execute(
+                select(MomentumHeatmapProfileModel).where(
+                    MomentumHeatmapProfileModel.app_user_id == app_user_id,
+                    MomentumHeatmapProfileModel.profile_uid == profile_uid,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return "not_found", None
+            if bool(row.is_default) or self._is_system_seeded_profile(row):
+                return "protected", row
+            session.delete(row)
+            session.commit()
+            next_profile = self.get_profile(app_user_id=app_user_id)
+            return "deleted", next_profile
 
     def update_profile(
         self,
@@ -2965,6 +3113,13 @@ class MomentumHeatmapRepository:
                 return None
             if "name" in updates:
                 row.name = str(updates["name"] or row.name).strip()[:128] or row.name
+            settings = dict(row.view_settings or {})
+            if "description" in updates:
+                settings["description"] = str(updates["description"] or "").strip()[:240]
+            if "slug" in updates:
+                settings["slug"] = self._slugify_profile_name(str(updates["slug"] or ""))
+            if "viewType" in updates:
+                settings["viewType"] = str(updates["viewType"] or settings.get("viewType") or "custom")
             if "categories" in updates and isinstance(updates["categories"], list):
                 row.categories = deepcopy(updates["categories"])  # type: ignore[assignment]
             if "color_ranges" in updates and isinstance(updates["color_ranges"], list):
@@ -2973,8 +3128,12 @@ class MomentumHeatmapRepository:
                 row.color_ranges = deepcopy(updates["colorRanges"])  # type: ignore[assignment]
             if "view_settings" in updates and isinstance(updates["view_settings"], dict):
                 row.view_settings = deepcopy(updates["view_settings"])  # type: ignore[assignment]
+                settings = dict(row.view_settings or {})
             if "viewSettings" in updates and isinstance(updates["viewSettings"], dict):
                 row.view_settings = deepcopy(updates["viewSettings"])  # type: ignore[assignment]
+                settings = dict(row.view_settings or {})
+            if settings:
+                row.view_settings = settings  # type: ignore[assignment]
             if "report_preferences" in updates and isinstance(updates["report_preferences"], dict):
                 row.report_preferences = deepcopy(updates["report_preferences"])  # type: ignore[assignment]
             if "reportPreferences" in updates and isinstance(updates["reportPreferences"], dict):
@@ -2985,10 +3144,15 @@ class MomentumHeatmapRepository:
             return row
 
     def reset_profile(self, *, app_user_id: int, profile_uid: str | None, user_email: str | None = None) -> MomentumHeatmapProfileModel | None:
-        payload = self._default_profile_payload(user_email)
+        from macmarket_trader.charts.momentum_heatmap_defaults import seeded_momentum_heatmap_profile_payload
+
+        current = self.get_profile(app_user_id=app_user_id, profile_uid=profile_uid)
+        if current is None:
+            return None
+        payload = seeded_momentum_heatmap_profile_payload(self._profile_slug(current)) or self._default_profile_payload(user_email)
         return self.update_profile(
             app_user_id=app_user_id,
-            profile_uid=profile_uid,
+            profile_uid=current.profile_uid,
             updates={
                 "name": payload["name"],
                 "categories": payload["categories"],

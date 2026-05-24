@@ -9,7 +9,7 @@ function chartPayload() {
     close: 100.5 + idx,
     volume: 1_000_000 + idx * 1_000,
   }));
-  return { symbol: "AAPL", timeframe: "1D", data_source: "polygon", fallback_mode: false, candles, heikin_ashi_candles: candles };
+  return { symbol: "SPY", timeframe: "1D", data_source: "polygon", fallback_mode: false, candles, heikin_ashi_candles: candles };
 }
 
 // Intercept all /api/** requests so no call proxies to the Python backend (not running in e2e).

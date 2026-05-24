@@ -36,4 +36,42 @@ describe("WelcomeClient", () => {
     expect(html).not.toContain("live broker routing");
     expect(html).not.toContain("automatic live execution");
   });
+
+  it("documents Momentum Heatmap, Squeeze Pro, reporting, and expanded chart timeframes", () => {
+    const markdown = readFileSync(resolve(process.cwd(), "..", "..", "docs", "alpha-user-welcome.md"), "utf8");
+    const html = renderToStaticMarkup(<WelcomeClient markdown={markdown} />);
+
+    expect(html).toContain("Momentum Intelligence");
+    expect(html).toContain("/charts/momentum");
+    expect(html).toContain("1W");
+    expect(html).toContain("30M");
+    expect(html).toContain("Squeeze Pro");
+    expect(html).toContain("compression dots are implemented");
+    expect(html).toContain("linear-regression momentum approximation");
+    expect(html).toContain("Arrow logic is deferred");
+    expect(html).toContain("Momentum Heatmap");
+    expect(html).toContain("/momentum-heatmap");
+    expect(html).toContain("workbook-style");
+    expect(html).toContain("Long-Term Score");
+    expect(html).toContain("Short-Term Score");
+    expect(html).toContain("Strength %");
+    expect(html).toContain("Deltas where available");
+    expect(html).toContain("server-backed and account-scoped");
+    expect(html).toContain("does not auto-refresh on load");
+    expect(html).toContain("report preview");
+    expect(html).toContain("CSV export");
+    expect(html).toContain("Email report delivery is available only when");
+    expect(html).toContain("Automatic scheduled delivery is not active unless");
+    expect(html).toContain("Premarket reports mostly reflect the prior completed session");
+    expect(html).toContain("Saved heatmap views");
+    expect(html).toContain("Research dashboard only");
+    expect(html).toContain("Not trade execution");
+    expect(html).toContain("Not investment advice");
+    expect(html).toContain("Intraday scores depend on latest available completed bars");
+    expect(html).toContain("/recommendations");
+    expect(html).toContain("/orders");
+    expect(html).not.toContain("live broker routing");
+    expect(html).not.toContain("automatic live execution");
+    expect(html).not.toContain("automated execution support");
+  });
 });

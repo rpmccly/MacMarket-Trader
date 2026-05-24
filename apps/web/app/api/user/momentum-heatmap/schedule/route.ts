@@ -5,6 +5,7 @@ export async function GET(request: Request) {
     request,
     backendPath: "/user/momentum-heatmap/schedule",
     method: "GET",
+    includeSearchParams: true,
   });
 }
 

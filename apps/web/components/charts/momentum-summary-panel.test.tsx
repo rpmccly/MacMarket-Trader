@@ -65,7 +65,7 @@ function snapshot(overrides: Partial<MomentumScoreSnapshot> = {}): MomentumScore
 function payload(overrides: Partial<MomentumChartPayload> = {}): MomentumChartPayload {
   const snap = overrides.latest_snapshot ?? snapshot();
   return {
-    symbol: "AAPL",
+    symbol: "SPY",
     timeframe: "1D",
     candles: [],
     true_momentum_line: [],

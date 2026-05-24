@@ -49,7 +49,7 @@ values fall back to `1Y` so a malformed payload never breaks a chart.
 POST /charts/momentum
 POST /charts/haco
 {
-  "symbol": "AAPL",
+  "symbol": "SPY",
   "timeframe": "1D",
   "history_range": "5Y"
 }

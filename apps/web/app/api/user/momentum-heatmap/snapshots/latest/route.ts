@@ -5,5 +5,6 @@ export async function GET(request: Request) {
     request,
     backendPath: "/user/momentum-heatmap/snapshots/latest",
     method: "GET",
+    includeSearchParams: true,
   });
 }

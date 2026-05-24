@@ -1491,6 +1491,39 @@ class MomentumPanelMarker(BaseModel):
     reason: str
 
 
+class SqueezeProPointPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    time: str | int
+    oscillator_value: float | None = None
+    oscillator_state: Literal["up", "up_decreasing", "down", "down_decreasing"] | None = None
+    oscillator_color: str | None = None
+    squeeze_state: Literal["high", "mid", "low", "none", "unavailable"] = "unavailable"
+    squeeze_color: str | None = None
+    delta_high: float | None = None
+    delta_mid: float | None = None
+    delta_low: float | None = None
+    arrow: Literal["bullish", "bearish"] | None = None
+    arrow_reason: str | None = None
+    status: Literal["ok", "unavailable"] = "ok"
+    reason: str | None = None
+
+
+class SqueezeProPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    status: Literal["ok", "unavailable"] = "ok"
+    reason: str | None = None
+    parameters: dict[str, int | float | str] = Field(default_factory=dict)
+    version: str = "macmarket_squeeze_pro.v1"
+    histogram_mode: str = "macmarket_linear_regression_momentum_approximation"
+    arrow_mode: str = "disabled_pending_approved_arrow_rules"
+    show_arrows: bool = False
+    series: list[SqueezeProPointPayload] = Field(default_factory=list)
+
+
 class MomentumChartRequest(BaseModel):
     symbol: str
     timeframe: str = "1D"
@@ -1536,6 +1569,9 @@ class MomentumHeatmapSqueezeCell(BaseModel):
     value: str | None = None
     status: Literal["deferred", "ok", "unavailable"] = "deferred"
     reason: str | None = None
+    state: Literal["high", "mid", "low", "none"] | None = None
+    as_of: str | None = None
+    timeframes: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class MomentumHeatmapRowRequest(BaseModel):
@@ -1563,8 +1599,9 @@ class MomentumHeatmapCategoryRequest(BaseModel):
 
 
 class MomentumHeatmapRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    profile_id: str | None = Field(default=None, alias="profileId", max_length=80)
     categories: list[MomentumHeatmapCategoryRequest] = Field(default_factory=list, max_length=12)
     timeframes: list[str] = Field(default_factory=lambda: list(SUPPORTED_CHART_TIMEFRAMES), max_length=5)
 
@@ -1605,6 +1642,94 @@ class MomentumHeatmapResponse(BaseModel):
     generated_at: datetime
     timeframes: list[str]
     categories: list[MomentumHeatmapCategoryResponse]
+
+
+class HacoHeatmapDirectionCell(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: Literal["long", "short"] | None = None
+    label: str = "—"
+    status: Literal["ok", "unavailable", "unsupported", "error"]
+    reason: str | None = None
+    as_of: str | None = None
+    data_source: str | None = None
+    fallback_mode: bool | None = None
+
+
+class HacoHeatmapRowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(max_length=120)
+    symbol: str = Field(max_length=80)
+    display_name: str | None = Field(default=None, alias="displayName", max_length=120)
+    provider_symbol: str | None = Field(default=None, alias="providerSymbol", max_length=80)
+
+    @field_validator("id", "symbol", "display_name", "provider_symbol")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip()
+
+
+class HacoHeatmapCategoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    category_id: str = Field(alias="categoryId", max_length=80)
+    category_label: str = Field(alias="categoryLabel", max_length=120)
+    rows: list[HacoHeatmapRowRequest] = Field(default_factory=list, max_length=250)
+
+
+class HacoHeatmapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    profile_id: str | None = Field(default=None, alias="profileId", max_length=80)
+    categories: list[HacoHeatmapCategoryRequest] = Field(default_factory=list, max_length=12)
+    timeframes: list[str] = Field(default_factory=lambda: list(SUPPORTED_CHART_TIMEFRAMES), max_length=5)
+
+    @field_validator("timeframes")
+    @classmethod
+    def _validate_timeframes(cls, values: list[str]) -> list[str]:
+        cleaned = [validate_chart_timeframe(value) for value in (values or list(SUPPORTED_CHART_TIMEFRAMES))]
+        if not cleaned:
+            return list(SUPPORTED_CHART_TIMEFRAMES)
+        return cleaned
+
+
+class HacoHeatmapRowResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str
+    symbol: str
+    display_name: str = Field(alias="displayName")
+    provider_symbol: str = Field(alias="providerSymbol")
+    states: dict[str, HacoHeatmapDirectionCell]
+    overall_bias: Literal["LONG", "SHORT", "MIXED"] | None = None
+    overall_alignment_percent: float | None = None
+    daily_context: Literal["LONG", "SHORT"] | None = None
+    macro_context: Literal["LONG", "SHORT"] | None = None
+    short_term_bias: Literal["LONG", "SHORT", "MIXED"] | None = None
+    short_term_alignment_percent: float | None = None
+    tags: list[str] = Field(default_factory=list)
+    changed_since_last: bool | None = None
+    prior_overall_bias: Literal["LONG", "SHORT", "MIXED"] | None = None
+    alignment_delta: float | None = None
+
+
+class HacoHeatmapCategoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    category_id: str = Field(alias="categoryId")
+    category_label: str = Field(alias="categoryLabel")
+    rows: list[HacoHeatmapRowResponse]
+
+
+class HacoHeatmapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: datetime
+    timeframes: list[str]
+    categories: list[HacoHeatmapCategoryResponse]
 
 
 class MomentumRankingStatus(BaseModel):
@@ -1800,6 +1925,10 @@ class MomentumChartPayload(BaseModel):
     # HiLo thrust state transitions.
     true_momentum_panel_markers: list[MomentumPanelMarker] = Field(default_factory=list)
     hilo_panel_markers: list[MomentumPanelMarker] = Field(default_factory=list)
+    # Squeeze Pro is a research-only lower-panel indicator. It is not
+    # part of True Momentum scoring, recommendation approval, sizing, or
+    # order/execution behavior.
+    squeeze_pro: SqueezeProPayload | None = None
 
 
 class TrueMomentumStrategyFamilySpecPayload(BaseModel):

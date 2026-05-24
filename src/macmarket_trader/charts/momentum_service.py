@@ -18,9 +18,12 @@ from macmarket_trader.domain.schemas import (
     MomentumStripPoint,
     MomentumVisualParityPoint,
     MomentumVisualParitySnapshot,
+    SqueezeProPayload,
+    SqueezeProPointPayload,
 )
 from macmarket_trader.domain.timeframes import is_intraday_chart_timeframe
 from macmarket_trader.indicators.hilo_elite import compute_hilo_elite
+from macmarket_trader.indicators.squeeze_pro import compute_squeeze_pro
 from macmarket_trader.indicators.true_momentum import compute_true_momentum
 from macmarket_trader.indicators.true_momentum_score import compute_true_momentum_score
 
@@ -51,6 +54,66 @@ class MomentumChartService:
         for bar in bars:
             by_time[cls._chart_time(bar, timeframe)] = bar
         return list(by_time.values())
+
+    @staticmethod
+    def _squeeze_parameters(config) -> dict[str, int | float | str]:  # noqa: ANN001
+        return {
+            "length": config.length,
+            "nBB": config.nBB,
+            "nK_High": config.nK_High,
+            "nK_Mid": config.nK_Mid,
+            "nK_Low": config.nK_Low,
+            "price": config.price,
+        }
+
+    @classmethod
+    def _squeeze_payload(cls, bars: list[Bar], chart_times: list[str | int]) -> SqueezeProPayload:
+        series = compute_squeeze_pro(bars)
+        if not bars:
+            return SqueezeProPayload(
+                enabled=True,
+                status="unavailable",
+                reason="no chart bars provided",
+                parameters=cls._squeeze_parameters(series.config),
+                version=series.config.version,
+                histogram_mode=series.config.histogram_mode,
+                arrow_mode=series.config.arrow_mode,
+                show_arrows=series.config.show_arrows,
+                series=[],
+            )
+        points = [
+            SqueezeProPointPayload(
+                index=point.index,
+                time=chart_times[point.index],
+                oscillator_value=point.oscillator_value,
+                oscillator_state=point.oscillator_state,
+                oscillator_color=point.oscillator_color,
+                squeeze_state=point.squeeze_state,
+                squeeze_color=point.squeeze_color,
+                delta_high=point.delta_high,
+                delta_mid=point.delta_mid,
+                delta_low=point.delta_low,
+                arrow=None,
+                arrow_reason=None,
+                status=point.status,
+                reason=point.reason,
+            )
+            for point in series.points
+            if point.index < len(chart_times)
+        ]
+        status = "ok" if any(point.status == "ok" for point in series.points) else "unavailable"
+        reason = None if status == "ok" else "insufficient_bars_for_squeeze_pro"
+        return SqueezeProPayload(
+            enabled=True,
+            status=status,  # type: ignore[arg-type]
+            reason=reason,
+            parameters=cls._squeeze_parameters(series.config),
+            version=series.config.version,
+            histogram_mode=series.config.histogram_mode,
+            arrow_mode=series.config.arrow_mode,
+            show_arrows=series.config.show_arrows,
+            series=points,
+        )
 
     def build_payload(
         self,
@@ -120,6 +183,7 @@ class MomentumChartService:
                 visual_parity_series=[],
                 true_momentum_panel_markers=[],
                 hilo_panel_markers=[],
+                squeeze_pro=self._squeeze_payload([], []),
             )
 
         tm_series = compute_true_momentum(
@@ -134,6 +198,7 @@ class MomentumChartService:
             true_momentum_series=tm_series,
             hilo_series=hilo_series,
         )
+        squeeze_payload = self._squeeze_payload(canonical_bars, chart_times)
 
         candles = [
             ChartCandle(
@@ -295,6 +360,13 @@ class MomentumChartService:
         no_trade_warning = latest_score.total_state == "neutral"
 
         notes = list(tm_series.notes) + list(hilo_series.notes) + list(score_series.notes)
+        if squeeze_payload.status == "ok":
+            notes.extend(
+                [
+                    "Squeeze Pro is rendered as research context only and is not part of True Momentum scoring.",
+                    "Squeeze Pro histogram uses a MacMarket linear-regression momentum approximation; exact TTM histogram parity is not claimed.",
+                ]
+            )
 
         explanation = MomentumChartExplanation(
             snapshot=snapshot,
@@ -548,4 +620,5 @@ class MomentumChartService:
             visual_parity_series=visual_parity_series,
             true_momentum_panel_markers=true_momentum_panel_markers,
             hilo_panel_markers=hilo_panel_markers,
+            squeeze_pro=squeeze_payload,
         )
