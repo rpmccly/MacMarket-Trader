@@ -110,6 +110,42 @@ that file and does not overwrite it from source. After changing LLM env values
 there, restart the backend process before checking `/admin/provider-health` or
 AI Explanation / Opportunity Intelligence provenance.
 
+## Pre-migration DB backup
+
+Before applying deployed Alembic migrations, create a deployed database backup
+from the live runtime folder. The helper detects SQLite from deployed env files
+or likely deployed DB paths, supports Postgres via `pg_dump` when the deployed
+database URL points to Postgres, writes a sanitized manifest for real backups,
+and never runs Alembic.
+
+PowerShell:
+
+```powershell
+.\scripts\backup_deployed_db.ps1
+```
+
+Dry run:
+
+```powershell
+.\scripts\backup_deployed_db.ps1 -DryRun
+```
+
+Safer SQLite backup with listeners stopped:
+
+```powershell
+.\scripts\backup_deployed_db.ps1 -StopServices
+```
+
+Explicit deploy root:
+
+```powershell
+.\scripts\backup_deployed_db.ps1 -DeployRoot "C:\Dashboard\MacMarket-Trader"
+```
+
+The script does not print connection strings or secrets. For SQLite, stopping
+the backend/frontend/scheduler listeners first is safest; without
+`-StopServices`, it prints a warning and leaves running processes alone.
+
 ## Backend (FastAPI)
 
 MacMarket-Trader backend dependencies are managed from `pyproject.toml` (PEP 621).

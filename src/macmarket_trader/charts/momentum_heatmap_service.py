@@ -8,7 +8,9 @@ into approval, sizing, routing, or execution logic.
 from __future__ import annotations
 
 import re
+from time import monotonic
 
+from macmarket_trader.charts.momentum_service import MomentumChartService
 from macmarket_trader.data.providers.market_data import DataNotEntitledError, SymbolNotFoundError
 from macmarket_trader.domain.schemas import (
     Bar,
@@ -23,10 +25,15 @@ from macmarket_trader.domain.schemas import (
 )
 from macmarket_trader.domain.time import utc_now
 from macmarket_trader.domain.timeframes import CHART_BAR_LIMIT_BY_TIMEFRAME, ChartTimeframe
-from macmarket_trader.charts.momentum_service import MomentumChartService
 
 HEATMAP_PROVIDER_SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.]{0,14}$")
 HEATMAP_SCORE_TIMEFRAMES: tuple[ChartTimeframe, ...] = ("1W", "1D", "4H", "1H", "30M")
+HEATMAP_MAX_CATEGORIES_PER_REQUEST = 1
+HEATMAP_MAX_ROWS_PER_REQUEST = 12
+HEATMAP_REQUEST_MAX_SECONDS = 25.0
+HEATMAP_UNSUPPORTED_PROVIDER_SYMBOLS: dict[str, str] = {
+    "MAG7": "composite_symbol_deferred",
+}
 
 
 class MomentumHeatmapService:
@@ -44,6 +51,16 @@ class MomentumHeatmapService:
         return bool(HEATMAP_PROVIDER_SYMBOL_PATTERN.fullmatch(provider_symbol))
 
     @staticmethod
+    def _unsupported_provider_symbol_reason(provider_symbol: str) -> str | None:
+        if not provider_symbol:
+            return "provider_symbol_missing"
+        if provider_symbol in HEATMAP_UNSUPPORTED_PROVIDER_SYMBOLS:
+            return HEATMAP_UNSUPPORTED_PROVIDER_SYMBOLS[provider_symbol]
+        if not MomentumHeatmapService._is_supported_provider_symbol(provider_symbol):
+            return "unsupported_symbol_format"
+        return None
+
+    @staticmethod
     def _bar_as_of(bar: Bar | None) -> str | None:
         if bar is None:
             return None
@@ -57,19 +74,36 @@ class MomentumHeatmapService:
             return None
         return round(float(value), 2)
 
+    @staticmethod
+    def _cell(
+        *,
+        status: str,
+        reason: str,
+        data_source: str | None = None,
+        fallback_mode: bool | None = None,
+        as_of: str | None = None,
+    ) -> MomentumHeatmapScoreCell:
+        return MomentumHeatmapScoreCell(
+            value=None,
+            status=status,  # type: ignore[arg-type]
+            reason=reason,
+            data_source=data_source,
+            fallback_mode=fallback_mode,
+            as_of=as_of,
+        )
+
+    @classmethod
+    def _cell_map(cls, timeframes: list[str], *, status: str, reason: str) -> dict[str, MomentumHeatmapScoreCell]:
+        return {timeframe: cls._cell(status=status, reason=reason) for timeframe in timeframes}
+
+    @staticmethod
+    def _budget_exceeded(deadline: float | None) -> bool:
+        return deadline is not None and monotonic() >= deadline
+
     def _score_cell(self, *, provider_symbol: str, timeframe: ChartTimeframe) -> MomentumHeatmapScoreCell:
-        if not provider_symbol:
-            return MomentumHeatmapScoreCell(
-                value=None,
-                status="unsupported",
-                reason="provider_symbol_missing",
-            )
-        if not self._is_supported_provider_symbol(provider_symbol):
-            return MomentumHeatmapScoreCell(
-                value=None,
-                status="unsupported",
-                reason="provider_symbol_not_supported_by_heatmap_v1",
-            )
+        unsupported_reason = self._unsupported_provider_symbol_reason(provider_symbol)
+        if unsupported_reason is not None:
+            return self._cell(status="unsupported", reason=unsupported_reason)
 
         try:
             limit = CHART_BAR_LIMIT_BY_TIMEFRAME[timeframe]
@@ -175,14 +209,26 @@ class MomentumHeatmapService:
             return None
         return self._round_score(((weekly * 3) + (daily * 3) + h4 + h1 + m30) / 9)  # type: ignore[operator]
 
-    def _build_row(self, row: MomentumHeatmapRowRequest, timeframes: list[str]) -> MomentumHeatmapRowResponse:
+    def _build_row(
+        self,
+        row: MomentumHeatmapRowRequest,
+        timeframes: list[str],
+        *,
+        deadline: float | None = None,
+        forced_reason: str | None = None,
+    ) -> MomentumHeatmapRowResponse:
         provider_symbol = self._normalize_provider_symbol(row)
         symbol = str(row.symbol or provider_symbol).strip().upper()
         display_name = str(row.display_name or symbol or provider_symbol).strip()
-        scores = {
-            timeframe: self._score_cell(provider_symbol=provider_symbol, timeframe=timeframe)  # type: ignore[arg-type]
-            for timeframe in timeframes
-        }
+        if forced_reason is not None:
+            scores = self._cell_map(timeframes, status="unavailable", reason=forced_reason)
+        else:
+            scores = {}
+            for timeframe in timeframes:
+                if self._budget_exceeded(deadline):
+                    scores[timeframe] = self._cell(status="unavailable", reason="heatmap_request_time_budget_exceeded")
+                    continue
+                scores[timeframe] = self._score_cell(provider_symbol=provider_symbol, timeframe=timeframe)  # type: ignore[arg-type]
         # TODO(momentum-heatmap): wire an approved squeeze algorithm/version
         # here. Do not infer TTM/John Carter squeeze behavior from memory.
         squeeze = MomentumHeatmapSqueezeCell(
@@ -206,17 +252,38 @@ class MomentumHeatmapService:
         self,
         category: MomentumHeatmapCategoryRequest,
         timeframes: list[str],
+        *,
+        deadline: float | None = None,
+        forced_reason: str | None = None,
     ) -> MomentumHeatmapCategoryResponse:
+        rows: list[MomentumHeatmapRowResponse] = []
+        for idx, row in enumerate(category.rows):
+            row_reason = forced_reason
+            if row_reason is None and idx >= HEATMAP_MAX_ROWS_PER_REQUEST:
+                row_reason = "heatmap_request_row_limit_exceeded"
+            rows.append(self._build_row(row, timeframes, deadline=deadline, forced_reason=row_reason))
         return MomentumHeatmapCategoryResponse(
             categoryId=category.category_id,
             categoryLabel=category.category_label,
-            rows=[self._build_row(row, timeframes) for row in category.rows],
+            rows=rows,
         )
 
     def build_heatmap(self, request: MomentumHeatmapRequest) -> MomentumHeatmapResponse:
         timeframes = [tf for tf in request.timeframes if tf in HEATMAP_SCORE_TIMEFRAMES]
+        deadline = monotonic() + HEATMAP_REQUEST_MAX_SECONDS
+        categories: list[MomentumHeatmapCategoryResponse] = []
+        for idx, category in enumerate(request.categories):
+            forced_reason = None if idx < HEATMAP_MAX_CATEGORIES_PER_REQUEST else "heatmap_request_category_limit_exceeded"
+            categories.append(
+                self._build_category(
+                    category,
+                    timeframes,
+                    deadline=deadline,
+                    forced_reason=forced_reason,
+                )
+            )
         return MomentumHeatmapResponse(
             generated_at=utc_now(),
             timeframes=timeframes,
-            categories=[self._build_category(category, timeframes) for category in request.categories],
+            categories=categories,
         )

@@ -42,6 +42,7 @@ def main() -> None:
     sub.add_parser("init-db")
     sub.add_parser("seed-demo-data")
     sub.add_parser("run-due-strategy-schedules")
+    sub.add_parser("run-due-momentum-heatmap-reports")
     args = parser.parse_args()
 
     service = RecommendationService()
@@ -82,6 +83,17 @@ def main() -> None:
     elif args.command == "run-due-strategy-schedules":
         init_db()
         payload = {"runs": strategy_report_service.run_due_schedules()}
+    elif args.command == "run-due-momentum-heatmap-reports":
+        init_db()
+        payload = {
+            "runs": [],
+            "status": "momentum_heatmap_schedule_preferences_persisted_runner_not_active",
+            "detail": (
+                "Momentum Heatmap schedule preferences are persisted, but "
+                "automatic scheduled delivery is deferred until an approved "
+                "runner pass wires due-time execution and audit logging."
+            ),
+        }
     else:
         init_db()
         payload = {"status": "initialized", "database": "sqlite"}

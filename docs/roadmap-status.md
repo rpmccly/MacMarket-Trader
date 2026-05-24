@@ -2,6 +2,89 @@
 
 Last updated: 2026-05-23
 
+## 2026-05-23 Update - Momentum Heatmap Operator Polish And E2E Coverage
+Momentum Heatmap now has a denser operator-dashboard layout with a compact
+command center, collapsed secondary settings panels, table-adjacent sorting and
+filtering, per-category refresh controls, visible refresh/report status, row
+and category progress context, compact category summaries, quieter unsupported
+rows, sticky table affordances, and clearer delta empty states when only one
+successful snapshot exists.
+
+The latest-snapshot endpoint now returns deltas computed from the previous
+successful snapshot for the same user/profile when available, and the UI labels
+new, unavailable, and stale delta cases instead of showing unexplained blanks.
+Momentum Heatmap report preview/email/print HTML now uses a branded inline-CSS
+template with category summaries, strongest/weakest rows, movers, alignment
+sections, unsupported/unavailable summary, full heatmap colors, research-only
+disclaimers, and plain text email fallback content through the existing email
+provider boundary.
+
+Playwright coverage was added for the main Momentum Heatmap workflow using
+mocked same-origin APIs: server profile/latest snapshot load, no auto-refresh
+on load, duplicate blocking, chunked refresh progress, unsupported row labels,
+sorting/filter visibility, delta empty-state copy, report preview, CSV control,
+settings panel toggles, and authorized-recipient failure handling. This polish
+does not change True Momentum scoring, Momentum Intelligence parity, squeeze
+behavior, recommendation approval, paper trading, broker routing, live trading,
+or execution behavior.
+
+## 2026-05-23 Update - Pre-Migration Deployed DB Backup Helper
+Deployment safety now includes `scripts/backup_deployed_db.ps1`, a
+pre-migration backup helper for deployed MacMarket-Trader runtimes. It reads
+deployed `.env` files without printing secrets, detects SQLite or Postgres
+database configuration, backs up SQLite files and sidecars or uses `pg_dump`
+for Postgres, writes a sanitized manifest and restore notes for real backups,
+and supports dry-run plus explicit listener stopping for the deployed frontend
+and backend ports.
+
+This is migration hygiene only. It does not run Alembic, change application
+runtime behavior, alter scoring/reporting logic, modify paper workflows, or
+add broker routing, live trading, automated execution, or order-placement
+behavior.
+
+## 2026-05-23 Update - Momentum Heatmap Server Profiles And Reporting Foundation
+Momentum Heatmap now has a user-scoped server persistence layer around the
+existing Momentum Intelligence scoring path. The new additive schema stores
+heatmap profiles, workbook-derived rows/categories, include/collapse state,
+color ranges, view/report defaults, snapshots, and schedule preferences.
+Default profiles are seeded from the workbook universe, while unsupported
+workbook labels remain visible and fail fast with row/cell reasons instead of
+being removed.
+
+The `/momentum-heatmap` page now loads the server profile as source of truth,
+uses localStorage only for first-load migration or emergency fallback, prevents
+same-category duplicate provider symbols, warns on cross-category duplicates,
+loads the latest snapshot without auto-refreshing, shows deltas, category
+summaries, row research tags, sorting/filtering controls, report preview, CSV
+export, and persisted scheduled-report preferences. Refresh still runs in
+bounded category/row chunks and stores partial snapshots without changing True
+Momentum scoring, Momentum Intelligence parity, recommendation approval,
+paper-trading behavior, broker routing, or execution support.
+
+Momentum Heatmap reporting now has a backend report generator with preview
+HTML, CSV output, unsupported/unavailable summaries, and an explicit email-now
+path through the existing email provider boundary when recipients are supplied.
+Scheduled Heatmap report preferences are persisted, but automatic scheduled
+delivery remains deferred until a future runner pass wires due-time execution
+and audit logging. Squeeze remains deferred pending an approved
+algorithm/version.
+
+## 2026-05-23 Update - Momentum Heatmap Runtime Hardening
+Momentum Heatmap refresh now sends bounded category/row chunks from the
+frontend instead of one workbook-sized request. The backend also protects the
+heatmap endpoint with one-category request work units, row caps, request time
+budget checks, and fast unsupported-symbol handling for composite/special
+labels such as `MAG7`, futures-style symbols, `$` index labels, currency
+pairs, and `:FRED` labels. Partial/previous results remain visible when one
+category chunk fails.
+
+The `/momentum-heatmap` page now exposes a collapsible "Score color ranges"
+control surface. Operators can edit the five default `-100` to `100` score
+bands, update labels and colors, reset defaults, and persist browser-local
+color settings under `macmarket-momentum-heatmap-colors-v1`. This is display
+configuration only. No scoring math, True Momentum parity logic, trade
+approval, broker routing, automated exits, or execution support was added.
+
 ## 2026-05-23 Update - Momentum Heatmap Initial Pass And Timeframe Expansion
 Chart timeframe support is now centralized for `1W`, `1D`, `4H`, `1H`, and
 `30M` across backend validation, chart rendering, provider mapping, and shared

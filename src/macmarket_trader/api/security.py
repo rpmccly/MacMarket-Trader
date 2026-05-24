@@ -51,6 +51,8 @@ HIGH_COST_ROUTE_LIMITS: dict[str, RateLimit] = {
     "/user/replay-runs": RateLimit(limit=120, window_seconds=60),
     "/user/options/replay-preview": RateLimit(limit=120, window_seconds=60),
     "/user/options/paper-structures/open": RateLimit(limit=120, window_seconds=60),
+    "/user/momentum-heatmap/report/email": RateLimit(limit=10, window_seconds=60),
+    "/user/momentum-heatmap/refresh": RateLimit(limit=120, window_seconds=60),
 }
 
 

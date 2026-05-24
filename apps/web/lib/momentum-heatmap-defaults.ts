@@ -7,12 +7,21 @@ export type MomentumHeatmapRowConfig = {
   symbol: string;
   displayName: string;
   providerSymbol: string;
+  originalSymbol?: string;
+  workbookOrder?: number;
+  enabled?: boolean;
+  userAdded?: boolean;
+  unsupported?: boolean;
+  unsupportedReason?: string | null;
+  notes?: string | null;
 };
 
 export type MomentumHeatmapCategoryConfig = {
   categoryId: string;
   categoryLabel: string;
   rows: MomentumHeatmapRowConfig[];
+  included?: boolean;
+  collapsed?: boolean;
 };
 
 type SymbolEntry = string | { symbol: string; displayName: string; providerSymbol?: string };

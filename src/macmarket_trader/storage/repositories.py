@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
 import math
 from uuid import uuid4
 
@@ -19,6 +20,9 @@ from macmarket_trader.domain.models import (
     DailyBarModel,
     EmailDeliveryLogModel,
     FillModel,
+    MomentumHeatmapProfileModel,
+    MomentumHeatmapSchedulePreferenceModel,
+    MomentumHeatmapSnapshotModel,
     OrderModel,
     PaperOptionOrderLegModel,
     PaperOptionOrderModel,
@@ -2855,3 +2859,420 @@ class StrategyReportRepository:
             row.next_run_at = next_run_at
             row.latest_run_id = latest_run_id
             session.commit()
+
+
+class MomentumHeatmapRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    @staticmethod
+    def normalize_provider_symbol(symbol: str | None) -> str:
+        return str(symbol or "").strip().upper()
+
+    @staticmethod
+    def _new_profile_uid() -> str:
+        return f"hmprof_{uuid4().hex[:16]}"
+
+    @staticmethod
+    def _new_snapshot_uid() -> str:
+        return f"hmsnap_{uuid4().hex[:16]}"
+
+    @staticmethod
+    def _new_schedule_uid() -> str:
+        return f"hmsched_{uuid4().hex[:16]}"
+
+    @staticmethod
+    def _default_profile_payload(user_email: str | None = None) -> dict[str, object]:
+        from macmarket_trader.charts.momentum_heatmap_defaults import (
+            DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES,
+            DEFAULT_MOMENTUM_HEATMAP_PROFILE_NAME,
+            default_momentum_heatmap_categories,
+            default_momentum_heatmap_report_preferences,
+            default_momentum_heatmap_view_settings,
+        )
+
+        return {
+            "name": DEFAULT_MOMENTUM_HEATMAP_PROFILE_NAME,
+            "categories": default_momentum_heatmap_categories(),
+            "color_ranges": deepcopy(DEFAULT_MOMENTUM_HEATMAP_COLOR_RANGES),
+            "view_settings": default_momentum_heatmap_view_settings(),
+            "report_preferences": default_momentum_heatmap_report_preferences(),
+            "user_email": user_email,
+        }
+
+    def get_or_create_default_profile(
+        self,
+        *,
+        app_user_id: int,
+        user_email: str | None = None,
+    ) -> MomentumHeatmapProfileModel:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(MomentumHeatmapProfileModel).where(
+                    MomentumHeatmapProfileModel.app_user_id == app_user_id,
+                    MomentumHeatmapProfileModel.is_default.is_(True),
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                return row
+            payload = self._default_profile_payload(user_email)
+            row = MomentumHeatmapProfileModel(
+                profile_uid=self._new_profile_uid(),
+                app_user_id=app_user_id,
+                name=str(payload["name"]),
+                categories=payload["categories"],  # type: ignore[arg-type]
+                color_ranges=payload["color_ranges"],  # type: ignore[arg-type]
+                view_settings=payload["view_settings"],  # type: ignore[arg-type]
+                report_preferences=payload["report_preferences"],  # type: ignore[arg-type]
+                is_default=True,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def list_profiles(self, *, app_user_id: int) -> list[MomentumHeatmapProfileModel]:
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapProfileModel).where(
+                MomentumHeatmapProfileModel.app_user_id == app_user_id
+            ).order_by(MomentumHeatmapProfileModel.is_default.desc(), MomentumHeatmapProfileModel.updated_at.desc())
+            return list(session.execute(stmt).scalars())
+
+    def get_profile(self, *, app_user_id: int, profile_uid: str | None = None) -> MomentumHeatmapProfileModel | None:
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
+            if profile_uid:
+                stmt = stmt.where(MomentumHeatmapProfileModel.profile_uid == profile_uid)
+            else:
+                stmt = stmt.where(MomentumHeatmapProfileModel.is_default.is_(True))
+            return session.execute(stmt).scalar_one_or_none()
+
+    def update_profile(
+        self,
+        *,
+        app_user_id: int,
+        profile_uid: str | None,
+        updates: dict[str, object],
+    ) -> MomentumHeatmapProfileModel | None:
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
+            if profile_uid:
+                stmt = stmt.where(MomentumHeatmapProfileModel.profile_uid == profile_uid)
+            else:
+                stmt = stmt.where(MomentumHeatmapProfileModel.is_default.is_(True))
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return None
+            if "name" in updates:
+                row.name = str(updates["name"] or row.name).strip()[:128] or row.name
+            if "categories" in updates and isinstance(updates["categories"], list):
+                row.categories = deepcopy(updates["categories"])  # type: ignore[assignment]
+            if "color_ranges" in updates and isinstance(updates["color_ranges"], list):
+                row.color_ranges = deepcopy(updates["color_ranges"])  # type: ignore[assignment]
+            if "colorRanges" in updates and isinstance(updates["colorRanges"], list):
+                row.color_ranges = deepcopy(updates["colorRanges"])  # type: ignore[assignment]
+            if "view_settings" in updates and isinstance(updates["view_settings"], dict):
+                row.view_settings = deepcopy(updates["view_settings"])  # type: ignore[assignment]
+            if "viewSettings" in updates and isinstance(updates["viewSettings"], dict):
+                row.view_settings = deepcopy(updates["viewSettings"])  # type: ignore[assignment]
+            if "report_preferences" in updates and isinstance(updates["report_preferences"], dict):
+                row.report_preferences = deepcopy(updates["report_preferences"])  # type: ignore[assignment]
+            if "reportPreferences" in updates and isinstance(updates["reportPreferences"], dict):
+                row.report_preferences = deepcopy(updates["reportPreferences"])  # type: ignore[assignment]
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def reset_profile(self, *, app_user_id: int, profile_uid: str | None, user_email: str | None = None) -> MomentumHeatmapProfileModel | None:
+        payload = self._default_profile_payload(user_email)
+        return self.update_profile(
+            app_user_id=app_user_id,
+            profile_uid=profile_uid,
+            updates={
+                "name": payload["name"],
+                "categories": payload["categories"],
+                "color_ranges": payload["color_ranges"],
+                "view_settings": payload["view_settings"],
+                "report_preferences": payload["report_preferences"],
+            },
+        )
+
+    @classmethod
+    def _row_category_id(cls, row: dict[str, object], fallback: str) -> str:
+        return str(row.get("categoryId") or row.get("category_id") or fallback).strip()
+
+    @classmethod
+    def _row_provider_symbol(cls, row: dict[str, object]) -> str:
+        return cls.normalize_provider_symbol(str(row.get("providerSymbol") or row.get("provider_symbol") or row.get("symbol") or ""))
+
+    @staticmethod
+    def _category_rows(category: dict[str, object]) -> list[dict[str, object]]:
+        rows = category.get("rows")
+        return list(rows) if isinstance(rows, list) else []
+
+    def add_row(
+        self,
+        *,
+        app_user_id: int,
+        profile_uid: str | None,
+        category_id: str,
+        symbol: str,
+        display_name: str | None = None,
+        provider_symbol: str | None = None,
+    ) -> tuple[MomentumHeatmapProfileModel | None, dict[str, object]]:
+        from macmarket_trader.charts.momentum_heatmap_service import MomentumHeatmapService
+
+        normalized_provider_symbol = self.normalize_provider_symbol(provider_symbol or symbol)
+        normalized_symbol = self.normalize_provider_symbol(symbol)
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
+            if profile_uid:
+                stmt = stmt.where(MomentumHeatmapProfileModel.profile_uid == profile_uid)
+            else:
+                stmt = stmt.where(MomentumHeatmapProfileModel.is_default.is_(True))
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return None, {"status": "not_found"}
+
+            categories = deepcopy(row.categories or [])
+            target_category: dict[str, object] | None = None
+            duplicate_category_label: str | None = None
+            for category in categories:
+                if not isinstance(category, dict):
+                    continue
+                cat_id = str(category.get("categoryId") or category.get("category_id") or "")
+                cat_label = str(category.get("categoryLabel") or category.get("category_label") or cat_id)
+                existing_symbols = {self._row_provider_symbol(item) for item in self._category_rows(category) if isinstance(item, dict)}
+                if cat_id == category_id:
+                    target_category = category
+                    if normalized_provider_symbol in existing_symbols:
+                        return row, {
+                            "status": "duplicate",
+                            "message": f"{normalized_provider_symbol} is already in {cat_label}.",
+                            "duplicate_category": cat_label,
+                        }
+                elif normalized_provider_symbol in existing_symbols and duplicate_category_label is None:
+                    duplicate_category_label = cat_label
+
+            if target_category is None:
+                return row, {"status": "category_not_found"}
+
+            category_label = str(target_category.get("categoryLabel") or target_category.get("category_label") or category_id)
+            rows = self._category_rows(target_category)
+            workbook_order = len(rows)
+            label = (display_name or normalized_provider_symbol).strip() or normalized_provider_symbol
+            unsupported_reason = MomentumHeatmapService._unsupported_provider_symbol_reason(normalized_provider_symbol)
+            safe_symbol_id = "".join(ch if ch.isalnum() else "-" for ch in normalized_provider_symbol).strip("-") or "ROW"
+            new_row = {
+                "id": f"{category_id}:{safe_symbol_id}:{uuid4().hex[:8]}",
+                "categoryId": category_id,
+                "categoryLabel": category_label,
+                "symbol": normalized_symbol,
+                "displayName": label,
+                "providerSymbol": normalized_provider_symbol,
+                "originalSymbol": str(symbol or "").strip(),
+                "workbookOrder": workbook_order,
+                "enabled": True,
+                "userAdded": True,
+                "unsupported": unsupported_reason is not None,
+                "unsupportedReason": unsupported_reason,
+                "notes": unsupported_reason,
+            }
+            target_category["rows"] = rows + [new_row]
+            row.categories = categories  # type: ignore[assignment]
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row, {
+                "status": "added",
+                "row": new_row,
+                "warning": (
+                    f"{normalized_provider_symbol} already exists in {duplicate_category_label}; adding it here too."
+                    if duplicate_category_label
+                    else None
+                ),
+            }
+
+    def remove_row(
+        self,
+        *,
+        app_user_id: int,
+        profile_uid: str | None,
+        row_id: str,
+    ) -> tuple[MomentumHeatmapProfileModel | None, bool]:
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == app_user_id)
+            if profile_uid:
+                stmt = stmt.where(MomentumHeatmapProfileModel.profile_uid == profile_uid)
+            else:
+                stmt = stmt.where(MomentumHeatmapProfileModel.is_default.is_(True))
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return None, False
+            categories = deepcopy(row.categories or [])
+            removed = False
+            for category in categories:
+                if not isinstance(category, dict):
+                    continue
+                rows = self._category_rows(category)
+                next_rows = [item for item in rows if not (isinstance(item, dict) and str(item.get("id")) == row_id)]
+                if len(next_rows) != len(rows):
+                    removed = True
+                    category["rows"] = next_rows
+            if removed:
+                row.categories = categories  # type: ignore[assignment]
+                row.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(row)
+            return row, removed
+
+    def latest_snapshot(
+        self,
+        *,
+        app_user_id: int,
+        profile_id: int,
+        successful_only: bool = False,
+        before_id: int | None = None,
+    ) -> MomentumHeatmapSnapshotModel | None:
+        with self.session_factory() as session:
+            stmt = select(MomentumHeatmapSnapshotModel).where(
+                MomentumHeatmapSnapshotModel.app_user_id == app_user_id,
+                MomentumHeatmapSnapshotModel.profile_id == profile_id,
+            )
+            if successful_only:
+                stmt = stmt.where(MomentumHeatmapSnapshotModel.status.in_(["fresh", "partial"]))
+            if before_id is not None:
+                stmt = stmt.where(MomentumHeatmapSnapshotModel.id < before_id)
+            stmt = stmt.order_by(MomentumHeatmapSnapshotModel.generated_at.desc(), MomentumHeatmapSnapshotModel.id.desc())
+            return session.execute(stmt).scalars().first()
+
+    def get_snapshot(
+        self,
+        *,
+        app_user_id: int,
+        snapshot_uid: str,
+    ) -> MomentumHeatmapSnapshotModel | None:
+        with self.session_factory() as session:
+            return session.execute(
+                select(MomentumHeatmapSnapshotModel).where(
+                    MomentumHeatmapSnapshotModel.app_user_id == app_user_id,
+                    MomentumHeatmapSnapshotModel.snapshot_uid == snapshot_uid,
+                )
+            ).scalar_one_or_none()
+
+    def create_snapshot(
+        self,
+        *,
+        app_user_id: int,
+        profile_id: int,
+        status: str,
+        payload: dict[str, object],
+        category_summaries: list[dict[str, object]],
+        unsupported_summary: dict[str, object],
+        requested_categories: list[dict[str, object]] | None = None,
+        requested_rows: list[dict[str, object]] | None = None,
+        previous_snapshot_id: int | None = None,
+        report_label: str | None = None,
+    ) -> MomentumHeatmapSnapshotModel:
+        with self.session_factory() as session:
+            row = MomentumHeatmapSnapshotModel(
+                snapshot_uid=self._new_snapshot_uid(),
+                app_user_id=app_user_id,
+                profile_id=profile_id,
+                status=status,
+                payload=deepcopy(payload),
+                category_summaries=deepcopy(category_summaries),
+                unsupported_summary=deepcopy(unsupported_summary),
+                requested_categories=deepcopy(requested_categories),
+                requested_rows=deepcopy(requested_rows),
+                previous_snapshot_id=previous_snapshot_id,
+                report_label=report_label,
+                generated_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def get_or_create_schedule_preferences(
+        self,
+        *,
+        app_user_id: int,
+        profile_id: int,
+        user_email: str | None = None,
+    ) -> MomentumHeatmapSchedulePreferenceModel:
+        from macmarket_trader.charts.momentum_heatmap_defaults import default_momentum_heatmap_schedule_preferences
+
+        with self.session_factory() as session:
+            row = session.execute(
+                select(MomentumHeatmapSchedulePreferenceModel).where(
+                    MomentumHeatmapSchedulePreferenceModel.app_user_id == app_user_id,
+                    MomentumHeatmapSchedulePreferenceModel.profile_id == profile_id,
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                return row
+            defaults = default_momentum_heatmap_schedule_preferences(user_email)
+            row = MomentumHeatmapSchedulePreferenceModel(
+                schedule_uid=self._new_schedule_uid(),
+                app_user_id=app_user_id,
+                profile_id=profile_id,
+                enabled=bool(defaults["enabled"]),
+                timezone=str(defaults["timezone"]),
+                run_time=str(defaults["runTime"]),
+                days_of_week=list(defaults["daysOfWeek"]),  # type: ignore[arg-type]
+                report_mode=str(defaults["reportMode"]),
+                recipients=list(defaults["recipients"]),  # type: ignore[arg-type]
+                include_csv_attachment=bool(defaults["includeCsvAttachment"]),
+                include_full_table=bool(defaults["includeFullTable"]),
+                latest_status="persisted_not_scheduled",
+                payload=deepcopy(defaults),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def update_schedule_preferences(
+        self,
+        *,
+        app_user_id: int,
+        profile_id: int,
+        updates: dict[str, object],
+    ) -> MomentumHeatmapSchedulePreferenceModel | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(MomentumHeatmapSchedulePreferenceModel).where(
+                    MomentumHeatmapSchedulePreferenceModel.app_user_id == app_user_id,
+                    MomentumHeatmapSchedulePreferenceModel.profile_id == profile_id,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if "enabled" in updates:
+                row.enabled = bool(updates["enabled"])
+            if "timezone" in updates:
+                row.timezone = str(updates["timezone"] or row.timezone)
+            if "runTime" in updates or "run_time" in updates:
+                row.run_time = str(updates.get("runTime") or updates.get("run_time") or row.run_time)
+            if "daysOfWeek" in updates and isinstance(updates["daysOfWeek"], list):
+                row.days_of_week = [str(day).lower() for day in updates["daysOfWeek"]]  # type: ignore[assignment]
+            if "reportMode" in updates or "report_mode" in updates:
+                row.report_mode = str(updates.get("reportMode") or updates.get("report_mode") or row.report_mode)
+            if "recipients" in updates and isinstance(updates["recipients"], list):
+                row.recipients = [str(item).strip() for item in updates["recipients"] if str(item).strip()]  # type: ignore[assignment]
+            if "includeCsvAttachment" in updates:
+                row.include_csv_attachment = bool(updates["includeCsvAttachment"])
+            if "includeFullTable" in updates:
+                row.include_full_table = bool(updates["includeFullTable"])
+            row.latest_status = "persisted_not_scheduled" if row.enabled else "disabled"
+            payload = dict(row.payload or {})
+            payload.update(deepcopy(updates))
+            payload["schedulerActive"] = False
+            payload["runnerHook"] = "python -m macmarket_trader.cli run-due-momentum-heatmap-reports"
+            row.payload = payload
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
