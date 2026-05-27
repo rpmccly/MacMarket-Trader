@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from macmarket_trader.data.providers.market_data import (
     OptionContractSnapshot,
     OPTIONS_HEALTH_STATIC_SAMPLE_OPTION,
     OPTIONS_HEALTH_STATIC_SAMPLE_UNDERLYING,
+    POLYGON_AGGREGATE_MAX_LIMIT,
     PolygonMarketDataProvider,
     ProviderUnavailableError,
     SymbolNotFoundError,
@@ -257,6 +259,69 @@ def test_polygon_30m_intraday_returns_regular_hours_half_hour_bars(monkeypatch) 
     assert provider.last_aggregate_request_metadata["source_timeframe"] == "30M"
 
 
+def test_polygon_30m_range_maps_to_half_hour_minute_aggregates(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
+    provider = PolygonMarketDataProvider()
+
+    multiplier, timespan, from_ts, to_ts, request_limit = provider._map_polygon_range(
+        timeframe="30M",
+        limit=500,
+    )
+
+    assert multiplier == 30
+    assert timespan == "minute"
+    assert request_limit == POLYGON_AGGREGATE_MAX_LIMIT
+    assert from_ts.isdigit()
+    assert to_ts.isdigit()
+
+
+def test_polygon_30m_does_not_follow_next_url_when_first_page_has_enough_bars(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
+    provider = PolygonMarketDataProvider()
+    eastern = ZoneInfo("America/New_York")
+    stamps = []
+    for day_offset in range(4):
+        session_day = date(2026, 4, 1) + timedelta(days=day_offset)
+        for slot in range(13):
+            stamps.append(
+                datetime(
+                    session_day.year,
+                    session_day.month,
+                    session_day.day,
+                    9,
+                    30,
+                    tzinfo=eastern,
+                ).astimezone(UTC)
+                + timedelta(minutes=30 * slot)
+            )
+
+    def fake_request_json(path: str, query: dict[str, str]) -> dict[str, object]:
+        assert path.startswith("/v2/aggs/ticker/SPY/range/30/minute/")
+        assert query["sort"] == "desc"
+        return {
+            "results": [
+                {"t": int(stamp.timestamp() * 1000), "o": 100 + idx, "h": 101 + idx, "l": 99 + idx, "c": 100.5 + idx, "v": 1000 + idx}
+                for idx, stamp in enumerate(reversed(stamps))
+            ],
+            "next_url": "https://api.massive.com/v2/aggs/ticker/SPY/range/30/minute/1773/1772?cursor=bad-desc-cursor",
+        }
+
+    def fail_fetch_url(url: str) -> dict[str, object]:
+        raise AssertionError(f"unexpected pagination call: {url}")
+
+    monkeypatch.setattr(provider, "_request_json", fake_request_json)
+    monkeypatch.setattr(provider, "_fetch_url", fail_fetch_url)
+
+    bars = provider.fetch_historical_bars(symbol="SPY", timeframe="30M", limit=5)
+
+    assert len(bars) == 5
+    assert all(bar.timestamp is not None for bar in bars)
+    assert all(bar.source_timeframe == "30M" for bar in bars)
+    assert provider.last_aggregate_request_metadata is not None
+    assert provider.last_aggregate_request_metadata["pages_followed"] == 0
+    assert provider.last_aggregate_request_metadata["output_timeframe"] == "30M"
+
+
 def test_polygon_weekly_mapping_supports_1w(monkeypatch) -> None:
     monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
     provider = PolygonMarketDataProvider()
@@ -353,12 +418,35 @@ def test_fallback_provider_returns_deterministic_weekly_and_30m_bars() -> None:
 
     weekly = provider.fetch_historical_bars(symbol="AAPL", timeframe="1W", limit=4)
     half_hour = provider.fetch_historical_bars(symbol="AAPL", timeframe="30M", limit=13)
+    local_times = [
+        bar.timestamp.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
+        for bar in half_hour
+        if bar.timestamp is not None
+    ]
+    closes = [bar.close for bar in half_hour]
 
     assert len(weekly) == 4
     assert all(bar.timestamp is None for bar in weekly)
     assert len(half_hour) == 13
     assert all(bar.timestamp is not None for bar in half_hour)
     assert all(bar.session_policy == "regular_hours" for bar in half_hour)
+    assert len({bar.date for bar in half_hour}) == 1
+    assert local_times == [
+        "09:30",
+        "10:00",
+        "10:30",
+        "11:00",
+        "11:30",
+        "12:00",
+        "12:30",
+        "13:00",
+        "13:30",
+        "14:00",
+        "14:30",
+        "15:00",
+        "15:30",
+    ]
+    assert any(next_close < close for close, next_close in zip(closes, closes[1:], strict=False))
 
 
 def test_latest_snapshot_normalization(monkeypatch) -> None:

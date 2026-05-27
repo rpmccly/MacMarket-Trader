@@ -178,14 +178,14 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
 
       <div className="op-row">
         <label>Symbol <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ marginLeft: 8 }} /></label>
-        <label>Timeframe <select value={timeframe} onChange={(e) => setTimeframe(e.target.value as SupportedTimeframe)} style={{ marginLeft: 8 }}>{SUPPORTED_TIMEFRAME_OPTIONS.map((tf) => <option key={tf.value} value={tf.value}>{tf.label}</option>)}</select></label>
+        <label>Timeframe <select aria-label="Timeframe" data-testid="haco-timeframe-select" value={timeframe} onChange={(e) => setTimeframe(e.target.value as SupportedTimeframe)} style={{ marginLeft: 8 }}>{SUPPORTED_TIMEFRAME_OPTIONS.map((tf) => <option key={tf.value} value={tf.value}>{tf.label}</option>)}</select></label>
         <ChartHistoryRangeSelect
           value={historyRange}
           onChange={handleHistoryRangeChange}
           disabled={loading}
           testId="haco-history-range-select"
         />
-        <button onClick={() => void load()} disabled={loading}>{loading ? "Loading..." : "Run HACO analysis"}</button>
+        <button data-testid="haco-load-button" onClick={() => void load()} disabled={loading}>{loading ? "Loading..." : "Run HACO analysis"}</button>
       </div>
 
       {error ? <ErrorState title="HACO unavailable" hint={error} /> : null}
@@ -198,9 +198,9 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
         {data && chartWidth < 2 ? (
           <p style={{ color: "#9fb0c3", margin: "6px 0" }}>Sizing HACO chart panes...</p>
         ) : null}
-        <div ref={priceRef} className="op-chart-frame op-chart-price" />
-        <div ref={hacoRef} className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
-        <div ref={hacoltRef} className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
+        <div ref={priceRef} data-testid="haco-price-pane" className="op-chart-frame op-chart-price" />
+        <div ref={hacoRef} data-testid="haco-strip-pane" className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
+        <div ref={hacoltRef} data-testid="hacolt-strip-pane" className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
       </Card>
 
       <Card title="Signal summary">

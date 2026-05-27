@@ -308,6 +308,21 @@ def _aggregate_regular_hours_intraday_bars(
     return selected, metadata
 
 
+def _rth_source_page_target_count(output_timeframe: str, output_limit: int) -> int:
+    """Estimate how many native RTH source bars are needed before pagination.
+
+    Polygon/Massive can return a `next_url` even when the first page already
+    contains enough native 30-minute bars for the requested chart window. Some
+    descending aggregate `next_url` responses can be rejected by the provider,
+    so only follow pagination when the current page is genuinely too small.
+    """
+    limit = max(1, int(output_limit or 1))
+    output_buckets_per_day = max(1, len(RTH_BUCKETS_BY_TIMEFRAME.get(output_timeframe.upper(), [])))
+    source_buckets_per_day = max(1, len(RTH_BUCKETS_BY_TIMEFRAME.get(RTH_SOURCE_TIMEFRAME, [])))
+    trading_days_needed = (limit + output_buckets_per_day - 1) // output_buckets_per_day
+    return (trading_days_needed + 2) * source_buckets_per_day
+
+
 @dataclass
 class MarketSnapshot:
     symbol: str
@@ -505,9 +520,9 @@ class DeterministicFallbackMarketDataProvider(MarketDataProvider):
         tf = timeframe.upper()
         if tf in RTH_BUCKETS_BY_TIMEFRAME:
             bucket_starts = [start for start, _end in RTH_BUCKETS_BY_TIMEFRAME[tf]]
-            base_day = date(2025, 1, 1)
+            base_day = date(2025, 1, 2)
             bars: list[Bar] = []
-            idx = 0
+            session_idx = 0
             day_offset = 0
             target_count = max(10, limit)
             while len(bars) < target_count:
@@ -515,18 +530,23 @@ class DeterministicFallbackMarketDataProvider(MarketDataProvider):
                 day_offset += 1
                 if session_day.weekday() >= 5:
                     continue
-                for start_minute in bucket_starts:
-                    price = 100 + idx * 0.25
+                for slot_idx, start_minute in enumerate(bucket_starts):
+                    drift = session_idx * 0.08
+                    session_wave = ((session_idx % 7) - 3) * 0.32
+                    slot_wave = ((slot_idx % 5) - 2) * 0.22
+                    open_price = 100 + drift + session_wave + slot_wave
+                    close_delta = 0.3 if (session_idx + slot_idx) % 3 == 0 else (-0.22 if slot_idx % 2 else 0.12)
+                    close_price = open_price + close_delta
                     ts = _session_timestamp(session_day, start_minute)
                     bars.append(
                         Bar(
                             date=session_day,
                             timestamp=ts,
-                            open=price,
-                            high=price + 1.2,
-                            low=price - 1.0,
-                            close=price + 0.35,
-                            volume=1_000_000 + idx * 5000,
+                            open=round(open_price, 4),
+                            high=round(max(open_price, close_price) + 0.75 + (slot_idx % 3) * 0.08, 4),
+                            low=round(min(open_price, close_price) - 0.68 - (session_idx % 3) * 0.07, 4),
+                            close=round(close_price, 4),
+                            volume=1_000_000 + session_idx * 12_000 + slot_idx * 7_500,
                             rel_volume=1.0,
                             session_policy="regular_hours",
                             source_session_policy="regular_hours",
@@ -534,7 +554,7 @@ class DeterministicFallbackMarketDataProvider(MarketDataProvider):
                             provider="fallback",
                         )
                     )
-                    idx += 1
+                session_idx += 1
             return bars[-limit:]
 
         if tf == "1W":
@@ -864,11 +884,15 @@ class PolygonMarketDataProvider(MarketDataProvider):
         }
         # Follow Polygon pagination only until the requested latest bar window is available.
         page = 0
+        target_result_count = (
+            min(request_limit, _rth_source_page_target_count(timeframe, limit))
+            if needs_rth_normalization
+            else target_result_count
+        )
         while "next_url" in payload and len(results) < target_result_count and page < 3:
             page += 1
             next_url = str(payload["next_url"])
-            sep = "&" if "?" in next_url else "?"
-            payload = self._fetch_url(f"{next_url}{sep}apiKey={self.api_key}")
+            payload = self._fetch_url(self._polygon_next_url(next_url) or next_url)
             results.extend(payload.get("results") or [])
         if not results:
             raise SymbolNotFoundError(f"No bar data returned for symbol {symbol}")

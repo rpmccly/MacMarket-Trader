@@ -2,6 +2,38 @@
 
 Last updated: 2026-05-27
 
+## 2026-05-27 Update - Provider-Backed 30M Verification
+Live Polygon/Massive 30M verification found that the first aggregate response
+already returned enough SPY 30-minute bars, but the provider also emitted a
+descending `next_url` whose range was rejected as `to` before `from`. The chart
+service treated that provider pagination error as a generic provider failure
+and fell back to deterministic bars.
+
+The provider path now follows Polygon/Massive pagination for regular-hours
+intraday requests only when the current page is genuinely too small for the
+requested chart window. HACO Context, Momentum Intelligence, Momentum Heatmap,
+and HACO Heatmap 30M probes now resolve `data_source=polygon`,
+`fallback_mode=false`, `source_timeframe=30M`, and `output_timeframe=30M` with
+numeric UTC timestamps and shared lower-panel axes. No recommendation logic,
+strategy math, risk logic, replay/order behavior, auth/approval rules, broker
+semantics, or paper/live execution behavior changed.
+
+## 2026-05-27 Update - 30M Chart Timeframe Hardening
+The 30M chart path has been hardened across the provider, chart API, HACO
+Context, and Momentum Intelligence surfaces. The shared timeframe contract
+already included `30M`; this pass added regression coverage proving HACO and
+Momentum chart requests preserve that operator-selected timeframe, that Polygon
+maps it to 30-minute aggregates, and that the chart payloads emit one
+canonical numeric intraday timestamp axis shared by candles and lower panels.
+
+Deterministic fallback 30M bars now remain explicitly labeled as fallback while
+using regular-hours half-hour timestamps instead of a smooth daily-style ramp.
+No recommendation logic, strategy math, risk logic, replay/order semantics,
+auth/approval behavior, broker behavior, or provider-backed routing semantics
+changed. Remaining gap: physical/manual visual verification with an
+authenticated operator session and live provider entitlement is still needed to
+confirm the provider-backed 30M chart appearance in real browser chrome.
+
 ## 2026-05-27 Update - Mobile QA Hardening
 A surgical QA pass added route-wide phone overflow coverage at `390x844` for
 `/analyze`, `/charts/haco`, `/charts/momentum`, `/momentum-heatmap`,

@@ -4,7 +4,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from macmarket_trader.api.main import app
+from macmarket_trader.api.routes import charts as charts_routes
 from macmarket_trader.charts.momentum_service import MomentumChartService
+from macmarket_trader.data.providers.market_data import DeterministicFallbackMarketDataProvider
 from macmarket_trader.domain.models import AppUserModel
 from macmarket_trader.domain.schemas import Bar, MomentumChartRequest
 from macmarket_trader.storage.db import SessionLocal, init_db
@@ -35,6 +37,32 @@ def _approve_default_user(client: TestClient) -> None:
         user = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == "clerk_user")).scalar_one()
         user.approval_status = "approved"
         session.commit()
+
+
+class _Fallback30mMarketDataService:
+    def __init__(self) -> None:
+        self.provider = DeterministicFallbackMarketDataProvider()
+        self.last_historical_metadata: dict[str, object] | None = None
+
+    def historical_bars(self, symbol: str, timeframe: str, limit: int):  # noqa: ANN001
+        assert timeframe == "30M"
+        bars = self.provider.fetch_historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
+        first = bars[0] if bars else None
+        last = bars[-1] if bars else None
+        self.last_historical_metadata = {
+            "provider": "fallback",
+            "timeframe": "30M",
+            "fallback_mode": True,
+            "session_policy": first.session_policy if first else None,
+            "source_session_policy": first.source_session_policy if first else None,
+            "source_timeframe": first.source_timeframe if first else None,
+            "output_timeframe": "30M",
+            "filtered_extended_hours_count": 0,
+            "rth_bucket_count": len(bars),
+            "first_bar_timestamp": first.timestamp.isoformat() if first and first.timestamp else None,
+            "last_bar_timestamp": last.timestamp.isoformat() if last and last.timestamp else None,
+        }
+        return bars, "fallback", True
 
 
 def test_momentum_chart_payload_shape_and_layer_alignment() -> None:
@@ -159,6 +187,43 @@ def test_momentum_30m_payload_uses_unix_seconds() -> None:
     times = [c.time for c in payload.candles]
     assert all(isinstance(t, int) for t in times)
     assert len(times) == len(set(times))
+
+
+def test_momentum_30m_route_returns_shared_intraday_axis(monkeypatch) -> None:
+    monkeypatch.setattr(charts_routes, "market_data_service", _Fallback30mMarketDataService())
+    client = TestClient(app)
+    _approve_default_user(client)
+
+    response = client.post(
+        "/charts/momentum",
+        headers={"Authorization": "Bearer user-token"},
+        json={"symbol": "SPY", "timeframe": "30M", "history_range": "1M"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    candle_times = [candle["time"] for candle in payload["candles"]]
+
+    assert payload["timeframe"] == "30M"
+    assert payload["output_timeframe"] == "30M"
+    assert payload["source_timeframe"] == "30M"
+    assert payload["fallback_mode"] is True
+    assert payload["data_source"] == "fallback"
+    assert len(candle_times) == payload["bars_returned"]
+    assert len(candle_times) >= 13
+    assert all(isinstance(time, int) for time in candle_times)
+    assert candle_times == sorted(candle_times)
+    assert len(candle_times) == len(set(candle_times))
+    for layer_name in (
+        "true_momentum_line",
+        "true_momentum_ema_line",
+        "hilo_slowd_line",
+        "hilo_slowd_x_line",
+        "hilo_thrust_strip",
+        "score_strip",
+    ):
+        assert [point["time"] for point in payload[layer_name]] == candle_times
+    assert [point["time"] for point in payload["squeeze_pro"]["series"]] == candle_times
 
 
 def test_momentum_daily_payload_keeps_date_time_values() -> None:
