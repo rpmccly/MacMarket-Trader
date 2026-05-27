@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 function chartPayload() {
+  const start = Date.UTC(2026, 0, 1);
   const candles = Array.from({ length: 40 }, (_, idx) => ({
-    time: `2026-01-${String((idx % 28) + 1).padStart(2, "0")}`,
+    time: new Date(start + idx * 86_400_000).toISOString().slice(0, 10),
     open: 100 + idx,
     high: 101 + idx,
     low: 99 + idx,
@@ -179,7 +180,7 @@ test("dashboard and provider-health show matching provider truth chips/messages 
   // Provider-health renders "configured: <provider>" and "reads: <mode>" as separate elements
   await expect(page.getByText(/configured:.*polygon/i)).toBeVisible();
   await expect(page.getByText(/reads:.*provider/i)).toBeVisible();
-  await expect(page.getByText(/provider-backed bars/i)).toBeVisible();
+  await expect(page.getByText(/provider-backed bars/i).first()).toBeVisible();
 });
 
 test("dashboard and provider-health show matching provider truth chips/messages in demo fallback mode", async ({ page }) => {
@@ -229,5 +230,5 @@ test("dashboard and provider-health show matching provider truth chips/messages 
   await expect(page.getByText(/configured:.*polygon/i)).toBeVisible();
   await expect(page.getByText(/reads:.*fallback/i)).toBeVisible();
   // Use the specific "workflows on" paragraph to avoid matching the longer summary paragraph
-  await expect(page.getByText(/workflows on.*deterministic demo fallback bars/i)).toBeVisible();
+  await expect(page.getByText(/workflows on.*deterministic demo fallback bars/i).first()).toBeVisible();
 });

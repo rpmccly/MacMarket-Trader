@@ -1,6 +1,53 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-05-24
+Last updated: 2026-05-27
+
+## 2026-05-27 Update - Mobile QA Hardening
+A surgical QA pass added route-wide phone overflow coverage at `390x844` for
+`/analyze`, `/charts/haco`, `/charts/momentum`, `/momentum-heatmap`,
+`/haco-heatmap`, `/schedules`, `/welcome`, `/settings`,
+`/admin/pending-users`, `/admin/users`, `/admin/provider-health`, `/account`,
+`/recommendations`, `/analysis`, `/replay-runs`, `/orders`, and `/dashboard`.
+Targeted responsive checks now cover `320x700`, `360x780`, `390x844`,
+`844x390`, `768x1024`, and `1440x1000` for the shell/dashboard, Symbol
+Snapshot, HACO Context, Momentum Intelligence, Momentum Heatmap, and HACO
+Direction Heatmap.
+
+The same E2E pass now verifies mobile drawer state/keyboard behavior,
+navigation close behavior, fail-closed admin nav visibility before admin role
+confirmation, and HACO/Momentum chart resize behavior after viewport changes.
+This QA pass did not change trading, recommendation, replay, order, provider,
+auth, approval, or backend semantics. Remaining gap: this is automated browser
+coverage only; physical iOS and Android device testing is still needed for
+real browser chrome, touch ergonomics, and safe-area behavior.
+
+## 2026-05-27 Update - Mobile Operator Console Hardening
+The operator console now has a responsive shared shell with a phone-sized top
+bar, keyboard-accessible off-canvas navigation, safe-area spacing, contained
+dense-table scrolling, and reusable `.op-*` responsive primitives. The pass
+covers Symbol Snapshot `/analyze`, HACO Context `/charts/haco`, Momentum
+Heatmap `/momentum-heatmap`, HACO Direction Heatmap `/haco-heatmap`, Momentum
+Intelligence `/charts/momentum`, Scheduled Reports `/schedules`, Welcome
+Guide `/welcome`, Settings `/settings`, Admin Pending Users, Admin Users,
+Provider Health, Account, and the shared console shell/navigation.
+
+Charts now wait for real container width before initialization on the HACO and
+Momentum workspaces, while HACO/HACOLT strips, Momentum panels, source labels,
+provider/fallback warnings, admin gates, safety copy, table data, and desktop
+operator-console behavior remain available. This is a frontend responsive pass
+only: recommendation logic, strategy math, replay behavior, provider semantics,
+auth/approval source-of-truth rules, paper-order semantics, backend contracts,
+HACO/HACOLT policy, True Momentum scoring, broker routing, live trading, and
+automated execution were not changed.
+
+Validation added/updated mobile/tablet/desktop Playwright coverage at
+`390x844`, `768x1024`, and `1440x1000` for the priority pages plus mobile
+drawer navigation and page-level horizontal-overflow assertions. Validation run:
+`npm test` (968 passed), `npm run build` (passed), and `npm run test:e2e`
+(73 passed, 1 deployed smoke skipped). Remaining open work: deeper
+phone-specific polish for the deprioritized workflow pages can be handled in a
+later Phase 1 trust/coherence pass, but shared shell/global responsive changes
+were regression-tested against those routes.
 
 ## 2026-05-24 Update - Heatmap Compact Sticky Filters
 HACO Direction Heatmap and Momentum Heatmap now use a compact sticky filter

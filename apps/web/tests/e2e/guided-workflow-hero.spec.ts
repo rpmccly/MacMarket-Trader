@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 function chartPayload() {
+  const start = Date.UTC(2026, 0, 1);
   const candles = Array.from({ length: 40 }, (_, idx) => ({
-    time: `2026-01-${String((idx % 28) + 1).padStart(2, "0")}`,
+    time: new Date(start + idx * 86_400_000).toISOString().slice(0, 10),
     open: 100 + idx,
     high: 101 + idx,
     low: 99 + idx,

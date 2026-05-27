@@ -132,6 +132,7 @@ export function MomentumWorkspace() {
   const [data, setData] = useState<MomentumChartPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chartWidth, setChartWidth] = useState(0);
 
   const priceRef = useRef<HTMLDivElement | null>(null);
   const squeezeRef = useRef<HTMLDivElement | null>(null);
@@ -177,7 +178,20 @@ export function MomentumWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!data) return;
+    const target = priceRef.current;
+    if (!target || typeof ResizeObserver === "undefined") {
+      setChartWidth(target?.clientWidth ?? 0);
+      return;
+    }
+    const update = () => setChartWidth(Math.floor(target.getBoundingClientRect().width));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!data || chartWidth < 2) return;
     const priceContainer = priceRef.current;
     const squeezeContainer = squeezeRef.current;
     const trueContainer = trueMomentumRef.current;
@@ -194,12 +208,17 @@ export function MomentumWorkspace() {
       autoSize: true,
     };
 
-    const priceChart = createChart(priceContainer, { ...baseOptions, height: 320 });
-    const squeezeChart = createChart(squeezeContainer, { ...baseOptions, height: 130 });
-    const trueChart = createChart(trueContainer, { ...baseOptions, height: 130 });
-    const hiloChart = createChart(hiloContainer, { ...baseOptions, height: 130 });
-    const scoreChart = createChart(scoreContainer, { ...baseOptions, height: 110 });
-    const thrustChart = createChart(thrustContainer, { ...baseOptions, height: 90 });
+    const priceHeight = Math.round(Math.min(330, Math.max(240, chartWidth * 0.56)));
+    const standardPanelHeight = Math.round(Math.min(130, Math.max(90, chartWidth * 0.26)));
+    const scoreHeight = Math.round(Math.min(110, Math.max(76, chartWidth * 0.22)));
+    const thrustHeight = Math.round(Math.min(90, Math.max(66, chartWidth * 0.18)));
+
+    const priceChart = createChart(priceContainer, { ...baseOptions, height: priceHeight });
+    const squeezeChart = createChart(squeezeContainer, { ...baseOptions, height: standardPanelHeight });
+    const trueChart = createChart(trueContainer, { ...baseOptions, height: standardPanelHeight });
+    const hiloChart = createChart(hiloContainer, { ...baseOptions, height: standardPanelHeight });
+    const scoreChart = createChart(scoreContainer, { ...baseOptions, height: scoreHeight });
+    const thrustChart = createChart(thrustContainer, { ...baseOptions, height: thrustHeight });
 
     const candles: CandlestickData<Time>[] = data.candles.map((c) => ({
       time: c.time as Time,
@@ -446,7 +465,7 @@ export function MomentumWorkspace() {
     return () => {
       for (const chart of charts) chart.remove();
     };
-  }, [data]);
+  }, [chartWidth, data]);
 
   const sessionLabel = data?.session_policy ? data.session_policy.replaceAll("_", " ") : null;
   const htfLabel = describeHigherTimeframeSource(data?.higher_timeframe_source);
@@ -539,10 +558,13 @@ export function MomentumWorkspace() {
             testId="workspace-candle-status-badges"
           />
         </div>
-        <div ref={priceRef} role="img" aria-label="Price candles" data-testid="momentum-price-panel" style={{ minHeight: 200 }} />
+        {data && chartWidth < 2 ? (
+          <p style={{ margin: "4px 0", color: "#9fb0c3", fontSize: "0.8rem" }}>Sizing Momentum chart panes...</p>
+        ) : null}
+        <div ref={priceRef} role="img" aria-label="Price candles" data-testid="momentum-price-panel" className="op-chart-frame op-chart-panel-price" />
         <PanelHeading title="Squeeze Pro" hint="Histogram + compression dots (research indicator)" />
         <SqueezeProLegend payload={data?.squeeze_pro ?? null} />
-        <div ref={squeezeRef} role="img" aria-label="Squeeze Pro panel" data-testid="squeeze-pro-panel" style={{ minHeight: 80 }} />
+        <div ref={squeezeRef} role="img" aria-label="Squeeze Pro panel" data-testid="squeeze-pro-panel" className="op-chart-frame op-chart-panel" />
         {data && data.squeeze_pro?.status !== "ok" ? (
           <p style={{ margin: "4px 0 0", color: "#9fb0c3", fontSize: "0.8rem" }} data-testid="squeeze-pro-unavailable">
             Squeeze Pro unavailable for this symbol/timeframe{data.squeeze_pro?.reason ? `: ${data.squeeze_pro.reason}` : "."}
@@ -555,7 +577,7 @@ export function MomentumWorkspace() {
             testId="workspace-true-momentum-status-badges"
           />
         </div>
-        <div ref={trueMomentumRef} role="img" aria-label="True Momentum and EMA panel" data-testid="momentum-true-panel" style={{ minHeight: 90 }} />
+        <div ref={trueMomentumRef} role="img" aria-label="True Momentum and EMA panel" data-testid="momentum-true-panel" className="op-chart-frame op-chart-panel" />
         <PanelHeading title="HiLo SlowD vs SlowD_X" hint="Stochastic cycle context" />
         <div style={{ marginBottom: 4 }}>
           <HiloPanelStatusBadges
@@ -563,11 +585,11 @@ export function MomentumWorkspace() {
             testId="workspace-hilo-status-badges"
           />
         </div>
-        <div ref={hiloRef} role="img" aria-label="HiLo SlowD and SlowD X panel" data-testid="momentum-hilo-panel" style={{ minHeight: 90 }} />
+        <div ref={hiloRef} role="img" aria-label="HiLo SlowD and SlowD X panel" data-testid="momentum-hilo-panel" className="op-chart-frame op-chart-panel" />
         <PanelHeading title="Composite total score" hint="Histogram (-130…+130)" />
-        <div ref={scoreRef} role="img" aria-label="Composite score histogram" data-testid="momentum-score-panel" style={{ minHeight: 80 }} />
+        <div ref={scoreRef} role="img" aria-label="Composite score histogram" data-testid="momentum-score-panel" className="op-chart-frame op-chart-panel" />
         <PanelHeading title="HiLo thrust strip" hint="Bullish / bearish / neutral" />
-        <div ref={thrustRef} role="img" aria-label="HiLo thrust strip" data-testid="momentum-thrust-panel" style={{ minHeight: 60 }} />
+        <div ref={thrustRef} role="img" aria-label="HiLo thrust strip" data-testid="momentum-thrust-panel" className="op-chart-frame op-chart-panel" />
         <div style={{ marginTop: 8 }}>
           <MomentumContextLegend testId="workspace-context-legend" />
         </div>

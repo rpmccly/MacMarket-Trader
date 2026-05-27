@@ -3,9 +3,14 @@ import { redirect } from "next/navigation";
 
 import { AdminUsersPanel } from "@/components/admin/admin-users-panel";
 import { backendUrl } from "@/lib/backend";
+import { isE2EAuthBypassEnabled } from "@/lib/e2e-auth";
 import type { UserProfile } from "@/lib/user-profile";
 
 export default async function Page() {
+  if (isE2EAuthBypassEnabled()) {
+    return <AdminUsersPanel />;
+  }
+
   const { userId, getToken } = await auth();
   if (!userId) redirect("/sign-in");
   const token = await getToken();

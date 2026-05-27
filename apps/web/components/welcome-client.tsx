@@ -7,7 +7,7 @@ const proseStyles = {
   fontFamily: "Inter, Arial, sans-serif",
   color: "var(--text)",
   lineHeight: 1.65,
-  fontSize: 14.5,
+  fontSize: "clamp(14px, 2.5vw, 14.5px)",
 } as const;
 
 export function WelcomeClient({ markdown }: { markdown: string }) {
@@ -39,16 +39,16 @@ export function WelcomeClient({ markdown }: { markdown: string }) {
         </button>
       </div>
 
-      <div className="op-card welcome-prose" style={{ padding: 28, ...proseStyles }}>
+      <div className="op-card welcome-prose" style={{ padding: "clamp(14px, 4vw, 28px)", ...proseStyles }}>
         <ReactMarkdown
           components={{
             h1: ({ children }) => (
-              <h1 style={{ fontSize: 28, fontWeight: 700, margin: "4px 0 18px 0", lineHeight: 1.2 }}>{children}</h1>
+              <h1 style={{ fontSize: "clamp(24px, 7vw, 28px)", fontWeight: 700, margin: "4px 0 18px 0", lineHeight: 1.2 }}>{children}</h1>
             ),
             h2: ({ children }) => (
               <h2
                 style={{
-                  fontSize: 20,
+                  fontSize: "clamp(18px, 5vw, 20px)",
                   fontWeight: 700,
                   margin: "28px 0 10px 0",
                   paddingBottom: 6,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, StatusBadge } from "@/components/operator-ui";
+import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { buildIndicatorProvenance, strategyFitText } from "@/lib/analyze-helpers";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
@@ -79,7 +79,7 @@ export default function AnalyzePage() {
   useEffect(() => { void load(); }, []);
 
   return <section className="op-stack">
-    <PageHeader title="Symbol Analyze" subtitle="Fast triage workspace that complements Strategy Workbench." actions={<StatusBadge tone="neutral">{payload?.source ?? "source pending"}</StatusBadge>} />
+    <PageHeader title="Symbol Snapshot" subtitle="Fast triage workspace that complements Strategy Workbench." actions={<StatusBadge tone="neutral">{payload?.source ?? "source pending"}</StatusBadge>} />
     <Card>
       <div className="op-row"><input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && void load()} /><button onClick={() => void load()}>Analyze</button></div>
       <InlineFeedback state={feedback.state} message={feedback.message} onRetry={() => void load()} />
@@ -92,6 +92,7 @@ export default function AnalyzePage() {
         <Card title="Indicator snapshot">{buildIndicatorProvenance(payload.indicator_snapshot).map((item) => <div key={item.key} className="op-row" style={{ gap: 6 }}><StatusBadge tone={item.tone}>{item.label}</StatusBadge><span>{item.display}</span></div>)}</Card>
       </div>
       <Card title="Ranked strategy scoreboard">
+        <ResponsiveTable label="Ranked strategy scoreboard">
         <table className="op-table">
           <thead><tr><th>rank</th><th>strategy</th><th>status</th><th>score</th><th>rr</th><th>conf</th><th>fit factors</th></tr></thead>
           <tbody>{payload.strategy_scoreboard.map((row) => <tr key={`${row.rank}-${row.strategy}`}>
@@ -108,6 +109,7 @@ export default function AnalyzePage() {
             <td style={{ fontSize: "0.8em", opacity: 0.75 }}>{row.score_breakdown ? strategyFitText(row.score_breakdown) : "—"}</td>
           </tr>)}</tbody>
         </table>
+        </ResponsiveTable>
       </Card>
       <div className="op-grid-2">
         <Card title="Scenarios">{Object.entries(payload.scenarios).map(([key, value]) => <div key={key}><strong>{key}:</strong> {value}</div>)}</Card>

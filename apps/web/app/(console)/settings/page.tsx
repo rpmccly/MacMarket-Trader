@@ -170,7 +170,7 @@ export default function SettingsPage() {
 
       <Card title="Trade sizing + fees">
         <div className="op-row">
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ display: "grid", gap: 4, minWidth: 160 }}>
             <span>Risk budget at stop ($)</span>
             <input
               type="number"
@@ -182,7 +182,7 @@ export default function SettingsPage() {
               style={{ width: 140 }}
             />
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ display: "grid", gap: 4, minWidth: 160 }}>
             <span>Max paper order value ($)</span>
             <input
               type="number"
@@ -194,7 +194,7 @@ export default function SettingsPage() {
               style={{ width: 140 }}
             />
           </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
             <label htmlFor="equity-commission-per-trade">
               <MetricLabel label="Equity commission / trade ($)" term="equity_commission_per_trade" />
             </label>
@@ -209,7 +209,7 @@ export default function SettingsPage() {
               style={{ width: 140 }}
             />
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
             <label htmlFor="options-commission-per-contract">
               <MetricLabel label="Options commission per contract ($)" term="options_commission_per_contract" />
             </label>

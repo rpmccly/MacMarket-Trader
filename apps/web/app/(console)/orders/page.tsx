@@ -290,8 +290,20 @@ type RecommendationOpenContext = Pick<
 
 const CLOSE_REASONS = ["Target hit", "Stop hit", "Manual exit", "Time exit", "Other"] as const;
 
-function formatSignedDollars(value: number): string {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+function finiteNumber(value: number | null | undefined, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function finiteNumberOrNull(value: number | null | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatSignedDollars(value: number | null | undefined): string {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "Unavailable";
+  return `${parsed >= 0 ? "+" : ""}${parsed.toFixed(2)}`;
 }
 
 function formatDollars(value: number): string {
@@ -300,6 +312,21 @@ function formatDollars(value: number): string {
 
 function formatMaybeDollars(value: number | null | undefined): string {
   return Number.isFinite(Number(value)) ? formatDollars(Number(value)) : "Unavailable";
+}
+
+function tradeGrossPnl(trade: PaperTrade): number | null {
+  return finiteNumberOrNull(trade.gross_pnl);
+}
+
+function tradeNetPnl(trade: PaperTrade): number {
+  return finiteNumber(trade.net_pnl, finiteNumber(trade.realized_pnl, tradeGrossPnl(trade) ?? 0));
+}
+
+function tradeCommission(trade: PaperTrade): number {
+  const explicit = finiteNumberOrNull(trade.commission_paid);
+  if (explicit != null) return explicit;
+  const gross = tradeGrossPnl(trade);
+  return gross != null ? Math.max(0, gross - tradeNetPnl(trade)) : 0;
 }
 
 function formatMaybePercent(value: number | null | undefined): string {
@@ -825,7 +852,7 @@ export default function Page() {
     cancelClosePosition();
     setFeedback({
       state: "success",
-      message: `Position closed — net P&L ${result.data ? formatSignedDollars(result.data.net_pnl) : "—"}`,
+      message: `Position closed - realized P&L ${result.data ? formatSignedDollars(tradeNetPnl(result.data)) : "—"}`,
     });
     await Promise.all([loadPositions(), loadPositionReviews(), loadOptionStructureReviews(), loadTrades(), loadPortfolioSummary()]);
     setBusy(false);
@@ -1032,6 +1059,16 @@ export default function Page() {
     detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [selectedOrderId]);
 
+  const portfolioNetRealized = portfolioSummary
+    ? finiteNumber(portfolioSummary.net_realized_pnl, finiteNumber(portfolioSummary.realized_pnl))
+    : 0;
+  const portfolioGrossRealized = portfolioSummary
+    ? finiteNumber(portfolioSummary.gross_realized_pnl, portfolioNetRealized)
+    : 0;
+  const portfolioCommissionPaid = portfolioSummary
+    ? finiteNumber(portfolioSummary.total_commission_paid, Math.max(0, portfolioGrossRealized - portfolioNetRealized))
+    : 0;
+
   return <section className="op-stack">
     <PageHeader title="Paper Orders" subtitle="Step 4 action page: stage deterministic paper orders from replay lineage." actions={<StatusBadge tone="neutral">{busy ? "working…" : status}</StatusBadge>} />
     <WorkflowBanner
@@ -1060,11 +1097,11 @@ export default function Page() {
             <div style={{ fontSize: "0.8rem", color: "var(--text-muted, #8b9cb3)" }}>
               <MetricLabel label="Realized net P&L" term="net_pnl" />
             </div>
-            <strong style={{ color: portfolioSummary.net_realized_pnl > 0 ? "#21c06e" : portfolioSummary.net_realized_pnl < 0 ? "#f44336" : "inherit" }}>
-              {formatSignedDollars(portfolioSummary.net_realized_pnl)}
+            <strong style={{ color: portfolioNetRealized > 0 ? "#21c06e" : portfolioNetRealized < 0 ? "#f44336" : "inherit" }}>
+              {formatSignedDollars(portfolioNetRealized)}
             </strong>
             <div style={{ marginTop: 4, fontSize: "0.78rem", color: "var(--op-muted, #7a8999)" }}>
-              Gross {formatSignedDollars(portfolioSummary.gross_realized_pnl)} · Fees ${portfolioSummary.total_commission_paid.toFixed(2)}
+              Gross {formatSignedDollars(portfolioGrossRealized)} · Fees ${portfolioCommissionPaid.toFixed(2)}
             </div>
           </div>
           <div>
@@ -1124,6 +1161,8 @@ export default function Page() {
       {selected?.order_id ? (() => {
         const matchingOpen = positions.find((p) => p.order_id === selected.order_id);
         const matchingTrade = trades.find((t) => t.order_id === selected.order_id);
+        const matchingTradeNetPnl = matchingTrade ? tradeNetPnl(matchingTrade) : 0;
+        const matchingTradeCommission = matchingTrade ? tradeCommission(matchingTrade) : 0;
         if (!matchingOpen && !matchingTrade) return null;
         return (
           <div style={{ marginTop: 6, color: "var(--op-muted, #7a8999)", fontSize: "0.88rem" }}>
@@ -1131,11 +1170,11 @@ export default function Page() {
             {matchingOpen && matchingTrade ? <span> · </span> : null}
             {matchingTrade ? (
               <span>
-                ↳ closed trade #{matchingTrade.id} · net{" "}
-                <span style={{ color: pnlColor(matchingTrade.net_pnl), fontWeight: 600 }}>
-                  {formatSignedDollars(matchingTrade.net_pnl)}
+                ↳ closed trade #{matchingTrade.id} · realized{" "}
+                <span style={{ color: pnlColor(matchingTradeNetPnl), fontWeight: 600 }}>
+                  {formatSignedDollars(matchingTradeNetPnl)}
                 </span>{" "}
-                after ${matchingTrade.commission_paid.toFixed(2)} fees
+                after ${matchingTradeCommission.toFixed(2)} fees
               </span>
             ) : null}
           </div>
@@ -1312,7 +1351,9 @@ export default function Page() {
               </tr>
             </thead>
             <tbody>
-              {positionReviews.map((review) => (
+              {positionReviews.map((review) => {
+                const missingData = review.missing_data ?? [];
+                return (
                 <tr key={review.position_id}>
                   <td>
                     <strong>{review.symbol}</strong>
@@ -1358,14 +1399,15 @@ export default function Page() {
                   <td>
                     <StatusBadge tone={actionTone(review.action_classification)}>{review.action_classification}</StatusBadge>
                     <div style={{ marginTop: 4, maxWidth: 280, color: "var(--op-muted, #7a8999)", fontSize: "0.82rem" }}>{review.action_summary}</div>
-                    {review.missing_data.length ? (
+                    {missingData.length ? (
                       <div style={{ marginTop: 4, color: "var(--op-warn, #f2a03f)", fontSize: "0.78rem" }}>
-                        Missing: {review.missing_data.join(", ")}
+                        Missing: {missingData.join(", ")}
                       </div>
                     ) : null}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1386,7 +1428,11 @@ export default function Page() {
         <EmptyState title="No active options structures to review" hint="Open paper-only options structures will appear here with payoff, expiration, leg, and risk-calendar context." />
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
-          {optionStructureReviews.map((review) => (
+          {optionStructureReviews.map((review) => {
+            const warnings = review.warnings ?? [];
+            const missingData = review.missing_data ?? [];
+            const legs = review.legs ?? [];
+            return (
             <div
               key={review.structure_id}
               className="op-card"
@@ -1514,14 +1560,14 @@ export default function Page() {
                   ) : null}
                 </div>
               ) : null}
-              {review.warnings.length ? (
+              {warnings.length ? (
                 <div style={{ marginTop: 8, color: "var(--op-warn, #f2a03f)", fontSize: "0.82rem" }}>
-                  Warnings: {review.warnings.join(" ")}
+                  Warnings: {warnings.join(" ")}
                 </div>
               ) : null}
-              {review.missing_data.length ? (
+              {missingData.length ? (
                 <div style={{ marginTop: 6, color: "var(--op-warn, #f2a03f)", fontSize: "0.78rem" }}>
-                  Missing: {review.missing_data.join(", ")}
+                  Missing: {missingData.join(", ")}
                 </div>
               ) : null}
               <details style={{ marginTop: 10 }}>
@@ -1547,9 +1593,11 @@ export default function Page() {
                       </tr>
                     </thead>
                     <tbody>
-                      {review.legs.length === 0 ? (
+                      {legs.length === 0 ? (
                         <tr><td colSpan={14} style={{ color: "var(--op-muted, #7a8999)" }}>Leg details unavailable.</td></tr>
-                      ) : review.legs.map((leg) => (
+                      ) : legs.map((leg) => {
+                        const legMissingData = leg.missing_data ?? [];
+                        return (
                         <tr key={leg.leg_id}>
                           <td>
                             #{leg.leg_id}
@@ -1610,20 +1658,22 @@ export default function Page() {
                           </td>
                           <td>
                             {leg.estimated_leg_unrealized_pnl != null ? formatSignedDollars(leg.estimated_leg_unrealized_pnl) : "Unavailable"}
-                            {leg.missing_data.length ? (
+                            {legMissingData.length ? (
                               <div style={{ color: "var(--op-warn, #f2a03f)", fontSize: "0.76rem" }}>
-                                Missing: {leg.missing_data.join(", ")}
+                                Missing: {legMissingData.join(", ")}
                               </div>
                             ) : null}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               </details>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Card>
@@ -1880,6 +1930,9 @@ export default function Page() {
               {trades.flatMap((t) => {
                 const reopenable = canReopenTrade(t.closed_at, nowMs);
                 const remaining = reopenSecondsRemaining(t.closed_at, nowMs);
+                const grossPnl = tradeGrossPnl(t);
+                const netPnl = tradeNetPnl(t);
+                const commissionPaid = tradeCommission(t);
                 const tradeRows: React.ReactNode[] = [
                   <tr key={t.id}>
                     <td>{t.symbol}</td>
@@ -1891,12 +1944,12 @@ export default function Page() {
                         {t.entry_notional != null ? formatDollars(t.entry_notional) : formatDollars(t.qty * t.entry_price)}
                       </div>
                     </td>
-                    <td style={{ color: pnlColor(t.gross_pnl), fontWeight: 600 }}>
-                      {formatSignedDollars(t.gross_pnl)}
+                    <td style={{ color: grossPnl != null ? pnlColor(grossPnl) : "inherit", fontWeight: 600 }}>
+                      {formatSignedDollars(grossPnl)}
                     </td>
-                    <td>${t.commission_paid.toFixed(2)}</td>
-                    <td style={{ color: pnlColor(t.net_pnl), fontWeight: 600 }}>
-                      {formatSignedDollars(t.net_pnl)}
+                    <td>${commissionPaid.toFixed(2)}</td>
+                    <td style={{ color: pnlColor(netPnl), fontWeight: 600 }}>
+                      {formatSignedDollars(netPnl)}
                     </td>
                     <td>{formatHoldDuration(t.hold_seconds)}</td>
                     <td>{t.close_reason ?? "—"}</td>

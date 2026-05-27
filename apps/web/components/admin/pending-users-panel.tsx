@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, StatusBadge } from "@/components/operator-ui";
+import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import { fetchWorkflowApi } from "@/lib/api-client";
 
 type PendingUser = { id: number; email: string; display_name: string };
@@ -152,15 +152,18 @@ export function PendingUsersPanel() {
             ? <><EmptyState title="No pending users" hint="Queue is clear. Send an invite to onboard the next alpha user — they'll appear here once they sign up." /><button style={{ marginTop: 8 }} onClick={() => inviteEmailRef.current?.focus()}>Send an invite</button></>
             : <>
                 <div style={{ marginBottom: 8 }}><StatusBadge tone="warn">Next action: review and approve or reject each user below</StatusBadge></div>
+                <ResponsiveTable label="Pending users">
                 <table className="op-table"><thead><tr><th>User</th><th>Email</th><th>Actions</th><th>Status</th></tr></thead><tbody>
                   {users.map((user) => <tr key={user.id}><td>{user.display_name || "Unknown"}</td><td>{user.email || "missing"}</td><td className="op-row"><button onClick={() => void act(user.id, "approve")}>Approve</button><button onClick={() => void act(user.id, "reject")}>Reject</button></td><td>{resultById[user.id] ?? "queued"}</td></tr>)}
                 </tbody></table>
+                </ResponsiveTable>
               </>}
         </Card>
         <Card title="Recent invites">
           {invites.length === 0 ? (
             <EmptyState title="No invites sent" hint="Use invite form above." />
           ) : (
+            <ResponsiveTable label="Recent invites">
             <table className="op-table">
               <thead><tr><th>sent</th><th>email</th><th>status</th><th>invited by</th><th>actions</th></tr></thead>
               <tbody>
@@ -208,12 +211,14 @@ export function PendingUsersPanel() {
                 })}
               </tbody>
             </table>
+            </ResponsiveTable>
           )}
         </Card>
       </div>
 
       {recentActivity.length > 0 && (
         <Card title="Recent activity (last 5 audit events)">
+          <ResponsiveTable label="Recent admin activity">
           <table className="op-table"><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Status</th></tr></thead><tbody>
             {recentActivity.map((evt, idx) => (
               <tr key={idx}>
@@ -224,6 +229,7 @@ export function PendingUsersPanel() {
               </tr>
             ))}
           </tbody></table>
+          </ResponsiveTable>
         </Card>
       )}
     </section>

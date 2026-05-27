@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { Card, EmptyState, ErrorState, PageHeader, StatusBadge } from "@/components/operator-ui";
+import { Card, EmptyState, ErrorState, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import { fetchWorkflowApi } from "@/lib/api-client";
 
 type AdminUser = {
@@ -170,6 +170,7 @@ export function AdminUsersPanel() {
         {users.length === 0 ? (
           <EmptyState title="No users yet" hint="Invite users from Admin / Invites to populate the private-alpha desk." />
         ) : (
+          <ResponsiveTable label="Current admin users">
           <table className="op-table">
             <thead>
               <tr>
@@ -317,6 +318,7 @@ export function AdminUsersPanel() {
               })}
             </tbody>
           </table>
+          </ResponsiveTable>
         )}
       </Card>
     </section>

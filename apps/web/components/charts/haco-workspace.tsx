@@ -39,6 +39,7 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   const hacoRef = useRef<HTMLDivElement | null>(null);
   const hacoltRef = useRef<HTMLDivElement | null>(null);
   const [selectedIndicators, setSelectedIndicators] = useState<IndicatorId[]>([]);
+  const [chartWidth, setChartWidth] = useState(0);
 
   async function load(overrideHistoryRange?: ChartHistoryRangeId) {
     setLoading(true);
@@ -89,7 +90,22 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   }
 
   useEffect(() => {
-    if (!priceRef.current || !hacoRef.current || !hacoltRef.current || !data) return;
+    const target = priceRef.current;
+    if (!target || typeof ResizeObserver === "undefined") {
+      setChartWidth(target?.clientWidth ?? 0);
+      return;
+    }
+    const update = () => setChartWidth(Math.floor(target.getBoundingClientRect().width));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!priceRef.current || !hacoRef.current || !hacoltRef.current || !data || chartWidth < 2) return;
+    const priceHeight = embedded ? 260 : Math.round(Math.min(350, Math.max(240, chartWidth * 0.58)));
+    const stripHeight = Math.round(Math.min(120, Math.max(84, chartWidth * 0.24)));
 
     const baseOptions = {
       layout: { background: { type: ColorType.Solid, color: "#0b1219" }, textColor: "#d9e2ef" },
@@ -99,9 +115,9 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
       autoSize: true,
     };
 
-    const priceChart = createChart(priceRef.current, { ...baseOptions, height: embedded ? 260 : 330 });
-    const hacoChart = createChart(hacoRef.current, { ...baseOptions, height: 110 });
-    const hacoltChart = createChart(hacoltRef.current, { ...baseOptions, height: 110 });
+    const priceChart = createChart(priceRef.current, { ...baseOptions, height: priceHeight });
+    const hacoChart = createChart(hacoRef.current, { ...baseOptions, height: stripHeight });
+    const hacoltChart = createChart(hacoltRef.current, { ...baseOptions, height: stripHeight });
 
     const candles: CandlestickData<Time>[] = data.candles.map((c) => ({ time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close }));
     const priceSeries: ISeriesApi<"Candlestick"> = priceChart.addCandlestickSeries();
@@ -144,7 +160,7 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
       hacoChart.remove();
       hacoltChart.remove();
     };
-  }, [data, embedded, selectedIndicators]);
+  }, [chartWidth, data, embedded, selectedIndicators]);
 
   const summary = useMemo(() => data?.explanation, [data]);
   const sessionLabel = formatSessionPolicy(data?.session_policy);
@@ -179,9 +195,12 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
         <p style={{ margin: "6px 0", color: "#9fb0c3" }}>
           Price pane overlays and synced HACO/HACOLT strips share one canonical time axis.
         </p>
-        <div ref={priceRef} />
-        <div ref={hacoRef} style={{ marginTop: 6 }} />
-        <div ref={hacoltRef} style={{ marginTop: 6 }} />
+        {data && chartWidth < 2 ? (
+          <p style={{ color: "#9fb0c3", margin: "6px 0" }}>Sizing HACO chart panes...</p>
+        ) : null}
+        <div ref={priceRef} className="op-chart-frame op-chart-price" />
+        <div ref={hacoRef} className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
+        <div ref={hacoltRef} className="op-chart-frame op-chart-strip" style={{ marginTop: 6 }} />
       </Card>
 
       <Card title="Signal summary">

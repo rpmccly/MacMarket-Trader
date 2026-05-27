@@ -21,6 +21,14 @@ export function Card({ title, children }: { title?: string; children: ReactNode 
   );
 }
 
+export function ResponsiveTable({ children, label }: { children: ReactNode; label?: string }) {
+  return (
+    <div className="op-table-wrap" role="region" aria-label={label} tabIndex={0}>
+      {children}
+    </div>
+  );
+}
+
 export function StatusBadge({ tone = "neutral", children }: { tone?: "good" | "warn" | "bad" | "neutral"; children: ReactNode }) {
   return <span className={`op-badge op-badge-${tone}`}>{children}</span>;
 }

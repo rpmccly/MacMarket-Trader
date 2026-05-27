@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, StatusBadge } from "@/components/operator-ui";
+import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import { SymbolEntryPreview } from "@/components/symbol-entry-preview";
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { mergeManualSymbols, parseManualSymbolEntry, SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
@@ -856,6 +856,7 @@ export default function SchedulesPage() {
             {visibleWatchlists.length === 0 ? (
               <EmptyState title="No matching watchlists" hint="Adjust the watchlist search to show saved symbol lists." />
             ) : (
+              <ResponsiveTable label="Saved watchlists">
               <table className="op-table">
                 <thead><tr><th>Name</th><th>Symbol count</th><th>Symbols</th><th>Created</th><th>Actions</th></tr></thead>
                 <tbody>
@@ -917,6 +918,7 @@ export default function SchedulesPage() {
                   })}
                 </tbody>
               </table>
+              </ResponsiveTable>
             )}
           </>
         )}
@@ -937,6 +939,7 @@ export default function SchedulesPage() {
               </div>
             </div>
           ) : (
+            <ResponsiveTable label="Active schedules">
             <table className="op-table">
               <thead>
                 <tr><th>Name</th><th>Config</th><th>Last / Next</th><th>Latest summary</th><th>Actions</th></tr>
@@ -979,6 +982,7 @@ export default function SchedulesPage() {
                 ))}
               </tbody>
             </table>
+            </ResponsiveTable>
           )}
         </Card>
 
@@ -989,6 +993,7 @@ export default function SchedulesPage() {
             <>
               <div><strong>delivery target:</strong> {selected.config_summary?.delivery_target ?? selected.payload?.email_delivery_target ?? "-"}</div>
               <div><strong>top_n:</strong> {selected.config_summary?.top_n ?? selected.payload?.top_n ?? 5}</div>
+              <ResponsiveTable label="Selected schedule run history">
               <table className="op-table">
                 <thead>
                   <tr><th>Run</th><th>Status</th><th>Delivery</th><th>Delivered to</th><th>Summary</th></tr>
@@ -1010,6 +1015,7 @@ export default function SchedulesPage() {
                   ))}
                 </tbody>
               </table>
+              </ResponsiveTable>
               {runDetailFeedback.state !== "idle" && (
                 <InlineFeedback
                   state={runDetailFeedback.state as "loading" | "error" | "success" | "idle"}
@@ -1026,6 +1032,7 @@ export default function SchedulesPage() {
           {runDetail.top_candidates.length > 0 && (
             <>
               <div><strong>Top candidates ({runDetail.top_candidates.length})</strong></div>
+              <ResponsiveTable label="Top candidates from selected run">
               <table className="op-table">
                 <thead>
                   <tr><th>#</th><th>Symbol</th><th>Strategy</th><th>Score</th><th>RR</th><th>Entry zone</th><th>Thesis</th><th>Action</th></tr>
@@ -1045,11 +1052,13 @@ export default function SchedulesPage() {
                   ))}
                 </tbody>
               </table>
+              </ResponsiveTable>
             </>
           )}
           {runDetail.watchlist_only.length > 0 && (
             <>
               <div><strong>Watchlist only ({runDetail.watchlist_only.length})</strong></div>
+              <ResponsiveTable label="Watchlist-only run candidates">
               <table className="op-table">
                 <thead>
                   <tr><th>Symbol</th><th>Strategy</th><th>Score</th><th>Reason</th></tr>
@@ -1065,11 +1074,13 @@ export default function SchedulesPage() {
                   ))}
                 </tbody>
               </table>
+              </ResponsiveTable>
             </>
           )}
           {runDetail.no_trade.length > 0 && (
             <>
               <div><strong>No-trade ({runDetail.no_trade.length})</strong></div>
+              <ResponsiveTable label="No-trade run candidates">
               <table className="op-table">
                 <thead>
                   <tr><th>Symbol</th><th>Strategy</th><th>Reason</th></tr>
@@ -1084,6 +1095,7 @@ export default function SchedulesPage() {
                   ))}
                 </tbody>
               </table>
+              </ResponsiveTable>
             </>
           )}
           {runDetail.top_candidates.length === 0 && runDetail.watchlist_only.length === 0 && runDetail.no_trade.length === 0 && (

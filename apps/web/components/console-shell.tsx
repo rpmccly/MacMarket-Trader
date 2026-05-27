@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -57,9 +57,8 @@ const navSections = [
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const buildStamp = process.env.NEXT_PUBLIC_BUILD_STAMP ?? "dev-local";
-  // Track both the role and whether the /me fetch has settled. Admin is hidden
-  // until both (a) the fetch has settled successfully and (b) role === "admin"
-  // — fail-closed on 401/error/in-flight so non-admins never see admin links.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const [appRole, setAppRole] = useState<string | null>(null);
   const [meChecked, setMeChecked] = useState(false);
 
@@ -76,41 +75,100 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [drawerOpen]);
+
   const isAdmin = meChecked && appRole === "admin";
 
+  const nav = (
+    <nav className="op-nav" aria-label="Operator console">
+      {navSections.map((section) => {
+        if (section.title === "Admin" && !isAdmin) return null;
+        return (
+          <section key={section.title} className="op-nav-section">
+            <div className="op-nav-section-title">{section.title}</div>
+            <div className="op-nav-links">
+              {section.links.map(([href, label]) => {
+                const active = isActivePath(pathname, href);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={active ? "is-active" : ""}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    {label}
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </nav>
+  );
+
   return (
-    <div className="op-shell">
-      <aside className="op-aside">
+    <div className={`op-shell ${drawerOpen ? "is-drawer-open" : ""}`}>
+      <button
+        type="button"
+        className="op-drawer-backdrop"
+        aria-label="Close navigation menu"
+        onClick={() => setDrawerOpen(false)}
+      />
+      <aside className="op-aside" id="console-navigation" aria-label="Console navigation">
+        <button
+          ref={closeButtonRef}
+          type="button"
+          className="op-drawer-close"
+          aria-label="Close navigation menu"
+          onClick={() => setDrawerOpen(false)}
+        >
+          Close
+        </button>
         <div className="op-brand-block">
           <BrandLockup />
           <p className="op-brand-caption">Invite-only private alpha console</p>
         </div>
-        <nav className="op-nav">
-          {navSections.map((section) => {
-            if (section.title === "Admin" && !isAdmin) return null;
-            return (
-              <section key={section.title} className="op-nav-section">
-                <div className="op-nav-section-title">{section.title}</div>
-                <div className="op-nav-links">
-                  {section.links.map(([href, label]) => {
-                    const active = isActivePath(pathname, href);
-                    return <Link key={href} href={href} className={active ? "is-active" : ""}>{label}</Link>;
-                  })}
-                </div>
-              </section>
-            );
-          })}
-        </nav>
+        {nav}
       </aside>
       <section className="op-main">
         <ActiveTradeBanner />
         <header className="op-topbar">
           <div className="op-topbar-brand">
+            <button
+              type="button"
+              className="op-mobile-menu-button"
+              aria-label="Open navigation menu"
+              aria-controls="console-navigation"
+              aria-expanded={drawerOpen}
+              data-testid="mobile-nav-toggle"
+              onClick={() => setDrawerOpen(true)}
+            >
+              Menu
+            </button>
             <BrandLockup compact />
             <TopbarContext />
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: "0.74rem", color: "var(--op-muted, #7a8999)" }}>build: {buildStamp}</span>
+          <div className="op-topbar-actions">
+            <span className="op-build-stamp">build: {buildStamp}</span>
             <ThemeToggle />
           </div>
         </header>
