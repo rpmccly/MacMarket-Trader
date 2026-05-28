@@ -31,6 +31,16 @@ def ema(values: Iterable[float], period: int) -> list[float]:
     return out
 
 
+def tema(values: Iterable[float], period: int) -> list[float]:
+    """Triple exponential moving average using the repo's deterministic EMA seed."""
+    ema1 = ema(values, period)
+    if not ema1:
+        return []
+    ema2 = ema(ema1, period)
+    ema3 = ema(ema2, period)
+    return [(3.0 * first) - (3.0 * second) + third for first, second, third in zip(ema1, ema2, ema3, strict=True)]
+
+
 def sma(values: Sequence[float], period: int) -> list[float | None]:
     """Simple moving average. First period-1 entries are None."""
     if period <= 0:

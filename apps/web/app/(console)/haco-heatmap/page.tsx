@@ -157,7 +157,9 @@ function biasTone(bias: string | null | undefined): "good" | "bad" | "warn" | "n
 
 function stateClass(cell: HacoHeatmapDirectionCell | undefined): string {
   if (cell?.status !== "ok") return "haco-state-unavailable";
-  return cell.value === "long" ? "haco-state-long" : "haco-state-short";
+  if (cell.value === "long") return "haco-state-long";
+  if (cell.value === "short") return "haco-state-short";
+  return "haco-state-unavailable";
 }
 
 function StateCell({ cell }: { cell: HacoHeatmapDirectionCell | undefined }) {

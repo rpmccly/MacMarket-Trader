@@ -4,6 +4,7 @@ import {
 } from "@/lib/chart-history-range";
 
 export type ChartTime = string | number;
+export type HacoltDirection = "up" | "neutral" | "down" | string;
 
 export type HacoChartRequest = {
   symbol: string;
@@ -35,12 +36,12 @@ export type HacoChartPayload = {
   heikin_ashi_candles: Array<{ index: number; time: ChartTime; open: number; high: number; low: number; close: number; volume: number }>;
   markers: Array<{ index: number; time: ChartTime; marker_type: string; direction: string; price: number; text: string }>;
   haco_strip: Array<{ index: number; time: ChartTime; value: number; state: string }>;
-  hacolt_strip: Array<{ index: number; time: ChartTime; value: number; direction: string }>;
+  hacolt_strip: Array<{ index: number; time: ChartTime; value: number; direction: HacoltDirection }>;
   explanation: {
     current_haco_state: string;
     latest_flip: string;
     latest_flip_bars_ago: number | null;
-    current_hacolt_direction: string;
+    current_hacolt_direction: HacoltDirection;
   };
   data_source: string;
   fallback_mode: boolean;

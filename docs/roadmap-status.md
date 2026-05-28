@@ -2,6 +2,27 @@
 
 Last updated: 2026-05-27
 
+## 2026-05-27 Update - HACO/HACOLT Formula Parity
+The active HACO chart path now uses the confirmed MetaStock HACO formula with
+`avg=34` / `avgdn=34`, including recursive `PREV` behavior, `Ref(...,-1)`,
+zero-lag TEMA, and the documented `Alert(condition, 2)` interpretation as
+current-or-previous bar. The active HACOLT chart path now uses the confirmed
+Thinkorswim/Schwab HACOLT formula with `temaLength=55`, `emaLength=60`, and
+`candleSizeFactor=1.1`, including recursive `upwSave` / `neutral` state and
+the 100 / 50 / 0 output scale.
+
+The HACO workspace renders HACO as green/red and HACOLT as green/gray/red so
+neutral `50` is no longer treated as bearish/down. HACO Direction Heatmap
+continues to reuse the chart service for HACO LONG/SHORT state while retaining
+its existing dashboard semantics. The retired EMA(3)/EMA(8) HACO and
+EMA(21)/EMA(55) HACOLT proxies remain only as explicitly named legacy helpers;
+RecommendationService still calls those helpers to preserve recommendation,
+approval, replay, order, risk, and paper-execution semantics. Remaining parity
+risks: Thinkorswim prefetch/warmup can differ on early bars, session/RTH source
+windows must still match during external validation, no Thinkorswim short-HACO
+source is confirmed, and MetaStock logical precedence is implemented according
+to the source expression rather than simplified.
+
 ## 2026-05-27 Update - Provider-Backed 30M Verification
 Live Polygon/Massive 30M verification found that the first aggregate response
 already returned enough SPY 30-minute bars, but the provider also emitted a

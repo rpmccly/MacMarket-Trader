@@ -28,6 +28,26 @@ def _bars() -> list[dict[str, object]]:
     ]
 
 
+def _chart_bars_from_closes(closes: list[float]) -> list[Bar]:
+    base = date(2026, 1, 1)
+    bars: list[Bar] = []
+    previous = closes[0]
+    for idx, close in enumerate(closes):
+        open_ = previous
+        bars.append(
+            Bar(
+                date=base + timedelta(days=idx),
+                open=float(open_),
+                high=float(max(open_, close) + 1),
+                low=float(min(open_, close) - 1),
+                close=float(close),
+                volume=1_000_000 + idx,
+            )
+        )
+        previous = close
+    return bars
+
+
 def setup_module() -> None:
     init_db()
 
@@ -124,6 +144,18 @@ def test_haco_all_layers_share_identical_time_domain() -> None:
     assert hacolt_by_index == candle_by_index
     for marker in payload["markers"]:
         assert candle_by_index[marker["index"]] == marker["time"]
+
+
+def test_haco_chart_payload_preserves_hacolt_neutral_state() -> None:
+    closes = [100, 98, 96, 94, 92, 90] + list(range(92, 170, 2)) + list(range(169, 159, -1)) + list(range(159, 180))
+    payload = HacoChartService().build_payload("MTUM", "1D", _chart_bars_from_closes(closes))
+
+    neutral_points = [point for point in payload.hacolt_strip if point.value == 50]
+
+    assert neutral_points
+    assert all(point.direction == "neutral" for point in neutral_points)
+    assert {point.value for point in payload.hacolt_strip}.issubset({0, 50, 100})
+    assert {point.direction for point in payload.hacolt_strip}.issubset({"up", "neutral", "down"})
 
 
 def test_haco_intraday_1h_uses_unique_unix_second_times() -> None:

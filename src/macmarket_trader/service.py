@@ -36,7 +36,7 @@ from macmarket_trader.domain.time import utc_now
 from macmarket_trader.llm.base import LLMClient, LLMProviderUnavailable, LLMValidationError
 from macmarket_trader.llm.mock_extractor import MockEventExtractor, MockLLMClient
 from macmarket_trader.llm.registry import build_llm_client
-from macmarket_trader.indicators import compute_haco_states, compute_hacolt_direction
+from macmarket_trader.indicators import legacy_haco_ema_3_8, legacy_hacolt_ema_21_55
 from macmarket_trader.regime.engine import RegimeEngine
 from macmarket_trader.risk.engine import RiskEngine
 from macmarket_trader.risk_calendar.registry import build_risk_calendar_service
@@ -129,8 +129,11 @@ class RecommendationService:
             )
 
         closes = [bar.close for bar in bars]
-        haco_states = compute_haco_states(closes)
-        hacolt_states = compute_hacolt_direction(closes)
+        # Preserve recommendation-service behavior. The MetaStock/ToS parity
+        # indicators are active for chart/heatmap display; recommendation
+        # scoring and approval semantics are intentionally unchanged here.
+        haco_states = legacy_haco_ema_3_8(closes)
+        hacolt_states = legacy_hacolt_ema_21_55(closes)
         last_flip_idx = max((idx for idx, point in enumerate(haco_states) if point.flip), default=None)
         flip_recency = (len(haco_states) - last_flip_idx - 1) if last_flip_idx is not None else None
         latest_haco_state = haco_states[-1].state if haco_states else "neutral"

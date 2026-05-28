@@ -64,7 +64,7 @@ class HacoChartService:
         closes = [bar.close for bar in canonical_bars]
 
         ha_open, ha_high, ha_low, ha_close, haco_states = compute_haco_from_ha(opens, highs, lows, closes)
-        hacolt_states = compute_hacolt_direction(closes)
+        hacolt_states = compute_hacolt_direction(opens, highs, lows, closes)
 
         markers: list[HacoMarker] = []
         latest_flip = "none"

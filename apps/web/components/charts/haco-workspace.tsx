@@ -26,6 +26,13 @@ function formatSessionPolicy(value: string | null | undefined): string | null {
   return value.replaceAll("_", " ");
 }
 
+function hacoltColor(direction: string | null | undefined): string {
+  if (direction === "up") return "#21c06e";
+  if (direction === "neutral") return "#9ca3af";
+  if (direction === "down") return "#c64242";
+  return "#9fb0c3";
+}
+
 export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [symbol, setSymbol] = useState("SPY");
   const [timeframe, setTimeframe] = useState<SupportedTimeframe>("1D");
@@ -138,8 +145,8 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
     }
 
     if (selectedIndicators.includes("hacolt")) {
-      const hacoltSeries = hacoltChart.addHistogramSeries({ base: 0, color: "#4d8dff" });
-      hacoltSeries.setData(data.hacolt_strip.map((p) => ({ time: p.time as Time, value: p.value, color: p.direction === "up" ? "#4d8dff" : "#7a4dc1" })));
+      const hacoltSeries = hacoltChart.addHistogramSeries({ base: 0, color: "#21c06e" });
+      hacoltSeries.setData(data.hacolt_strip.map((p) => ({ time: p.time as Time, value: p.value, color: hacoltColor(p.direction) })));
     }
 
     let syncing = false;
@@ -220,7 +227,7 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
             <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem", minWidth: 130 }}>HACOLT direction</span>
             <span style={{
               fontWeight: 600,
-              color: summary?.current_hacolt_direction === "up" ? "#4d8dff" : summary?.current_hacolt_direction === "down" ? "#7a4dc1" : "#9fb0c3",
+              color: hacoltColor(summary?.current_hacolt_direction),
             }}>
               {summary?.current_hacolt_direction ?? "—"}
             </span>
@@ -241,6 +248,7 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
             const barsAgo = summary.latest_flip_bars_ago as number | undefined;
             const aligned = state === "green" && lt === "up";
             const diverged = (state === "green" && lt === "down") || (state === "red" && lt === "up");
+            const neutral = lt === "neutral";
             const stale = barsAgo != null && barsAgo > 5;
             let narrative = "";
             let narrativeColor = "#9fb0c3";
@@ -249,6 +257,13 @@ export function HacoWorkspace({ embedded = false }: { embedded?: boolean }) {
                 ? `HACO is green and HACOLT is trending up — aligned bullish — but the last flip was ${String(barsAgo)} bars ago. Confirm momentum is still active before entering.`
                 : `HACO is green and HACOLT is trending up. Momentum and long-term trend are aligned. Favorable context for long continuation setups.`;
               narrativeColor = "#21c06e";
+            } else if (neutral) {
+              narrative = state === "green"
+                ? "HACO is green while HACOLT is neutral. Short-term state is constructive, but long-term confirmation is not fully up."
+                : state === "red"
+                  ? "HACO is red while HACOLT is neutral. Short-term state is weak, but long-term confirmation has not flipped fully down."
+                  : "HACOLT is neutral. Treat the long-term strip as transitional context, not up or down confirmation.";
+              narrativeColor = "#9ca3af";
             } else if (diverged) {
               narrative = state === "green"
                 ? `HACO recently flipped green but HACOLT is still trending down. Short-term momentum is bullish but the long-term trend context is not supportive — treat as a counter-trend signal; tighter stops.`
