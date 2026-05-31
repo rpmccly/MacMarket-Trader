@@ -19,6 +19,7 @@ const navSections = [
       ["/recommendations", "Recommendation"],
       ["/replay-runs", "Replay"],
       ["/orders", "Paper Order"],
+      ["/agent-mode", "Agent Mode"],
     ],
   },
   {
@@ -49,6 +50,7 @@ const navSections = [
       ["/admin/pending-users", "Admin / Invites"],
       ["/admin/users", "Admin / Users"],
       ["/admin/provider-health", "Provider Health"],
+      ["/admin/data-parity", "Data Parity Lab"],
       ["/account", "Account"],
     ],
   },

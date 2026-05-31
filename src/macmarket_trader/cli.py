@@ -6,6 +6,7 @@ import argparse
 import json
 from datetime import date, timedelta
 
+from macmarket_trader.agent_mode.service import AgentModeService
 from macmarket_trader.dev.seed_demo import seed_demo_data
 from macmarket_trader.domain.schemas import Bar, PortfolioSnapshot, ReplayRunRequest
 from macmarket_trader.replay.engine import ReplayEngine
@@ -42,6 +43,7 @@ def main() -> None:
     sub.add_parser("init-db")
     sub.add_parser("seed-demo-data")
     sub.add_parser("run-due-strategy-schedules")
+    sub.add_parser("run-due-agent-mode")
     sub.add_parser("run-due-momentum-heatmap-reports")
     args = parser.parse_args()
 
@@ -83,6 +85,14 @@ def main() -> None:
     elif args.command == "run-due-strategy-schedules":
         init_db()
         payload = {"runs": strategy_report_service.run_due_schedules()}
+    elif args.command == "run-due-agent-mode":
+        init_db()
+        payload = {
+            "runs": AgentModeService().run_due(),
+            "status": "agent_mode_due_run_complete",
+            "paper_only": True,
+            "no_live_routing": True,
+        }
     elif args.command == "run-due-momentum-heatmap-reports":
         init_db()
         payload = {

@@ -1,6 +1,55 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-05-27
+Last updated: 2026-05-31
+
+## 2026-05-31 Update - Agent Mode MVP
+
+Completed in the current Phase 1 private-alpha hardening track:
+- Added protected `/agent-mode` console surface for a paper-only autonomous
+  operator loop with settings, latest run summary, paper book, proposed or
+  executed paper actions, candidate queue, decision memo, and data-quality
+  warnings.
+- Added approved-user Agent Mode endpoints for settings, run, and latest run
+  audit state. The backend rejects non-paper modes, caps the target book at
+  five paper positions, labels fallback/missing provider data, and rate-limits
+  the high-cost run endpoint.
+- Added persistent Agent Mode settings and run-audit tables plus a CLI
+  `run-due-agent-mode` command for once-per-day enabled paper runs.
+- Agent Mode reuses existing deterministic ranking, risk-calendar,
+  active-paper-position review, paper broker, order/fill persistence, and
+  paper position/trade lifecycle paths. It does not change provider defaults,
+  recommendation scoring, replay behavior, paper order semantics outside the
+  agent run, broker routing, schedules, or live trading behavior.
+
+Open/deferred:
+- The MVP does not implement scale/resize execution; scale/resize remains an
+  explicit setting and review intent only.
+- The daily runner is CLI-driven and must be invoked by the operator's existing
+  scheduler if autonomous daily operation is desired.
+
+## 2026-05-29 Update - Market Data Parity Lab
+
+Completed in the current Phase 1 trust/provider-coherence track:
+- Added an admin-only Market Data Parity Lab at `/admin/data-parity` for
+  read-only comparison of the current MacMarket market-data provider against
+  Schwab diagnostic market data.
+- Added Schwab OAuth state/token persistence with encrypted server-side token
+  storage, diagnostic quotes/price-history support, provider-health readiness
+  context, and admin API routes for running parity comparisons and reading
+  saved snapshots.
+- Added raw-bar, canonical-bar, indicator-bundle, and optional manual
+  Thinkorswim-reference comparison layers using existing MacMarket indicator
+  functions for True Momentum, HACO/HACOLT, Hi/Lo, and Squeeze Pro.
+- Added docs and tests for the read-only/admin-only parity workflow.
+
+Open/deferred:
+- Real Schwab/TOS visual validation still requires a configured Schwab app,
+  market-data entitlement, and manual Thinkorswim reference entry.
+- Schwab remains diagnostic-only and is not part of production provider
+  selection, broker routing, recommendation generation, replay, or paper-order
+  lifecycle.
+- Thinkorswim custom study values are not available from the Schwab market-data
+  API; TOS values remain manual references in this phase.
 
 ## 2026-05-27 Update - HACO/HACOLT Formula Parity
 The active HACO chart path now uses the confirmed MetaStock HACO formula with

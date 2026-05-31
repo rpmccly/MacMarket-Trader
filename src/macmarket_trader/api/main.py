@@ -9,12 +9,15 @@ from starlette.responses import JSONResponse
 
 from macmarket_trader.api.routes.admin import router as admin_router
 from macmarket_trader.api.routes.admin import user_router
+from macmarket_trader.api.routes.agent_mode import router as agent_mode_router
 from macmarket_trader.api.routes.charts import router as charts_router
+from macmarket_trader.api.routes.data_parity import router as data_parity_router
 from macmarket_trader.api.routes.haco_heatmap import router as haco_heatmap_router
 from macmarket_trader.api.routes.health import router as health_router
 from macmarket_trader.api.routes.momentum_heatmap import router as momentum_heatmap_router
 from macmarket_trader.api.routes.recommendations import router as recommendation_router
 from macmarket_trader.api.routes.replay import router as replay_router
+from macmarket_trader.api.routes.schwab import router as schwab_router
 from macmarket_trader.api.security import validate_mutation_origin, validate_rate_limit
 from macmarket_trader.config import settings, validate_auth_runtime_configuration
 from macmarket_trader.logging_config import configure_logging
@@ -71,6 +74,9 @@ app.include_router(replay_router)
 app.include_router(charts_router)
 app.include_router(momentum_heatmap_router)
 app.include_router(haco_heatmap_router)
+app.include_router(schwab_router)
 
 app.include_router(user_router)
+app.include_router(agent_mode_router)
+app.include_router(data_parity_router)
 app.include_router(admin_router)

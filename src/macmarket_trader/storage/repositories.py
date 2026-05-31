@@ -9,11 +9,13 @@ from copy import deepcopy
 import math
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from macmarket_trader.domain.enums import AppRole, ApprovalStatus
 from macmarket_trader.domain.models import (
+    AgentModeRunModel,
+    AgentModeSettingsModel,
     AppUserModel,
     AuditLogModel,
     AppInviteModel,
@@ -35,6 +37,9 @@ from macmarket_trader.domain.models import (
     PaperPositionModel,
     PaperTradeModel,
     ProviderHealthModel,
+    ProviderOAuthStateModel,
+    ProviderOAuthTokenModel,
+    ProviderParitySnapshotModel,
     RecommendationEvidenceModel,
     RecommendationModel,
     ReplayRunModel,
@@ -68,6 +73,9 @@ from macmarket_trader.options.paper_close import OptionPaperCloseError
 from macmarket_trader.options.paper_contracts import prepare_option_paper_structure
 
 SessionFactory = Callable[[], Session]
+
+
+DEFAULT_AGENT_MODE_MANUAL_SYMBOLS = ["SPY", "QQQ", "MTUM"]
 
 
 # Pass 4 — display_id support.
@@ -116,6 +124,126 @@ def display_id_or_fallback(row_display_id: str | None, recommendation_id: str) -
         return row_display_id
     tail = (recommendation_id or "")[-6:] if recommendation_id else ""
     return f"Rec #{tail}" if tail else "Rec #—"
+
+
+class AgentModeRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    @staticmethod
+    def default_settings_payload(*, app_user_id: int) -> dict[str, object]:
+        return {
+            "app_user_id": app_user_id,
+            "enabled": False,
+            "paused": False,
+            "kill_switch_enabled": False,
+            "daily_run_time": "15:45",
+            "timezone": "America/New_York",
+            "universe_source": "manual",
+            "manual_symbols": list(DEFAULT_AGENT_MODE_MANUAL_SYMBOLS),
+            "watchlist_ids": [],
+            "max_positions": 5,
+            "scan_depth": 12,
+            "allow_opens": True,
+            "allow_closes": True,
+            "allow_scale_resize": False,
+        }
+
+    def get_or_create_settings(self, *, app_user_id: int) -> AgentModeSettingsModel:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == app_user_id)
+            ).scalar_one_or_none()
+            if row is not None:
+                return row
+            row = AgentModeSettingsModel(**self.default_settings_payload(app_user_id=app_user_id))
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def update_settings(self, *, app_user_id: int, updates: dict[str, object]) -> AgentModeSettingsModel:
+        allowed = {
+            "enabled",
+            "paused",
+            "kill_switch_enabled",
+            "daily_run_time",
+            "timezone",
+            "universe_source",
+            "manual_symbols",
+            "watchlist_ids",
+            "max_positions",
+            "scan_depth",
+            "allow_opens",
+            "allow_closes",
+            "allow_scale_resize",
+        }
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == app_user_id)
+            ).scalar_one_or_none()
+            if row is None:
+                row = AgentModeSettingsModel(**self.default_settings_payload(app_user_id=app_user_id))
+                session.add(row)
+                session.flush()
+            for key, value in updates.items():
+                if key in allowed:
+                    setattr(row, key, value)
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def create_run(
+        self,
+        *,
+        app_user_id: int,
+        run_id: str,
+        status: str,
+        execution_mode: str,
+        dry_run: bool,
+        intent_count: int,
+        executed_order_count: int,
+        request_json: dict[str, object],
+        response_json: dict[str, object],
+        completed_at: datetime | None,
+    ) -> AgentModeRunModel:
+        with self.session_factory() as session:
+            row = AgentModeRunModel(
+                app_user_id=app_user_id,
+                run_id=run_id,
+                status=status,
+                execution_mode=execution_mode,
+                dry_run=dry_run,
+                intent_count=intent_count,
+                executed_order_count=executed_order_count,
+                request_json=request_json,
+                response_json=response_json,
+                completed_at=completed_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def latest_run(self, *, app_user_id: int) -> AgentModeRunModel | None:
+        with self.session_factory() as session:
+            stmt = (
+                select(AgentModeRunModel)
+                .where(AgentModeRunModel.app_user_id == app_user_id)
+                .order_by(AgentModeRunModel.created_at.desc())
+                .limit(1)
+            )
+            return session.execute(stmt).scalar_one_or_none()
+
+    def list_enabled_settings(self) -> list[AgentModeSettingsModel]:
+        with self.session_factory() as session:
+            stmt = select(AgentModeSettingsModel).where(
+                AgentModeSettingsModel.enabled.is_(True),
+                AgentModeSettingsModel.paused.is_(False),
+                AgentModeSettingsModel.kill_switch_enabled.is_(False),
+            )
+            return list(session.execute(stmt).scalars())
 
 
 def gross_pnl_or_fallback(row: PaperTradeModel) -> float:
@@ -2235,6 +2363,237 @@ class ProviderHealthRepository:
             session.commit()
             session.refresh(row)
             return row
+
+
+class ProviderOAuthRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _aware(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    def create_state(
+        self,
+        *,
+        provider: str,
+        app_user_id: int,
+        state: str,
+        expires_at: datetime,
+        return_path: str = "/admin/data-parity",
+    ) -> ProviderOAuthStateModel:
+        safe_return_path = return_path if return_path.startswith("/") and not return_path.startswith("//") else "/admin/data-parity"
+        with self.session_factory() as session:
+            row = ProviderOAuthStateModel(
+                provider=provider,
+                app_user_id=app_user_id,
+                state=state,
+                return_path=safe_return_path[:255],
+                expires_at=expires_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def consume_state(
+        self,
+        *,
+        provider: str,
+        state: str,
+        now: datetime | None = None,
+    ) -> tuple[str, ProviderOAuthStateModel | None]:
+        reference = now or self._now()
+        with self.session_factory() as session:
+            row = session.execute(
+                select(ProviderOAuthStateModel).where(
+                    ProviderOAuthStateModel.provider == provider,
+                    ProviderOAuthStateModel.state == state,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return "missing", None
+            if row.used_at is not None:
+                return "used", row
+            if self._aware(row.expires_at) < reference:
+                return "expired", row
+
+            result = session.execute(
+                update(ProviderOAuthStateModel)
+                .where(
+                    ProviderOAuthStateModel.provider == provider,
+                    ProviderOAuthStateModel.state == state,
+                    ProviderOAuthStateModel.used_at.is_(None),
+                    ProviderOAuthStateModel.expires_at >= reference,
+                )
+                .values(used_at=reference)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                session.rollback()
+                refreshed = session.execute(
+                    select(ProviderOAuthStateModel).where(
+                        ProviderOAuthStateModel.provider == provider,
+                        ProviderOAuthStateModel.state == state,
+                    )
+                ).scalar_one_or_none()
+                if refreshed is None:
+                    return "missing", None
+                if refreshed.used_at is not None:
+                    return "used", refreshed
+                if self._aware(refreshed.expires_at) < reference:
+                    return "expired", refreshed
+                return "used", refreshed
+            session.commit()
+            consumed = session.execute(
+                select(ProviderOAuthStateModel).where(
+                    ProviderOAuthStateModel.provider == provider,
+                    ProviderOAuthStateModel.state == state,
+                )
+            ).scalar_one()
+            return "ok", consumed
+
+    def get_token(self, *, provider: str) -> ProviderOAuthTokenModel | None:
+        with self.session_factory() as session:
+            return session.execute(
+                select(ProviderOAuthTokenModel).where(ProviderOAuthTokenModel.provider == provider)
+            ).scalar_one_or_none()
+
+    def save_token_bundle(
+        self,
+        *,
+        provider: str,
+        app_user_id: int | None,
+        encrypted_access_token: str,
+        encrypted_refresh_token: str | None,
+        access_token_expires_at: datetime | None,
+        refresh_token_expires_at: datetime | None,
+        token_type: str | None,
+        scope: str | None,
+        status: str = "connected",
+        last_refresh_at: datetime | None = None,
+    ) -> ProviderOAuthTokenModel:
+        now = self._now()
+        with self.session_factory() as session:
+            row = session.execute(
+                select(ProviderOAuthTokenModel).where(ProviderOAuthTokenModel.provider == provider)
+            ).scalar_one_or_none()
+            if row is None:
+                row = ProviderOAuthTokenModel(
+                    provider=provider,
+                    app_user_id=app_user_id,
+                    encrypted_access_token=encrypted_access_token,
+                    encrypted_refresh_token=encrypted_refresh_token or "",
+                    access_token_expires_at=access_token_expires_at,
+                    refresh_token_expires_at=refresh_token_expires_at,
+                    token_type=token_type,
+                    scope=scope,
+                    status=status,
+                    last_refresh_at=last_refresh_at,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.app_user_id = app_user_id
+                row.encrypted_access_token = encrypted_access_token
+                if encrypted_refresh_token is not None:
+                    row.encrypted_refresh_token = encrypted_refresh_token
+                row.access_token_expires_at = access_token_expires_at
+                row.refresh_token_expires_at = refresh_token_expires_at
+                row.token_type = token_type
+                row.scope = scope
+                row.status = status
+                row.last_error = None
+                row.last_refresh_at = last_refresh_at
+                row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def mark_token_status(
+        self,
+        *,
+        provider: str,
+        status: str,
+        last_error: str | None = None,
+    ) -> ProviderOAuthTokenModel | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(ProviderOAuthTokenModel).where(ProviderOAuthTokenModel.provider == provider)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            row.status = status
+            row.last_error = last_error[:300] if last_error else None
+            row.updated_at = self._now()
+            session.commit()
+            session.refresh(row)
+            return row
+
+
+class ProviderParitySnapshotRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def create(
+        self,
+        *,
+        app_user_id: int,
+        run_id: str,
+        request_json: dict[str, object],
+        response_json: dict[str, object],
+        provider_current: str,
+        provider_candidate: str = "schwab",
+    ) -> ProviderParitySnapshotModel:
+        with self.session_factory() as session:
+            row = ProviderParitySnapshotModel(
+                app_user_id=app_user_id,
+                run_id=run_id,
+                request_json=deepcopy(request_json),
+                response_json=deepcopy(response_json),
+                provider_current=provider_current,
+                provider_candidate=provider_candidate,
+                created_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def list_recent(
+        self,
+        *,
+        app_user_id: int,
+        limit: int = 25,
+    ) -> list[ProviderParitySnapshotModel]:
+        bounded_limit = max(1, min(int(limit or 25), 50))
+        with self.session_factory() as session:
+            stmt = (
+                select(ProviderParitySnapshotModel)
+                .where(ProviderParitySnapshotModel.app_user_id == app_user_id)
+                .order_by(ProviderParitySnapshotModel.created_at.desc(), ProviderParitySnapshotModel.id.desc())
+                .limit(bounded_limit)
+            )
+            return list(session.execute(stmt).scalars())
+
+    def get_by_run_id(
+        self,
+        *,
+        app_user_id: int,
+        run_id: str,
+    ) -> ProviderParitySnapshotModel | None:
+        with self.session_factory() as session:
+            return session.execute(
+                select(ProviderParitySnapshotModel).where(
+                    ProviderParitySnapshotModel.app_user_id == app_user_id,
+                    ProviderParitySnapshotModel.run_id == run_id,
+                )
+            ).scalar_one_or_none()
 
 
 class DashboardRepository:

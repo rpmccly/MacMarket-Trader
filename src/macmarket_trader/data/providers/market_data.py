@@ -73,6 +73,15 @@ OPTION_ETF_UNDERLYINGS = {
 OPTION_CONTRACT_REFERENCE_MAX_PAGES = 8
 
 
+def _format_rth_bucket_boundaries(output_timeframe: str) -> list[str]:
+    boundaries: list[str] = []
+    for start_minute, end_minute in RTH_BUCKETS_BY_TIMEFRAME.get(output_timeframe.upper(), []):
+        boundaries.append(
+            f"{start_minute // 60:02d}:{start_minute % 60:02d}-{end_minute // 60:02d}:{end_minute % 60:02d}"
+        )
+    return boundaries
+
+
 def _finite_float(value: Any) -> float | None:
     try:
         number = float(value)
@@ -300,6 +309,8 @@ def _aggregate_regular_hours_intraday_bars(
         "output_timeframe": output_timeframe.upper(),
         "session_policy": "regular_hours",
         "source_session_policy": source_session_policy,
+        "regular_hours_timezone": str(US_EQUITY_TIMEZONE),
+        "rth_bucket_boundaries": _format_rth_bucket_boundaries(output_timeframe),
         "filtered_extended_hours_count": filtered_extended_hours_count,
         "rth_bucket_count": len(selected),
         "first_bar_timestamp": selected[0].timestamp.isoformat() if selected and selected[0].timestamp else None,
@@ -1465,7 +1476,8 @@ class MarketDataService:
         return bars, "fallback", True, metadata
 
     def historical_bars(self, symbol: str, timeframe: str = "1D", limit: int = 120) -> tuple[list[Bar], str, bool]:
-        cache_key = f"hist::{symbol.upper()}::{timeframe}::{limit}"
+        provider_key = self._provider.name
+        cache_key = f"hist::{provider_key}::{symbol.upper()}::{timeframe}::{limit}"
         cached = self._historical_cache.get(cache_key)
         if cached is not None:
             bars, source, fallback_mode, metadata = cached
@@ -1506,7 +1518,8 @@ class MarketDataService:
         return bars, source, fallback_mode
 
     def latest_snapshot(self, symbol: str, timeframe: str = "1D") -> MarketSnapshot:
-        cache_key = f"latest::{symbol.upper()}::{timeframe}"
+        provider_key = self._provider.name
+        cache_key = f"latest::{provider_key}::{symbol.upper()}::{timeframe}"
         cached = self._latest_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1523,7 +1536,8 @@ class MarketDataService:
 
     def index_snapshot(self, symbol: str) -> IndexMarketSnapshot:
         normalized = option_reference_underlying_ticker(symbol)
-        cache_key = f"index_snapshot::{normalized}"
+        provider_key = self._provider.name
+        cache_key = f"index_snapshot::{provider_key}::{normalized}"
         cached = self._latest_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1547,7 +1561,9 @@ class MarketDataService:
 
     def indices_data_health(self, sample_symbols: tuple[str, ...] = ("SPX", "NDX", "RUT", "VIX")) -> dict[str, object]:
         symbols = tuple(option_reference_underlying_ticker(symbol) for symbol in sample_symbols if str(symbol).strip())
-        cached = self._options_health_cache.get("indices_health::" + ",".join(symbols))
+        provider_key = self._provider.name
+        cache_key = f"indices_health::{provider_key}::" + ",".join(symbols)
+        cached = self._options_health_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -1560,7 +1576,7 @@ class MarketDataService:
                 "entitlement_status": "unknown",
                 "latency_ms": None,
             }
-            self._options_health_cache.set("indices_health::" + ",".join(symbols), result, settings.market_data_latest_cache_ttl_seconds)
+            self._options_health_cache.set(cache_key, result, settings.market_data_latest_cache_ttl_seconds)
             return result
         if not isinstance(self._provider, PolygonMarketDataProvider) or not self._provider.is_configured():
             result = {
@@ -1571,7 +1587,7 @@ class MarketDataService:
                 "entitlement_status": "unknown",
                 "latency_ms": None,
             }
-            self._options_health_cache.set("indices_health::" + ",".join(symbols), result, settings.market_data_latest_cache_ttl_seconds)
+            self._options_health_cache.set(cache_key, result, settings.market_data_latest_cache_ttl_seconds)
             return result
 
         started = monotonic()
@@ -1636,7 +1652,7 @@ class MarketDataService:
             "latency_ms": elapsed,
             "last_success_at": self._provider._last_success_at.isoformat() if self._provider._last_success_at else None,
         }
-        self._options_health_cache.set("indices_health::" + ",".join(symbols), result, settings.market_data_latest_cache_ttl_seconds)
+        self._options_health_cache.set(cache_key, result, settings.market_data_latest_cache_ttl_seconds)
         return result
 
     def options_chain_preview(self, symbol: str, limit: int = 50) -> dict[str, Any] | None:
@@ -1721,7 +1737,8 @@ class MarketDataService:
     def option_contract_snapshot(self, *, underlying_symbol: str, option_symbol: str) -> OptionContractSnapshot:
         normalized_underlying = option_reference_underlying_ticker(underlying_symbol)
         normalized_option = option_symbol.upper().strip()
-        cache_key = f"option_snapshot::{normalized_underlying}::{normalized_option}"
+        provider_key = self._provider.name
+        cache_key = f"option_snapshot::{provider_key}::{normalized_underlying}::{normalized_option}"
         cached = self._option_snapshot_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -2038,7 +2055,9 @@ class MarketDataService:
     def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
         sample_symbol = sample_symbol.upper().strip() or "SPY"
         is_index_probe = option_underlying_asset_type(sample_symbol) == "index"
-        cached = self._options_health_cache.get(f"options_health::{sample_symbol}")
+        provider_key = self._provider.name
+        cache_key = f"options_health::{provider_key}::{sample_symbol}"
+        cached = self._options_health_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -2049,7 +2068,7 @@ class MarketDataService:
                 details="Options data readiness is disabled because Polygon market data is not selected.",
                 elapsed_ms=None,
             )
-            self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+            self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
             return result
         if not isinstance(self._provider, PolygonMarketDataProvider) or not self._provider.is_configured():
             result = self._options_health_result(
@@ -2058,7 +2077,7 @@ class MarketDataService:
                 details="Options data readiness requires Polygon API key and base URL configuration.",
                 elapsed_ms=None,
             )
-            self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+            self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
             return result
 
         started = monotonic()
@@ -2081,7 +2100,7 @@ class MarketDataService:
                     underlying_price=discovery.underlying_price,
                     entitlement_status="not_entitled" if discovery.underlying_entitlement_error else "unknown",
                 )
-                self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                 return result
             if discovery.entitlement_error:
                 elapsed = round((monotonic() - started) * 1000, 2)
@@ -2093,7 +2112,7 @@ class MarketDataService:
                     underlying_price=discovery.underlying_price,
                     entitlement_status="not_entitled",
                 )
-                self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                 return result
             samples = discovery.samples
             if not samples and not is_index_probe:
@@ -2108,7 +2127,7 @@ class MarketDataService:
                     underlying_price=discovery.underlying_price,
                     entitlement_status="unknown",
                 )
-                self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                 return result
 
             last_snapshot: OptionContractSnapshot | None = None
@@ -2143,7 +2162,7 @@ class MarketDataService:
                         underlying_price=discovery.underlying_price,
                         entitlement_status="not_entitled",
                     )
-                    self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                    self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                     return result
                 except (ProviderUnavailableError, SymbolNotFoundError, HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
                     candidate_attempts.append(
@@ -2175,7 +2194,7 @@ class MarketDataService:
                         underlying_price=discovery.underlying_price,
                         entitlement_status="not_entitled",
                     )
-                    self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                    self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                     return result
                 if snapshot.mark_method in {"quote_mid", "last_trade"} and not snapshot.stale:
                     elapsed = round((monotonic() - started) * 1000, 2)
@@ -2190,7 +2209,7 @@ class MarketDataService:
                         underlying_price=discovery.underlying_price,
                         entitlement_status="entitled",
                     )
-                    self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                    self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                     return result
                 if snapshot.mark_method == "prior_close_fallback" and warn_snapshot is None:
                     warn_snapshot = snapshot
@@ -2210,7 +2229,7 @@ class MarketDataService:
                     underlying_price=discovery.underlying_price,
                     entitlement_status="entitled",
                 )
-                self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+                self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                 return result
 
             elapsed = round((monotonic() - started) * 1000, 2)
@@ -2253,7 +2272,7 @@ class MarketDataService:
                 elapsed_ms=elapsed,
                 entitlement_status="not_entitled" if state == "failed_not_entitled" else "unknown",
             )
-        self._options_health_cache.set(f"options_health::{sample_symbol}", result, settings.market_data_option_snapshot_cache_ttl_seconds)
+        self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
         return result
 
     def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:

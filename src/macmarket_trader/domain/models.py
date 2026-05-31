@@ -99,6 +99,54 @@ class ProviderHealthModel(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
+class ProviderOAuthTokenModel(Base):
+    __tablename__ = "provider_oauth_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    app_user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"), nullable=True, index=True)
+    encrypted_access_token: Mapped[str] = mapped_column(Text)
+    encrypted_refresh_token: Mapped[str] = mapped_column(Text)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)
+    last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
+
+
+class ProviderOAuthStateModel(Base):
+    __tablename__ = "provider_oauth_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    state: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    return_path: Mapped[str] = mapped_column(String(255), default="/admin/data-parity")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ProviderParitySnapshotModel(Base):
+    __tablename__ = "provider_parity_snapshots"
+    __table_args__ = (
+        Index("ix_provider_parity_snapshots_user_created", "app_user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    run_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    request_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    response_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    provider_current: Mapped[str] = mapped_column(String(64), index=True)
+    provider_candidate: Mapped[str] = mapped_column(String(64), default="schwab", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class RecommendationModel(Base):
     __tablename__ = "recommendations"
 
@@ -546,6 +594,48 @@ class PaperTradeModel(Base):
     replay_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     close_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class AgentModeSettingsModel(Base):
+    __tablename__ = "agent_mode_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    kill_switch_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    daily_run_time: Mapped[str] = mapped_column(String(8), default="15:45")
+    timezone: Mapped[str] = mapped_column(String(64), default="America/New_York")
+    universe_source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    manual_symbols: Mapped[list[str]] = mapped_column(JSON, default=list)
+    watchlist_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    max_positions: Mapped[int] = mapped_column(Integer, default=5)
+    scan_depth: Mapped[int] = mapped_column(Integer, default=12)
+    allow_opens: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_closes: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_scale_resize: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
+
+
+class AgentModeRunModel(Base):
+    __tablename__ = "agent_mode_runs"
+    __table_args__ = (
+        Index("ix_agent_mode_runs_user_created", "app_user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
+    execution_mode: Mapped[str] = mapped_column(String(16), default="paper", index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    intent_count: Mapped[int] = mapped_column(Integer, default=0)
+    executed_order_count: Mapped[int] = mapped_column(Integer, default=0)
+    request_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    response_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class PaperOptionOrderModel(Base):

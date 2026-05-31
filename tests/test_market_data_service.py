@@ -72,6 +72,19 @@ def test_market_data_fallback_when_polygon_disabled(monkeypatch) -> None:
     assert fallback_mode is True
 
 
+def test_market_data_cache_keys_include_provider_identity(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "market_data_provider", "fallback")
+    monkeypatch.setattr(settings, "market_data_enabled", False)
+
+    service = MarketDataService()
+    service.historical_bars("AAPL", "1D", 5)
+    service.latest_snapshot("AAPL", "1D")
+
+    assert "hist::fallback::AAPL::1D::5" in service._historical_cache._store
+    assert "latest::fallback::AAPL::1D" in service._latest_cache._store
+
+
 def test_polygon_historical_bars_normalization(monkeypatch) -> None:
     monkeypatch.setattr(settings, "polygon_api_key", "polygon-key")
     provider = PolygonMarketDataProvider()

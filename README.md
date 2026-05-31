@@ -18,6 +18,8 @@ Its job is to:
 This root `README.md` is the **canonical architecture charter** for the repository.
 
 - `docs/` may expand on specific topics.
+- `docs/agent-mode.md` covers the paper-only autonomous Agent Mode operator loop.
+- `docs/data-parity-lab.md` covers the admin-only Schwab-vs-current-provider market-data parity diagnostic lab.
 - `docs/` must not replace or materially shrink the root architecture definition.
 - Do not auto-condense this README into a status page.
 - The root README must remain the main source of truth for mandate, pipeline, constraints, and subsystem design.

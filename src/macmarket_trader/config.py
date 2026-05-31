@@ -102,6 +102,28 @@ class Settings(BaseSettings):
     polygon_timeout_seconds: int = 8
     workflow_demo_fallback: bool = False
 
+    # Schwab Trader API market-data diagnostics. Schwab is diagnostic-only in
+    # this repo slice; it is not part of primary provider selection, broker
+    # routing, recommendation generation, replay, or paper order behavior.
+    schwab_enabled: bool = False
+    schwab_client_id: str = ""
+    schwab_client_secret: str = ""
+    schwab_redirect_uri: str = "https://api.macmarket.io/auth/schwab/callback"
+    schwab_base_url: str = "https://api.schwabapi.com"
+    schwab_auth_url: str = "https://api.schwabapi.com/v1/oauth/authorize"
+    schwab_token_url: str = "https://api.schwabapi.com/v1/oauth/token"
+    schwab_market_data_base_url: str = "https://api.schwabapi.com/marketdata/v1"
+    schwab_request_timeout_seconds: int = 8
+    schwab_access_token_refresh_leeway_seconds: int = 90
+    schwab_token_encryption_key: str = ""
+
+    # Admin-only Market Data Parity Lab controls.
+    data_parity_enabled: bool = True
+    data_parity_default_lookback_bars: int = 250
+    data_parity_max_lookback_bars: int = 500
+    data_parity_max_symbols: int = 10
+    data_parity_save_snapshots: bool = True
+
     # news provider config
     news_provider: str = "mock"
     news_polygon_max_articles: int = 10

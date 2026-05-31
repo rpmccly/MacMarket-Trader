@@ -47,6 +47,7 @@ from macmarket_trader.data.providers.market_data import (
     option_underlying_asset_type,
     unavailable_option_contract_snapshot,
 )
+from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider, schwab_connection_status
 from macmarket_trader.data.providers.registry import build_email_provider, build_market_data_service
 from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
 from macmarket_trader.domain.time import calendar_days_to_expiration, utc_now
@@ -93,7 +94,7 @@ from macmarket_trader.email_templates import render_approval_html, render_invite
 from macmarket_trader.strategy_reports import StrategyReportService
 from macmarket_trader.strategy_registry import get_strategy_by_display_name, list_strategies
 from macmarket_trader.storage.db import SessionLocal
-from macmarket_trader.storage.repositories import DashboardRepository, EmailLogRepository, InviteRepository, OptionPaperRepository, OrderRepository, PaperPortfolioRepository, RecommendationRepository, ReplayRepository, StrategyReportRepository, SymbolUniverseRepository, UserRepository, WatchlistRepository, commission_paid_for_trade, display_id_or_fallback, gross_pnl_or_fallback, net_pnl_or_fallback
+from macmarket_trader.storage.repositories import DashboardRepository, EmailLogRepository, InviteRepository, OptionPaperRepository, OrderRepository, PaperPortfolioRepository, ProviderOAuthRepository, RecommendationRepository, ReplayRepository, StrategyReportRepository, SymbolUniverseRepository, UserRepository, WatchlistRepository, commission_paid_for_trade, display_id_or_fallback, gross_pnl_or_fallback, net_pnl_or_fallback
 from macmarket_trader.domain.models import AuditLogModel
 
 
@@ -329,6 +330,7 @@ paper_portfolio_repo = PaperPortfolioRepository(SessionLocal)
 watchlist_repo = WatchlistRepository(SessionLocal)
 symbol_universe_repo = SymbolUniverseRepository(SessionLocal)
 strategy_report_repo = StrategyReportRepository(SessionLocal)
+provider_oauth_repo = ProviderOAuthRepository(SessionLocal)
 email_provider = build_email_provider()
 market_data_service = build_market_data_service()
 recommendation_service = RecommendationService()
@@ -6787,6 +6789,51 @@ def _llm_readiness(*, probe: bool = False) -> dict[str, object]:
     }
 
 
+def _schwab_market_data_readiness() -> dict[str, object]:
+    status = schwab_connection_status(repo=provider_oauth_repo, cfg=settings)
+    latency_ms = None
+    last_success_at = None
+    probe_state = "skipped"
+    if status.get("configured") and status.get("token_status") == "connected":
+        provider = SchwabMarketDataProvider(repo=provider_oauth_repo, cfg=settings)
+        health = provider.health_check(sample_symbol="SPY")
+        probe_state = "ok" if health.status == "ok" else "degraded"
+        latency_ms = health.latency_ms
+        last_success_at = health.last_success_at.isoformat() if health.last_success_at else None
+        status["status"] = "ok" if health.status == "ok" else "degraded"
+        status["details"] = health.details
+    elif not status.get("enabled"):
+        probe_state = "skipped"
+    elif not status.get("configured"):
+        probe_state = "unavailable"
+    else:
+        probe_state = "degraded"
+
+    config_state = _config_state(enabled=bool(status.get("enabled")), configured=bool(status.get("configured")))
+    return {
+        "provider": "schwab_market_data",
+        "mode": "diagnostic",
+        "status": status.get("status"),
+        "configured": bool(status.get("configured")),
+        "credentials_present": bool(status.get("credentials_present")),
+        "oauth_connected": bool(status.get("oauth_connected")),
+        "token_status": status.get("token_status"),
+        "config_state": config_state,
+        "probe_state": probe_state,
+        "probe_status": probe_state,
+        "sample_symbol": "SPY",
+        "latency_ms": latency_ms,
+        "last_success_at": last_success_at,
+        "details": status.get("details"),
+        "operational_impact": (
+            "Schwab is diagnostic-only in the Market Data Parity Lab. It is not the active production provider "
+            "and does not enable broker execution, live trading, or order routing."
+        ),
+        "readiness_scope": "read_only_market_data_diagnostics",
+        "active_production_provider": False,
+    }
+
+
 @router.get("/provider-health")
 def provider_health(
     _admin=Depends(require_admin),
@@ -6833,6 +6880,7 @@ def provider_health(
             _options_data_readiness(),
             _index_options_data_readiness(),
             _llm_readiness(probe=probe_llm),
+            _schwab_market_data_readiness(),
             {
                 "provider": "market_data",
                 "mode": summary["market_data"],
