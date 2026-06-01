@@ -28,7 +28,10 @@ vi.mock("@/components/operator-ui", async () => {
 });
 
 vi.mock("@/lib/agent-mode-api", () => ({
+  fetchAgentModePerformance: vi.fn(async () => ({ ok: true, data: null })),
+  fetchAgentModeRuns: vi.fn(async () => ({ ok: true, data: { items: [] } })),
   fetchAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
+  fetchAgentModeTrades: vi.fn(async () => ({ ok: true, data: { items: [] } })),
   fetchLatestAgentModeRun: vi.fn(async () => ({ ok: true, data: null })),
   runAgentMode: vi.fn(async () => ({ ok: true, data: null })),
   saveAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
@@ -48,14 +51,17 @@ describe("AgentModeConsole", () => {
     const html = renderToStaticMarkup(<AgentModeConsole />);
 
     expect(html).toContain("Agent Mode");
-    expect(html).toContain("Autonomous paper-trading operator");
+    expect(html).toContain("Paper-only performance cockpit");
     expect(html).toContain("Paper only. No live routing. Disable anytime.");
-    expect(html).toContain("Agent status/settings");
-    expect(html).toContain("Latest run summary");
-    expect(html).toContain("Current paper book");
-    expect(html).toContain("Proposed/executed paper actions");
-    expect(html).toContain("Candidate queue");
-    expect(html).toContain("Decision memo");
+    expect(html).toContain("Overview");
+    expect(html).toContain("Runs");
+    expect(html).toContain("Trades");
+    expect(html).toContain("Positions");
+    expect(html).toContain("Performance");
+    expect(html).toContain("Settings");
+    expect(html).toContain("Latest run counts");
+    expect(html).toContain("Grouped candidate queue");
+    expect(html).toContain("Paper actions");
     expect(html).toContain("Data quality / warnings");
   });
 
@@ -65,11 +71,30 @@ describe("AgentModeConsole", () => {
     expect(source).toContain("saveAgentModeSettings");
     expect(source).toContain("runAgentMode");
     expect(source).toContain("fetchLatestAgentModeRun");
+    expect(source).toContain("fetchAgentModeRuns");
+    expect(source).toContain("fetchAgentModeTrades");
+    expect(source).toContain("fetchAgentModePerformance");
     expect(source).toContain("Agent Mode unavailable");
-    expect(source).toContain("Dry-run state: no paper orders are created.");
-    expect(source).toContain("Completed through paper lifecycle only.");
+    expect(source).toContain("window.confirm");
+    expect(source).toContain("Enabled paper run completed through Agent Mode paper lifecycle only.");
     expect(source).toContain("Dry-run completed. No paper orders were created.");
-    expect(source).toContain("Completed");
+    expect(source).toContain("Enabled paper mode can create paper orders or close paper positions through the Agent Mode paper lifecycle.");
+    expect(source).toContain("Executed");
+  });
+
+  it("contains performance cockpit tables and count consistency fields", () => {
+    expect(source).toContain("paper opens");
+    expect(source).toContain("paper closes");
+    expect(source).toContain("cash/no trade");
+    expect(source).toContain("executed actions");
+    expect(source).toContain("Cumulative realized P&L");
+    expect(source).toContain("Profit factor");
+    expect(source).toContain("Run history");
+    expect(source).toContain("Trade ledger");
+    expect(source).toContain("Current open paper positions");
+    expect(source).toContain("paperOpensExecuted");
+    expect(source).toContain("paperClosesExecuted");
+    expect(source).toContain("totalExecutedActions");
   });
 
   it("uses paper-safe language only", () => {

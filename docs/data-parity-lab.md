@@ -81,6 +81,10 @@ Layer 1 compares raw provider bars:
 
 - bar counts
 - first/latest timestamps
+- full UTC and `America/New_York` latest-bar timestamps for each provider
+- measured lag in minutes versus the server run time
+- measured lag in minutes versus the expected latest regular-hours market bar
+- timestamp-delta and latest-common aligned timestamp metadata
 - latest OHLCV
 - maximum OHLC delta on aligned timestamps
 - maximum volume delta
@@ -115,6 +119,35 @@ functions only:
 If a component is not present or fails safely, the response marks that component
 unavailable instead of inventing replacement math.
 
+## Freshness and Delay
+
+The lab measures freshness from provider timestamps only. It does not assume a
+provider is delayed or real-time from documentation, subscription labels, or
+account names.
+
+Each row exposes:
+
+- server run time in UTC and `America/New_York`
+- detected market session state: `premarket`, `regular`, `after-hours`, or
+  `closed`
+- expected latest regular-hours market bar for the requested/source timeframe
+- latest current-provider bar timestamp
+- latest Schwab bar timestamp
+- latest common aligned timestamp used for canonical/indicator comparison
+- provider lag in minutes versus the server run time
+- provider lag in minutes versus the expected latest market bar
+- timestamp delta between current-provider and Schwab latest bars
+- freshness classification: `real_time_like`, `delayed_15_min_like`, `stale`,
+  or `not_comparable`
+
+The delay classification is intentionally measured, not assumed. During the
+regular session, a latest provider bar around 15 minutes behind the expected
+latest market bar is labeled `delayed_15_min_like`; a bar within tolerance is
+`real_time_like`; and timestamps outside tolerance are labeled `stale` or
+`not_comparable`. The session model is a regular-hours weekday diagnostic model
+for U.S. equities and ETFs; it does not replace a full exchange holiday
+calendar.
+
 ## Thinkorswim References
 
 Schwab market-data APIs provide market data, not custom Thinkorswim study output.
@@ -132,19 +165,29 @@ entered TOS value.
 
 ## Root-Cause Verdicts
 
-- `schwab_not_connected`: Schwab OAuth/config is missing, expired, or needs
-  reconnect.
-- `raw_provider_mismatch`: current-provider raw bars differ materially from
-  Schwab raw bars.
-- `normalization_mismatch`: raw bars broadly match but canonical MacMarket bars
-  differ after normalization/resampling.
-- `indicator_mismatch`: canonical bars match but deterministic indicator output
-  differs.
+The lab separates "not comparable yet" from true mismatch states. Indicator
+bundles are compared only after canonical bars match on aligned timestamps. If
+providers are not aligned to the same canonical timestamp, indicator comparison
+is skipped rather than labeled as an indicator mismatch.
+
+- `provider_unavailable`: a provider, entitlement, parsing, or validation error
+  prevented comparison.
+- `auth_unavailable`: Schwab OAuth/config/token state is not usable for the
+  diagnostic pull.
+- `no_bars`: at least one side returned no bars.
+- `insufficient_data`: aligned bars exist but there are too few to compare
+  safely.
+- `stale_source`: provider latest timestamps differ beyond timeframe tolerance.
+- `no_aligned_bars`: both sides returned bars, but there are no common
+  timestamps.
+- `comparable_raw_mismatch`: aligned raw provider bars differ materially.
+- `comparable_normalized_mismatch`: raw bars are usable, but canonical
+  MacMarket bars differ after normalization/resampling.
+- `comparable_indicator_mismatch`: canonical bars match, but deterministic
+  MacMarket indicator output differs on the latest common aligned series.
 - `tos_reference_mismatch`: MacMarket current/Schwab indicator paths agree but
   manual TOS values differ.
-- `match`: available layers match within tolerance.
-- `insufficient_data`: too few aligned bars are available.
-- `error`: a provider, entitlement, parsing, or validation error occurred.
+- `match`: available comparable layers match within tolerance.
 
 ## Testing Workflow
 

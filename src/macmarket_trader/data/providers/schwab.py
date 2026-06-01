@@ -263,6 +263,8 @@ def schwab_connection_status(
     token_row = oauth_repo.get_token(provider=SCHWAB_PROVIDER)
     now = _utc_now()
     token_status = "unconfigured"
+    access_state = "missing"
+    refresh_state = "missing"
     if cfg.schwab_enabled and not encryption_key_present:
         token_status = "missing_encryption_key"
     elif cfg.schwab_enabled and not schwab_oauth_configured(cfg):
@@ -273,10 +275,29 @@ def schwab_connection_status(
         token_status = token_row.status
         access_expires = _aware(token_row.access_token_expires_at)
         refresh_expires = _aware(token_row.refresh_token_expires_at)
+        access_state = "unknown" if access_expires is None else ("valid" if access_expires > now else "refresh_available")
+        refresh_state = (
+            "missing"
+            if not token_row.encrypted_refresh_token
+            else "unknown"
+            if refresh_expires is None
+            else "valid"
+            if refresh_expires > now
+            else "expired"
+        )
         if refresh_expires is not None and refresh_expires <= now:
             token_status = "reconnect_required"
+            access_state = "expired"
+        elif token_row.status in {"connected", "expired"} and (access_expires is None or access_expires > now):
+            token_status = "connected"
         elif access_expires is not None and access_expires <= now:
-            token_status = "expired"
+            if token_row.encrypted_refresh_token:
+                token_status = "connected"
+                access_state = "refresh_available"
+            else:
+                token_status = "reconnect_required"
+                access_state = "expired"
+    oauth_connected = bool(token_row is not None and token_status == "connected")
     return {
         "provider": "schwab_market_data",
         "mode": "diagnostic",
@@ -285,15 +306,18 @@ def schwab_connection_status(
         "enabled": bool(cfg.schwab_enabled),
         "credentials_present": credentials_present,
         "encryption_key_present": encryption_key_present,
-        "oauth_connected": bool(token_row is not None and token_status == "connected"),
+        "oauth_connected": oauth_connected,
         "token_status": token_status,
+        "access_state": access_state,
+        "refresh_state": refresh_state,
+        "requires_reconnect": bool(token_row is None or token_status in {"not_connected", "reconnect_required", "missing_encryption_key", "unconfigured", "degraded"}),
         "access_token_expires_at": token_row.access_token_expires_at.isoformat() if token_row and token_row.access_token_expires_at else None,
         "refresh_token_expires_at": token_row.refresh_token_expires_at.isoformat() if token_row and token_row.refresh_token_expires_at else None,
         "last_refresh_at": token_row.last_refresh_at.isoformat() if token_row and token_row.last_refresh_at else None,
         "last_error": redact_schwab_text(token_row.last_error, cfg) if token_row and token_row.last_error else None,
         "details": (
             "Schwab diagnostic market data is connected. It is not the active production provider and does not enable broker execution."
-            if configured and token_status == "connected"
+            if configured and oauth_connected
             else "Schwab diagnostic market data is not connected or not fully configured. It is not the active production provider and does not enable broker execution."
         ),
         "operational_impact": "Diagnostic read-only comparison only. No broker routing, order placement, live trading, or production provider default changes.",

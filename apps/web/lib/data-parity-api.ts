@@ -37,7 +37,12 @@ export type SchwabStatus = {
   encryption_key_present?: boolean;
   oauth_connected: boolean;
   token_status: string;
+  access_state?: string;
+  refresh_state?: string;
+  requires_reconnect?: boolean;
   last_refresh_at?: string | null;
+  access_token_expires_at?: string | null;
+  refresh_token_expires_at?: string | null;
   last_error?: string | null;
   details: string;
   operational_impact?: string;
@@ -63,6 +68,7 @@ export type DataParityResult = {
     notes?: string;
   };
   rootCause: string;
+  freshness?: Record<string, unknown> | null;
   warnings: string[];
   errors: string[];
 };
@@ -179,6 +185,11 @@ export function buildDataParityCsv(response: DataParityRunResponse): string {
     valueAt(["verdict"], result.indicators),
     result.tosReference?.verdict ?? "",
     result.rootCause,
+    valueAt(["freshness", "current", "latest_bar_timestamp", "utc"], result),
+    valueAt(["freshness", "candidate", "latest_bar_timestamp", "utc"], result),
+    valueAt(["freshness", "timestamp_delta_minutes"], result),
+    valueAt(["freshness", "latest_common_aligned_timestamp", "utc"], result),
+    valueAt(["freshness", "verdict_reason"], result),
     valueAt(["latest_current", "close"], result.rawBars),
     valueAt(["latest_candidate", "close"], result.rawBars),
     valueAt(["latest_current", "close"], result.canonicalBars),
@@ -195,6 +206,11 @@ export function buildDataParityCsv(response: DataParityRunResponse): string {
       "indicators",
       "tos_reference",
       "root_cause",
+      "current_provider_as_of_utc",
+      "schwab_as_of_utc",
+      "timestamp_delta_minutes",
+      "latest_common_aligned_timestamp_utc",
+      "verdict_reason",
       "raw_current_close",
       "raw_schwab_close",
       "canonical_current_close",

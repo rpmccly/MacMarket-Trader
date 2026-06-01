@@ -18,8 +18,12 @@ Root-level batch files are thin wrappers only.
 
 ## Canonical directories
 
-- Repository clone: `C:\Dashboard\MacMarket-Trader\repo`
-- Live runtime: `C:\Dashboard\MacMarket-Trader\live`
+- Source checkout: the repo folder where `deploy-macmarket-trader.bat` is run.
+- Live runtime target: `C:\Dashboard\MacMarket-Trader`
+
+The deploy wrapper resolves the source checkout from its own file location and
+mirrors it into the live runtime target. Runtime state such as `.env`, logs,
+SQLite databases, uploads, and generated build folders is preserved.
 
 ## Ports
 
@@ -29,12 +33,17 @@ Root-level batch files are thin wrappers only.
 ## Deploy flow (`scripts/deploy_windows.bat`)
 
 1. Stop listeners on ports `9500`/`9510`.
-2. Fetch/reset repo clone (`origin/main`).
-3. Mirror repo into live directory while preserving runtime state.
-4. Create/activate venv, install backend dependencies.
-5. Initialize DB and run backend tests.
-6. Install/build frontend if present.
-7. Start backend and frontend processes with logs.
+2. Mirror the source checkout into `C:\Dashboard\MacMarket-Trader` while
+   preserving runtime state.
+3. Create/activate the backend venv and install backend dependencies.
+4. Initialize a fresh DB or apply schema updates for an existing DB before
+   validation. This is the deployment migration step for additive tables such
+   as Agent Mode run/settings audit tables.
+5. Run the selected backend and frontend validation profile.
+6. Install/build frontend dependencies if present.
+7. Restart backend and frontend processes from the live runtime directories and
+   write logs under `C:\Dashboard\MacMarket-Trader\logs`.
+8. Run backend and frontend health checks before reporting success.
 
 ## Runtime state safety
 
@@ -75,3 +84,15 @@ storage-state files into the deployment mirror.
 ## Fail-fast behavior
 
 Critical commands are guarded with `|| goto :fail` and deployment stops immediately on failure.
+
+## Release checklist
+
+For releases that add ORM models or Alembic migrations, run the normal deploy
+wrapper instead of a restart-only script:
+
+```powershell
+.\deploy-macmarket-trader.bat "C:\Dashboard\MacMarket-Trader"
+```
+
+Use `restart-macmarket-trader.bat` only after the live runtime already has the
+current code, dependencies, frontend build, and schema updates.

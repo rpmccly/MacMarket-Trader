@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +16,7 @@ from macmarket_trader.data.providers.market_data import (
     RTH_BUCKETS_BY_TIMEFRAME,
     RTH_SOURCE_TIMEFRAME,
     SymbolNotFoundError,
+    US_EQUITY_TIMEZONE,
     _aggregate_regular_hours_intraday_bars,
     _format_rth_bucket_boundaries,
     _rth_source_page_target_count,
@@ -44,6 +45,34 @@ PRICE_ABS_TOLERANCE = 0.01
 PRICE_REL_TOLERANCE = 0.0005
 VOLUME_REL_TOLERANCE = 0.01
 SENSITIVE_SNAPSHOT_KEYWORDS = ("authorization", "access_token", "refresh_token", "client_secret", "token_secret")
+PREMARKET_START_MINUTE = 4 * 60
+REGULAR_OPEN_MINUTE = 9 * 60 + 30
+REGULAR_CLOSE_MINUTE = 16 * 60
+AFTER_HOURS_END_MINUTE = 20 * 60
+FRESHNESS_REAL_TIME_TOLERANCE_MINUTES = {
+    "30M": 5.0,
+    "1H": 7.0,
+    "4H": 10.0,
+    "1D": 60.0,
+    "1W": 24.0 * 60.0,
+}
+FRESHNESS_DELAY_TARGET_MINUTES = 15.0
+FRESHNESS_DELAY_TOLERANCE_MINUTES = 5.0
+LATEST_TIMESTAMP_TOLERANCE_SECONDS = {
+    "30M": 45 * 60,
+    "1H": 90 * 60,
+    "4H": 5 * 60 * 60,
+    "1D": 60 * 60 * 60,
+    "1W": 10 * 24 * 60 * 60,
+}
+NOT_COMPARABLE_VERDICTS = {
+    "provider_unavailable",
+    "auth_unavailable",
+    "no_bars",
+    "insufficient_data",
+    "stale_source",
+    "no_aligned_bars",
+}
 
 
 def _utc_now() -> datetime:
@@ -69,6 +98,242 @@ def _bar_sort_key(bar: Bar) -> tuple[datetime, str]:
     if bar.timestamp is not None:
         return bar.timestamp.astimezone(UTC), bar.date.isoformat()
     return datetime.combine(bar.date, datetime.min.time(), tzinfo=UTC), bar.date.isoformat()
+
+
+def _bar_datetime(bar: Bar | None) -> datetime | None:
+    if bar is None:
+        return None
+    return _bar_sort_key(bar)[0]
+
+
+def _minute_of_day(value: datetime) -> int:
+    local = value.astimezone(US_EQUITY_TIMEZONE)
+    return local.hour * 60 + local.minute
+
+
+def _market_session_state(value: datetime) -> str:
+    local = value.astimezone(US_EQUITY_TIMEZONE)
+    if local.weekday() >= 5:
+        return "closed"
+    minute = _minute_of_day(value)
+    if PREMARKET_START_MINUTE <= minute < REGULAR_OPEN_MINUTE:
+        return "premarket"
+    if REGULAR_OPEN_MINUTE <= minute < REGULAR_CLOSE_MINUTE:
+        return "regular"
+    if REGULAR_CLOSE_MINUTE <= minute < AFTER_HOURS_END_MINUTE:
+        return "after-hours"
+    return "closed"
+
+
+def _previous_weekday(day: date) -> date:
+    candidate = day
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _expected_regular_session_day(run_time: datetime) -> date:
+    local = run_time.astimezone(US_EQUITY_TIMEZONE)
+    minute = _minute_of_day(run_time)
+    if local.weekday() < 5 and minute >= REGULAR_OPEN_MINUTE:
+        return local.date()
+    return _previous_weekday(local.date() - timedelta(days=1))
+
+
+def _session_timestamp(session_day: date, minute_of_day: int) -> datetime:
+    local = datetime.combine(
+        session_day,
+        time(hour=minute_of_day // 60, minute=minute_of_day % 60),
+        tzinfo=US_EQUITY_TIMEZONE,
+    )
+    return local.astimezone(UTC)
+
+
+def _expected_latest_market_bar_timestamp(timeframe: str, run_time: datetime) -> datetime | None:
+    tf = validate_chart_timeframe(timeframe)
+    local = run_time.astimezone(US_EQUITY_TIMEZONE)
+    minute = _minute_of_day(run_time)
+    session_state = _market_session_state(run_time)
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        buckets = RTH_BUCKETS_BY_TIMEFRAME[tf]
+        if not buckets:
+            return None
+        if session_state == "regular":
+            start_minute = buckets[0][0]
+            for bucket_start, bucket_end in buckets:
+                if bucket_start <= minute < bucket_end:
+                    start_minute = bucket_start
+                    break
+            return _session_timestamp(local.date(), start_minute)
+        if local.weekday() < 5 and minute >= REGULAR_CLOSE_MINUTE:
+            return _session_timestamp(local.date(), buckets[-1][0])
+        return _session_timestamp(_previous_weekday(local.date() - timedelta(days=1)), buckets[-1][0])
+    expected_day = _expected_regular_session_day(run_time)
+    if tf == "1W":
+        expected_day -= timedelta(days=expected_day.weekday())
+    return datetime.combine(expected_day, datetime.min.time(), tzinfo=UTC)
+
+
+def _timestamp_payload(value: datetime | None) -> dict[str, object]:
+    if value is None:
+        return {
+            "utc": None,
+            "new_york": None,
+            "market_session_state": None,
+        }
+    utc_value = value.astimezone(UTC)
+    return {
+        "utc": utc_value.isoformat(),
+        "new_york": utc_value.astimezone(US_EQUITY_TIMEZONE).isoformat(),
+        "market_session_state": _market_session_state(utc_value),
+    }
+
+
+def _minutes_delta(start: datetime | None, end: datetime | None, *, absolute: bool = False) -> float | None:
+    if start is None or end is None:
+        return None
+    delta = (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() / 60.0
+    if absolute:
+        delta = abs(delta)
+    return round(delta, 3)
+
+
+def _freshness_classification(
+    latest: datetime | None,
+    *,
+    expected_latest: datetime | None,
+    timeframe: str,
+    session_state: str,
+) -> tuple[str, str]:
+    if latest is None or expected_latest is None:
+        return "not_comparable", "missing_latest_or_expected_timestamp"
+    lag_minutes = _minutes_delta(latest, expected_latest)
+    if lag_minutes is None:
+        return "not_comparable", "missing_lag_measure"
+    tolerance = FRESHNESS_REAL_TIME_TOLERANCE_MINUTES.get(validate_chart_timeframe(timeframe), 5.0)
+    if abs(lag_minutes) <= tolerance:
+        return "real_time_like", "latest_bar_within_expected_market_bar_tolerance"
+    if lag_minutes < -tolerance:
+        return "not_comparable", "provider_timestamp_is_ahead_of_expected_market_bar"
+    if (
+        session_state == "regular"
+        and abs(lag_minutes - FRESHNESS_DELAY_TARGET_MINUTES) <= FRESHNESS_DELAY_TOLERANCE_MINUTES
+    ):
+        return "delayed_15_min_like", "latest_bar_lags_expected_market_bar_by_about_15_minutes"
+    return "stale", "latest_bar_outside_expected_market_bar_tolerance"
+
+
+def _provider_freshness_payload(
+    latest: datetime | None,
+    *,
+    expected_latest: datetime | None,
+    server_run_at: datetime,
+    timeframe: str,
+    session_state: str,
+) -> dict[str, object]:
+    classification, reason = _freshness_classification(
+        latest,
+        expected_latest=expected_latest,
+        timeframe=timeframe,
+        session_state=session_state,
+    )
+    return {
+        "latest_bar_timestamp": _timestamp_payload(latest),
+        "provider_lag_minutes_vs_server_run_time": _minutes_delta(latest, server_run_at),
+        "provider_lag_minutes_vs_expected_latest_market_bar": _minutes_delta(latest, expected_latest),
+        "classification": classification,
+        "reason": reason,
+    }
+
+
+def _verdict_reason(
+    verdict: str,
+    *,
+    aligned_count: int,
+    latest_timestamp_delta_seconds: float | None,
+    latest_timestamp_tolerance_seconds: int,
+    material_price: bool,
+    material_volume: bool,
+) -> str:
+    if verdict == "match":
+        return "bars_aligned_and_values_within_tolerance"
+    if verdict == "no_bars":
+        return "one_or_both_providers_returned_no_bars"
+    if verdict == "no_aligned_bars":
+        return "providers_returned_bars_but_no_timestamps_overlap"
+    if verdict == "stale_source":
+        delta_minutes = latest_timestamp_delta_seconds / 60.0 if latest_timestamp_delta_seconds is not None else None
+        tolerance_minutes = latest_timestamp_tolerance_seconds / 60.0
+        return (
+            f"provider_latest_timestamps_differ_by_{round(delta_minutes, 3)}_minutes_beyond_{round(tolerance_minutes, 3)}_minute_tolerance"
+            if delta_minutes is not None
+            else "provider_latest_timestamp_unavailable_for_stale_source_check"
+        )
+    if verdict == "insufficient_data":
+        return f"only_{aligned_count}_aligned_timestamps_available"
+    if verdict in {"comparable_raw_mismatch", "comparable_normalized_mismatch"}:
+        reasons: list[str] = []
+        if material_price:
+            reasons.append("price_delta_exceeded_tolerance")
+        if material_volume:
+            reasons.append("volume_delta_exceeded_tolerance")
+        return ",".join(reasons) or "aligned_values_exceeded_tolerance"
+    return verdict
+
+
+def _comparison_freshness(
+    *,
+    latest_current: Bar | None,
+    latest_candidate: Bar | None,
+    latest_common_current: Bar | None,
+    timeframe: str,
+    server_run_at: datetime,
+    verdict: str,
+    verdict_reason: str,
+) -> dict[str, object]:
+    session_state = _market_session_state(server_run_at)
+    expected_latest = _expected_latest_market_bar_timestamp(timeframe, server_run_at)
+    current_latest = _bar_datetime(latest_current)
+    candidate_latest = _bar_datetime(latest_candidate)
+    latest_common = _bar_datetime(latest_common_current)
+    current = _provider_freshness_payload(
+        current_latest,
+        expected_latest=expected_latest,
+        server_run_at=server_run_at,
+        timeframe=timeframe,
+        session_state=session_state,
+    )
+    candidate = _provider_freshness_payload(
+        candidate_latest,
+        expected_latest=expected_latest,
+        server_run_at=server_run_at,
+        timeframe=timeframe,
+        session_state=session_state,
+    )
+    classifications = {str(current.get("classification")), str(candidate.get("classification"))}
+    if "not_comparable" in classifications:
+        classification = "not_comparable"
+    elif "stale" in classifications:
+        classification = "stale"
+    elif "delayed_15_min_like" in classifications:
+        classification = "delayed_15_min_like"
+    else:
+        classification = "real_time_like"
+    return {
+        "server_run_time": _timestamp_payload(server_run_at),
+        "market_session_state": session_state,
+        "expected_latest_market_bar": _timestamp_payload(expected_latest),
+        "current": current,
+        "candidate": candidate,
+        "latest_bar_timestamp_current": _timestamp_payload(current_latest),
+        "latest_bar_timestamp_candidate": _timestamp_payload(candidate_latest),
+        "latest_common_aligned_timestamp": _timestamp_payload(latest_common),
+        "timestamp_delta_minutes": _minutes_delta(current_latest, candidate_latest, absolute=True),
+        "classification": classification,
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "delay_measurement_basis": "timestamp_only_regular_hours_weekday_model",
+    }
 
 
 def _json_safe_bar(bar: Bar | None) -> dict[str, object] | None:
@@ -153,12 +418,47 @@ def _numeric_delta(a: object, b: object) -> float | None:
     return abs(left - right)
 
 
+def _latest_timestamp_delta_seconds(current: Bar | None, candidate: Bar | None) -> float | None:
+    if current is None or candidate is None:
+        return None
+    current_time = _bar_sort_key(current)[0]
+    candidate_time = _bar_sort_key(candidate)[0]
+    return abs((current_time - candidate_time).total_seconds())
+
+
+def _latest_timestamp_tolerance_seconds(timeframe: str) -> int:
+    return LATEST_TIMESTAMP_TOLERANCE_SECONDS.get(validate_chart_timeframe(timeframe), 60 * 60)
+
+
+def _bar_delta_payload(current: Bar, candidate: Bar) -> dict[str, object]:
+    deltas = {
+        "open": round(abs(float(current.open) - float(candidate.open)), 6),
+        "high": round(abs(float(current.high) - float(candidate.high)), 6),
+        "low": round(abs(float(current.low) - float(candidate.low)), 6),
+        "close": round(abs(float(current.close) - float(candidate.close)), 6),
+        "volume": round(abs(float(current.volume) - float(candidate.volume)), 6),
+    }
+    return {
+        "timestamp": _bar_time_key(current),
+        "current": _json_safe_bar(current),
+        "candidate": _json_safe_bar(candidate),
+        "deltas": deltas,
+    }
+
+
+def _filter_bars_to_keys(bars: list[Bar], keys: set[str]) -> list[Bar]:
+    return [bar for bar in sorted(bars, key=_bar_sort_key) if _bar_time_key(bar) in keys]
+
+
 def _compare_bars(
     current: list[Bar],
     candidate: list[Bar],
     *,
     current_metadata: dict[str, object],
     candidate_metadata: dict[str, object],
+    timeframe: str,
+    mismatch_verdict: str,
+    server_run_at: datetime,
 ) -> dict[str, object]:
     current_by_time = {_bar_time_key(bar): bar for bar in current}
     candidate_by_time = {_bar_time_key(bar): bar for bar in candidate}
@@ -169,6 +469,12 @@ def _compare_bars(
     missing_on_candidate = sorted(current_keys - candidate_keys)
     latest_current = current[-1] if current else None
     latest_candidate = candidate[-1] if candidate else None
+    latest_timestamp_delta_seconds = _latest_timestamp_delta_seconds(latest_current, latest_candidate)
+    latest_timestamp_tolerance_seconds = _latest_timestamp_tolerance_seconds(timeframe)
+    latest_is_stale = (
+        latest_timestamp_delta_seconds is not None
+        and latest_timestamp_delta_seconds > latest_timestamp_tolerance_seconds
+    )
 
     max_price_delta = 0.0
     max_price_field: str | None = None
@@ -198,28 +504,80 @@ def _compare_bars(
             allowed_volume_delta = max(0.0, abs(float(left.volume)) * VOLUME_REL_TOLERANCE)
             if abs(float(left.volume) - float(right.volume)) > allowed_volume_delta:
                 material_volume = True
-    if not current or not candidate or len(aligned) < 2:
+    if not current or not candidate:
+        verdict = "no_bars"
+    elif not aligned:
+        verdict = "stale_source" if latest_is_stale else "no_aligned_bars"
+    elif latest_is_stale:
+        verdict = "stale_source"
+    elif len(aligned) < 2:
         verdict = "insufficient_data"
-    elif material_price or material_volume or missing_on_current or missing_on_candidate or not latest_timestamp_match:
-        verdict = "mismatch"
+    elif material_price or material_volume:
+        verdict = mismatch_verdict
     else:
         verdict = "match"
+    verdict_reason = _verdict_reason(
+        verdict,
+        aligned_count=len(aligned),
+        latest_timestamp_delta_seconds=latest_timestamp_delta_seconds,
+        latest_timestamp_tolerance_seconds=latest_timestamp_tolerance_seconds,
+        material_price=material_price,
+        material_volume=material_volume,
+    )
+    latest_common_key = aligned[-1] if aligned else None
+    latest_common_current = current_by_time[latest_common_key] if latest_common_key else None
+    latest_common_candidate = candidate_by_time[latest_common_key] if latest_common_key else None
+    latest_delta = (
+        _bar_delta_payload(latest_common_current, latest_common_candidate)["deltas"]
+        if latest_common_current and latest_common_candidate
+        else {}
+    )
+    aligned_rows = [
+        _bar_delta_payload(current_by_time[key], candidate_by_time[key])
+        for key in aligned[-25:]
+    ]
+    freshness = _comparison_freshness(
+        latest_current=latest_current,
+        latest_candidate=latest_candidate,
+        latest_common_current=latest_common_current,
+        timeframe=timeframe,
+        server_run_at=server_run_at,
+        verdict=verdict,
+        verdict_reason=verdict_reason,
+    )
 
     return {
         "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "is_comparable": verdict not in NOT_COMPARABLE_VERDICTS,
+        "not_comparable_reason": verdict if verdict in NOT_COMPARABLE_VERDICTS else None,
         "bars_current": len(current),
         "bars_candidate": len(candidate),
         "aligned_timestamps": len(aligned),
+        "aligned_timestamp_keys": aligned,
+        "latest_common_timestamp": latest_common_key,
         "first_timestamp_current": _bar_time_key(current[0]) if current else None,
         "first_timestamp_candidate": _bar_time_key(candidate[0]) if candidate else None,
         "last_timestamp_current": _bar_time_key(latest_current) if latest_current else None,
         "last_timestamp_candidate": _bar_time_key(latest_candidate) if latest_candidate else None,
         "latest_timestamp_match": latest_timestamp_match,
+        "latest_timestamp_delta_seconds": round(latest_timestamp_delta_seconds, 3) if latest_timestamp_delta_seconds is not None else None,
+        "latest_timestamp_tolerance_seconds": latest_timestamp_tolerance_seconds,
         "latest_current": _json_safe_bar(latest_current),
         "latest_candidate": _json_safe_bar(latest_candidate),
+        "latest_common_current": _json_safe_bar(latest_common_current),
+        "latest_common_candidate": _json_safe_bar(latest_common_candidate),
+        "latest_delta": latest_delta,
+        "aligned_rows": aligned_rows,
+        "freshness": freshness,
+        "current_as_of": freshness["current"],
+        "candidate_as_of": freshness["candidate"],
         "max_price_delta": round(max_price_delta, 6),
         "max_price_delta_field": max_price_field,
+        "price_absolute_tolerance": PRICE_ABS_TOLERANCE,
+        "price_relative_tolerance": PRICE_REL_TOLERANCE,
         "max_volume_delta": round(max_volume_delta, 6),
+        "volume_relative_tolerance": VOLUME_REL_TOLERANCE,
         "missing_timestamps_current": missing_on_current[:50],
         "extra_timestamps_current": missing_on_candidate[:50],
         "missing_timestamps_current_count": len(missing_on_current),
@@ -446,21 +804,67 @@ def _compare_indicator_bundles(current: dict[str, object], candidate: dict[str, 
     current_values = _component_values(current)
     candidate_values = _component_values(candidate)
     mismatches: list[dict[str, object]] = []
+    rows: list[dict[str, object]] = []
     for field, current_value in current_values.items():
         candidate_value = candidate_values.get(field)
         if current_value is None and candidate_value is None:
             continue
         delta = _numeric_delta(current_value, candidate_value)
         if delta is not None:
-            if delta > _max_price_allowed(float(current_value or 0.0)):
-                mismatches.append({"field": field, "current": current_value, "candidate": candidate_value, "delta": round(delta, 6)})
+            tolerance = _max_price_allowed(float(current_value or 0.0))
+            row_verdict = "match" if delta <= tolerance else "comparable_indicator_mismatch"
+            row = {
+                "field": field,
+                "current": current_value,
+                "candidate": candidate_value,
+                "delta": round(delta, 6),
+                "tolerance": round(tolerance, 6),
+                "verdict": row_verdict,
+            }
+            rows.append(row)
+            if row_verdict != "match":
+                mismatches.append(row)
         elif str(current_value or "").upper() != str(candidate_value or "").upper():
-            mismatches.append({"field": field, "current": current_value, "candidate": candidate_value})
+            row = {
+                "field": field,
+                "current": current_value,
+                "candidate": candidate_value,
+                "delta": None,
+                "tolerance": "exact",
+                "verdict": "comparable_indicator_mismatch",
+            }
+            rows.append(row)
+            mismatches.append(row)
+        else:
+            rows.append(
+                {
+                    "field": field,
+                    "current": current_value,
+                    "candidate": candidate_value,
+                    "delta": 0,
+                    "tolerance": "exact",
+                    "verdict": "match",
+                }
+            )
     return {
-        "verdict": "mismatch" if mismatches else "match",
+        "verdict": "comparable_indicator_mismatch" if mismatches else "match",
+        "is_comparable": True,
         "mismatches": mismatches,
+        "rows": rows,
         "current": current,
         "candidate": candidate,
+    }
+
+
+def _indicators_not_compared(reason: str) -> dict[str, object]:
+    return {
+        "verdict": "not_compared",
+        "is_comparable": False,
+        "not_comparable_reason": reason,
+        "mismatches": [],
+        "rows": [],
+        "current": {},
+        "candidate": {},
     }
 
 
@@ -607,22 +1011,25 @@ class ProviderParityService:
         indicators: dict[str, object] | None,
         tos: dict[str, object] | None,
         error: str | None,
+        error_kind: str | None,
     ) -> str:
         token_status = str(schwab_status.get("token_status") or "")
         if token_status != "connected":
-            return "schwab_not_connected"
+            return "auth_unavailable"
         if error:
-            return "error"
+            return "auth_unavailable" if error_kind == "auth" else "provider_unavailable"
         if raw is None or canonical is None or indicators is None:
             return "insufficient_data"
-        if raw.get("verdict") == "insufficient_data" or canonical.get("verdict") == "insufficient_data":
-            return "insufficient_data"
-        if raw.get("verdict") == "mismatch":
-            return "raw_provider_mismatch"
-        if canonical.get("verdict") == "mismatch":
-            return "normalization_mismatch"
-        if indicators.get("verdict") == "mismatch":
-            return "indicator_mismatch"
+        for comparison in (raw, canonical):
+            verdict = str(comparison.get("verdict") or "")
+            if verdict in NOT_COMPARABLE_VERDICTS:
+                return verdict
+        if raw.get("verdict") == "comparable_raw_mismatch":
+            return "comparable_raw_mismatch"
+        if canonical.get("verdict") == "comparable_normalized_mismatch":
+            return "comparable_normalized_mismatch"
+        if indicators.get("verdict") == "comparable_indicator_mismatch":
+            return "comparable_indicator_mismatch"
         if tos and tos.get("provided") and tos.get("verdict") == "mismatch":
             return "tos_reference_mismatch"
         return "match"
@@ -646,20 +1053,24 @@ class ProviderParityService:
                 tos_by_key[(symbol, timeframe)] = ref
 
         run_id = f"dpar_{uuid4().hex[:16]}"
-        as_of = _utc_now().isoformat()
+        run_at = _utc_now()
+        as_of = run_at.isoformat()
         status_payload = _sanitize_snapshot_payload(schwab_connection_status(repo=self.oauth_repo, cfg=self.cfg))
         schwab_status = status_payload if isinstance(status_payload, dict) else {}
         results: list[dict[str, object]] = []
         summary: dict[str, int] = {
             "total": 0,
             "match": 0,
-            "raw_provider_mismatch": 0,
-            "normalization_mismatch": 0,
-            "indicator_mismatch": 0,
-            "tos_reference_mismatch": 0,
-            "schwab_not_connected": 0,
+            "provider_unavailable": 0,
+            "auth_unavailable": 0,
+            "no_bars": 0,
             "insufficient_data": 0,
-            "error": 0,
+            "stale_source": 0,
+            "no_aligned_bars": 0,
+            "comparable_raw_mismatch": 0,
+            "comparable_normalized_mismatch": 0,
+            "comparable_indicator_mismatch": 0,
+            "tos_reference_mismatch": 0,
         }
         warnings: list[str] = []
         errors: list[dict[str, object]] = []
@@ -672,6 +1083,7 @@ class ProviderParityService:
                 canonical_comparison: dict[str, object] | None = None
                 indicators_comparison: dict[str, object] | None = None
                 tos_comparison: dict[str, object] | None = None
+                item_error_kind: str | None = None
                 result_warnings: list[str] = []
                 try:
                     if str(schwab_status.get("token_status") or "") != "connected":
@@ -685,6 +1097,9 @@ class ProviderParityService:
                         schwab_raw.bars,
                         current_metadata=current_raw.metadata,
                         candidate_metadata=schwab_raw.metadata,
+                        timeframe=_raw_source_timeframe(timeframe),
+                        mismatch_verdict="comparable_raw_mismatch",
+                        server_run_at=run_at,
                     )
                     current_canonical, current_metadata = _canonicalize_bars(
                         current_raw.bars,
@@ -703,16 +1118,33 @@ class ProviderParityService:
                         schwab_canonical,
                         current_metadata=current_metadata,
                         candidate_metadata=schwab_metadata,
+                        timeframe=timeframe,
+                        mismatch_verdict="comparable_normalized_mismatch",
+                        server_run_at=run_at,
                     )
-                    current_bundle = _compute_indicator_bundle(current_canonical, symbol=symbol, timeframe=timeframe)
-                    schwab_bundle = _compute_indicator_bundle(schwab_canonical, symbol=symbol, timeframe=timeframe)
-                    indicators_comparison = _compare_indicator_bundles(current_bundle, schwab_bundle)
-                    tos_comparison = _compare_tos_reference(tos_by_key.get((symbol, timeframe)), current_bundle, schwab_bundle)
+                    if canonical_comparison.get("verdict") == "match":
+                        aligned_keys = set(str(key) for key in canonical_comparison.get("aligned_timestamp_keys", []) if key)
+                        current_indicator_bars = _filter_bars_to_keys(current_canonical, aligned_keys)
+                        schwab_indicator_bars = _filter_bars_to_keys(schwab_canonical, aligned_keys)
+                        current_bundle = _compute_indicator_bundle(current_indicator_bars, symbol=symbol, timeframe=timeframe)
+                        schwab_bundle = _compute_indicator_bundle(schwab_indicator_bars, symbol=symbol, timeframe=timeframe)
+                        indicators_comparison = _compare_indicator_bundles(current_bundle, schwab_bundle)
+                        indicators_comparison["latest_common_aligned_timestamp"] = canonical_comparison.get("latest_common_timestamp")
+                        indicators_comparison["compared_on_aligned_timestamp"] = bool(canonical_comparison.get("latest_common_timestamp"))
+                        tos_comparison = _compare_tos_reference(tos_by_key.get((symbol, timeframe)), current_bundle, schwab_bundle)
+                    else:
+                        reason = str(canonical_comparison.get("verdict") or "canonical_bars_not_comparable")
+                        indicators_comparison = _indicators_not_compared(reason)
+                        tos_comparison = {"provided": (symbol, timeframe) in tos_by_key, "verdict": "not_compared", "mismatches": [], "reason": reason}
                 except SchwabAuthRequiredError as exc:
                     item_error = str(exc)
+                    item_error_kind = "auth"
+                    indicators_comparison = _indicators_not_compared("auth_unavailable")
                     tos_comparison = {"provided": (symbol, timeframe) in tos_by_key, "verdict": "not_compared", "mismatches": []}
                 except (SchwabConfigurationError, DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, ValueError, OSError, KeyError) as exc:
                     item_error = redact_schwab_text(exc)
+                    item_error_kind = "provider"
+                    indicators_comparison = _indicators_not_compared("provider_unavailable")
                     errors.append({"symbol": symbol, "timeframe": timeframe, "error": item_error})
 
                 root_cause = self._root_cause(
@@ -722,6 +1154,7 @@ class ProviderParityService:
                     indicators=indicators_comparison,
                     tos=tos_comparison,
                     error=item_error,
+                    error_kind=item_error_kind,
                 )
                 summary[root_cause] = summary.get(root_cause, 0) + 1
                 results.append(
@@ -730,6 +1163,7 @@ class ProviderParityService:
                         "timeframe": timeframe,
                         "rawBars": raw_comparison,
                         "canonicalBars": canonical_comparison,
+                        "freshness": raw_comparison.get("freshness") if isinstance(raw_comparison, dict) else None,
                         "indicators": indicators_comparison,
                         "tosReference": tos_comparison or {"provided": False, "verdict": "not_provided", "mismatches": []},
                         "rootCause": root_cause,

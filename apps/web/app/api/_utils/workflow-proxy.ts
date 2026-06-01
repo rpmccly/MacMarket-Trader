@@ -18,6 +18,23 @@ function coerceObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isHtmlErrorPayload(text: string, contentType: string): boolean {
+  const trimmed = text.trim().slice(0, 256).toLowerCase();
+  return (
+    contentType.includes("text/html") ||
+    trimmed.startsWith("<!doctype html") ||
+    trimmed.startsWith("<html") ||
+    trimmed.includes("<body")
+  );
+}
+
+function nonJsonErrorMessage(status: number): string {
+  if (status === 404) {
+    return "Route not found (404). Confirm the backend route is deployed and restart the app if this was just released.";
+  }
+  return `Upstream request failed (${status}).`;
+}
+
 async function parseUpstreamPayload(response: Response): Promise<unknown> {
   if (response.status === 204) {
     return null;
@@ -29,6 +46,9 @@ async function parseUpstreamPayload(response: Response): Promise<unknown> {
   }
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (isHtmlErrorPayload(text, contentType)) {
+    return { detail: nonJsonErrorMessage(response.status) };
+  }
   if (contentType.includes("application/json")) {
     try {
       return JSON.parse(text);

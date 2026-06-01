@@ -33,22 +33,47 @@ const COMPONENT_FIELDS: Record<string, string[]> = {
   squeeze: ["squeezeState", "squeezeHistogram"],
 };
 
+const TRUE_MISMATCH_VERDICTS = new Set([
+  "comparable_raw_mismatch",
+  "comparable_normalized_mismatch",
+  "comparable_indicator_mismatch",
+  "tos_reference_mismatch",
+]);
+const NOT_COMPARABLE_VERDICTS = new Set([
+  "provider_unavailable",
+  "auth_unavailable",
+  "no_bars",
+  "insufficient_data",
+  "stale_source",
+  "no_aligned_bars",
+]);
+
 function verdictTone(value: string | undefined | null): BadgeTone {
   switch (String(value ?? "").toLowerCase()) {
     case "match":
     case "ok":
     case "connected":
+    case "real_time_like":
       return "good";
+    case "not_compared":
     case "not_provided":
     case "unavailable":
     case "configured":
+    case "no_bars":
+    case "no_aligned_bars":
       return "neutral";
-    case "mismatch":
     case "insufficient_data":
     case "expired":
     case "reconnect_required":
-    case "schwab_not_connected":
+    case "auth_unavailable":
+    case "stale_source":
+    case "provider_unavailable":
+    case "delayed_15_min_like":
+    case "stale":
       return "warn";
+    case "comparable_raw_mismatch":
+    case "comparable_normalized_mismatch":
+    case "comparable_indicator_mismatch":
     case "error":
     case "degraded":
       return "bad";
@@ -58,7 +83,10 @@ function verdictTone(value: string | undefined | null): BadgeTone {
 }
 
 function rootCauseTone(value: string): BadgeTone {
-  return value === "match" ? "good" : value === "error" ? "bad" : "warn";
+  if (value === "match") return "good";
+  if (TRUE_MISMATCH_VERDICTS.has(value)) return "bad";
+  if (NOT_COMPARABLE_VERDICTS.has(value)) return "warn";
+  return value === "error" ? "bad" : "neutral";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -72,11 +100,112 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-function formatTimestamp(value: unknown): string {
+function formatTimestampInZone(value: unknown, timeZone: "UTC" | "America/New_York"): string {
   if (!value) return "-";
   const date = new Date(String(value));
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}
+
+function formatTimestamp(value: unknown): string {
+  if (!value) return "-";
+  const record = asRecord(value);
+  if (Object.keys(record).length > 0 && !record.utc && !record.new_york) return "-";
+  const utcValue = record.utc ?? value;
+  const newYorkValue = record.new_york ?? utcValue;
+  return `${formatTimestampInZone(utcValue, "UTC")} / ${formatTimestampInZone(newYorkValue, "America/New_York")}`;
+}
+
+function freshnessRecord(result: DataParityResult): Record<string, unknown> {
+  return asRecord(result.freshness ?? asRecord(result.canonicalBars).freshness ?? asRecord(result.rawBars).freshness);
+}
+
+function providerFreshnessRecord(result: DataParityResult): Record<string, unknown> {
+  return asRecord(asRecord(result.rawBars).freshness ?? freshnessRecord(result));
+}
+
+function canonicalFreshnessRecord(result: DataParityResult): Record<string, unknown> {
+  return asRecord(asRecord(result.canonicalBars).freshness ?? freshnessRecord(result));
+}
+
+function providerFreshness(result: DataParityResult, side: "current" | "candidate"): Record<string, unknown> {
+  return asRecord(providerFreshnessRecord(result)[side]);
+}
+
+function providerAsOf(result: DataParityResult, side: "current" | "candidate"): string {
+  return formatTimestamp(asRecord(providerFreshness(result, side).latest_bar_timestamp));
+}
+
+function providerLagVsExpected(result: DataParityResult, side: "current" | "candidate"): string {
+  return formatValue(providerFreshness(result, side).provider_lag_minutes_vs_expected_latest_market_bar);
+}
+
+function providerClassification(result: DataParityResult, side: "current" | "candidate"): string {
+  return String(providerFreshness(result, side).classification ?? "-");
+}
+
+function timestampDeltaMinutes(result: DataParityResult): string {
+  return formatValue(providerFreshnessRecord(result).timestamp_delta_minutes);
+}
+
+function alignedLatestTimestamp(result: DataParityResult): string {
+  const payload = asRecord(canonicalFreshnessRecord(result).latest_common_aligned_timestamp);
+  if (payload.utc || payload.new_york) return formatTimestamp(payload);
+  return formatTimestamp(asRecord(result.canonicalBars).latest_common_timestamp);
+}
+
+function verdictReason(result: DataParityResult): string {
+  return String(canonicalFreshnessRecord(result).verdict_reason ?? asRecord(result.canonicalBars).verdict_reason ?? asRecord(result.rawBars).verdict_reason ?? result.rootCause);
+}
+
+function countProviderClassifications(response: DataParityRunResponse | null, side: "current" | "candidate"): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of response?.results ?? []) {
+    const classification = providerClassification(item, side);
+    if (classification === "-") continue;
+    counts[classification] = (counts[classification] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function formatClassificationCounts(counts: Record<string, number>): string {
+  const entries = Object.entries(counts);
+  if (!entries.length) return "-";
+  return entries.map(([label, count]) => `${label}: ${count}`).join(", ");
+}
+
+export function cleanDataParityErrorMessage(error: string | null | undefined, fallback: string): string {
+  const message = String(error ?? "").trim();
+  if (!message) return fallback;
+  const lower = message.slice(0, 512).toLowerCase();
+  if (
+    lower.includes("<!doctype html") ||
+    lower.includes("<html") ||
+    lower.includes("<body") ||
+    lower.includes("<head") ||
+    lower.includes("<script")
+  ) {
+    return fallback;
+  }
+  return message;
+}
+
+export function isSchwabConnected(status: SchwabStatus | null): boolean {
+  return Boolean(status?.configured && status.credentials_present && status.oauth_connected && status.token_status === "connected");
+}
+
+export function shouldShowSchwabReconnect(status: SchwabStatus | null): boolean {
+  if (!status) return false;
+  return Boolean(status.requires_reconnect || !isSchwabConnected(status));
 }
 
 function summaryValue(response: DataParityRunResponse | null, key: string): number {
@@ -89,6 +218,7 @@ function comparisonVerdict(result: DataParityResult, key: "rawBars" | "canonical
 
 function componentVerdict(result: DataParityResult, component: keyof typeof COMPONENT_FIELDS): string {
   const indicators = asRecord(result.indicators);
+  if (indicators.verdict === "not_compared") return "not_compared";
   const current = asRecord(asRecord(indicators.current)[component]);
   const candidate = asRecord(asRecord(indicators.candidate)[component]);
   if (current.available === false || candidate.available === false) return "unavailable";
@@ -100,6 +230,23 @@ function componentVerdict(result: DataParityResult, component: keyof typeof COMP
 
 function latestClose(comparison: unknown, side: "latest_current" | "latest_candidate"): string {
   return formatValue(asRecord(asRecord(comparison)[side]).close);
+}
+
+function latestCommonClose(comparison: unknown, side: "latest_common_current" | "latest_common_candidate"): string {
+  return formatValue(asRecord(asRecord(comparison)[side]).close);
+}
+
+function latestDelta(comparison: unknown, field: string): string {
+  return formatValue(asRecord(asRecord(comparison).latest_delta)[field]);
+}
+
+function priceTolerance(comparison: unknown): string {
+  const record = asRecord(comparison);
+  return `${formatValue(record.price_absolute_tolerance)} abs / ${formatValue(record.price_relative_tolerance)} rel`;
+}
+
+function countResults(response: DataParityRunResponse | null, predicate: (item: DataParityResult) => boolean): number {
+  return response?.results.filter(predicate).length ?? 0;
 }
 
 function downloadText(filename: string, mimeType: string, content: string) {
@@ -116,6 +263,9 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
   const record = asRecord(comparison);
   const currentMeta = asRecord(record.current_metadata);
   const candidateMeta = asRecord(record.candidate_metadata);
+  const freshness = asRecord(record.freshness);
+  const currentFreshness = asRecord(freshness.current);
+  const candidateFreshness = asRecord(freshness.candidate);
   return (
     <section className="dp-detail-section">
       <div className="dp-detail-title">
@@ -128,9 +278,24 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>aligned</span><strong>{formatValue(record.aligned_timestamps)}</strong>
         <span>current latest close</span><strong>{latestClose(record, "latest_current")}</strong>
         <span>Schwab latest close</span><strong>{latestClose(record, "latest_candidate")}</strong>
+        <span>latest common timestamp</span><strong>{formatTimestamp(record.latest_common_timestamp)}</strong>
+        <span>current as-of</span><strong>{formatTimestamp(asRecord(currentFreshness.latest_bar_timestamp))}</strong>
+        <span>Schwab as-of</span><strong>{formatTimestamp(asRecord(candidateFreshness.latest_bar_timestamp))}</strong>
+        <span>market session</span><strong>{formatValue(freshness.market_session_state)}</strong>
+        <span>expected latest bar</span><strong>{formatTimestamp(asRecord(freshness.expected_latest_market_bar))}</strong>
+        <span>current lag vs server</span><strong>{formatValue(currentFreshness.provider_lag_minutes_vs_server_run_time)} min</strong>
+        <span>Schwab lag vs server</span><strong>{formatValue(candidateFreshness.provider_lag_minutes_vs_server_run_time)} min</strong>
+        <span>current lag vs expected</span><strong>{formatValue(currentFreshness.provider_lag_minutes_vs_expected_latest_market_bar)} min</strong>
+        <span>Schwab lag vs expected</span><strong>{formatValue(candidateFreshness.provider_lag_minutes_vs_expected_latest_market_bar)} min</strong>
+        <span>freshness classification</span><strong>{formatValue(freshness.classification)}</strong>
+        <span>verdict reason</span><strong>{formatValue(record.verdict_reason ?? freshness.verdict_reason)}</strong>
+        <span>latest common close delta</span><strong>{latestDelta(record, "close")}</strong>
+        <span>price tolerance</span><strong>{priceTolerance(record)}</strong>
         <span>max price delta</span><strong>{formatValue(record.max_price_delta)}</strong>
         <span>max volume delta</span><strong>{formatValue(record.max_volume_delta)}</strong>
         <span>latest timestamp match</span><strong>{formatValue(record.latest_timestamp_match)}</strong>
+        <span>as-of delta seconds</span><strong>{formatValue(record.latest_timestamp_delta_seconds)}</strong>
+        <span>as-of tolerance seconds</span><strong>{formatValue(record.latest_timestamp_tolerance_seconds)}</strong>
         <span>current first</span><strong>{formatTimestamp(record.first_timestamp_current)}</strong>
         <span>Schwab first</span><strong>{formatTimestamp(record.first_timestamp_candidate)}</strong>
         <span>current last</span><strong>{formatTimestamp(record.last_timestamp_current)}</strong>
@@ -142,6 +307,169 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>session policy</span><strong>{formatValue(candidateMeta.session_policy ?? currentMeta.session_policy)}</strong>
       </div>
     </section>
+  );
+}
+
+function SideBySideBarsTable({ title, comparison }: { title: string; comparison: unknown }) {
+  const comparisonRecord = asRecord(comparison);
+  const rows = Array.isArray(comparisonRecord.aligned_rows) ? (comparisonRecord.aligned_rows as unknown[]) : [];
+  if (!rows.length) {
+    return (
+      <section className="dp-detail-section">
+        <strong>{title}</strong>
+        <p className="dp-muted">No aligned bars are available for side-by-side display.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="dp-detail-section dp-wide-detail">
+      <strong>{title}</strong>
+      <ResponsiveTable label={title}>
+        <table className="op-table dp-bars-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Current provider O/H/L/C/V</th>
+              <th>Schwab O/H/L/C/V</th>
+              <th>Close delta</th>
+              <th>Volume delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => {
+              const record = asRecord(row);
+              const current = asRecord(record.current);
+              const candidate = asRecord(record.candidate);
+              const deltas = asRecord(record.deltas);
+              return (
+                <tr key={`${String(record.timestamp)}-${index}`}>
+                  <td>{formatTimestamp(record.timestamp)}</td>
+                  <td>{[current.open, current.high, current.low, current.close, current.volume].map(formatValue).join(" / ")}</td>
+                  <td>{[candidate.open, candidate.high, candidate.low, candidate.close, candidate.volume].map(formatValue).join(" / ")}</td>
+                  <td>{formatValue(deltas.close)}</td>
+                  <td>{formatValue(deltas.volume)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </ResponsiveTable>
+    </section>
+  );
+}
+
+function IndicatorSideBySideTable({ comparison }: { comparison: unknown }) {
+  const record = asRecord(comparison);
+  const rows = Array.isArray(record.rows) ? record.rows as unknown[] : [];
+  return (
+    <section className="dp-detail-section dp-wide-detail">
+      <div className="dp-detail-title">
+        <strong>Indicator side-by-side</strong>
+        <StatusBadge tone={verdictTone(String(record.verdict ?? ""))}>{formatValue(record.verdict)}</StatusBadge>
+      </div>
+      {!rows.length ? (
+        <p className="dp-muted">Indicators were not compared: {formatValue(record.not_comparable_reason ?? "no comparable indicator rows")}.</p>
+      ) : (
+        <ResponsiveTable label="Indicator side-by-side comparison">
+          <table className="op-table dp-indicator-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Current provider</th>
+                <th>Schwab</th>
+                <th>Delta</th>
+                <th>Tolerance</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const item = asRecord(row);
+                return (
+                  <tr key={String(item.field)}>
+                    <td>{formatValue(item.field)}</td>
+                    <td>{formatValue(item.current)}</td>
+                    <td>{formatValue(item.candidate)}</td>
+                    <td>{formatValue(item.delta)}</td>
+                    <td>{formatValue(item.tolerance)}</td>
+                    <td><StatusBadge tone={verdictTone(String(item.verdict ?? ""))}>{formatValue(item.verdict)}</StatusBadge></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ResponsiveTable>
+      )}
+    </section>
+  );
+}
+
+function FreshnessDelaySection({ result }: { result: DataParityRunResponse | null }) {
+  const currentCounts = countProviderClassifications(result, "current");
+  const schwabCounts = countProviderClassifications(result, "candidate");
+  const firstFreshness = result?.results[0] ? freshnessRecord(result.results[0]) : {};
+  const staleOrDelayedRows = result?.results.filter((item) => {
+    const currentClass = providerClassification(item, "current");
+    const candidateClass = providerClassification(item, "candidate");
+    return [currentClass, candidateClass].some((value) => value === "delayed_15_min_like" || value === "stale" || value === "not_comparable");
+  }).length ?? 0;
+
+  return (
+    <Card title="Freshness / Delay">
+      {!result ? (
+        <EmptyState title="No freshness run yet" hint="Run a comparison to measure provider timestamps against the server run time and expected latest market bar." />
+      ) : (
+        <>
+          <div className="dp-status-grid dp-freshness-grid">
+            <div><span>server run time</span><strong>{formatTimestamp(result.asOf)}</strong></div>
+            <div><span>market session</span><strong>{formatValue(firstFreshness.market_session_state)}</strong></div>
+            <div><span>current provider classes</span><strong>{formatClassificationCounts(currentCounts)}</strong></div>
+            <div><span>Schwab classes</span><strong>{formatClassificationCounts(schwabCounts)}</strong></div>
+            <div><span>delayed/stale/not comparable rows</span><strong>{staleOrDelayedRows}</strong></div>
+            <div><span>basis</span><strong>{formatValue(firstFreshness.delay_measurement_basis)}</strong></div>
+          </div>
+          <ResponsiveTable label="Provider freshness and delay by comparison row">
+            <table className="op-table dp-freshness-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>TF</th>
+                  <th>Expected latest market bar</th>
+                  <th>Current provider asOf</th>
+                  <th>Current lag vs expected</th>
+                  <th>Current class</th>
+                  <th>Schwab asOf</th>
+                  <th>Schwab lag vs expected</th>
+                  <th>Schwab class</th>
+                  <th>Timestamp delta</th>
+                  <th>Aligned latest</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.results.map((item) => {
+                  const freshness = freshnessRecord(item);
+                  return (
+                    <tr key={`${item.symbol}-${item.timeframe}-freshness`}>
+                      <td>{item.symbol}</td>
+                      <td>{item.timeframe}</td>
+                      <td>{formatTimestamp(asRecord(freshness.expected_latest_market_bar))}</td>
+                      <td>{providerAsOf(item, "current")}</td>
+                      <td>{providerLagVsExpected(item, "current")} min</td>
+                      <td><StatusBadge tone={verdictTone(providerClassification(item, "current"))}>{providerClassification(item, "current")}</StatusBadge></td>
+                      <td>{providerAsOf(item, "candidate")}</td>
+                      <td>{providerLagVsExpected(item, "candidate")} min</td>
+                      <td><StatusBadge tone={verdictTone(providerClassification(item, "candidate"))}>{providerClassification(item, "candidate")}</StatusBadge></td>
+                      <td>{timestampDeltaMinutes(item)} min</td>
+                      <td>{alignedLatestTimestamp(item)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ResponsiveTable>
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -187,7 +515,7 @@ export function DataParityLab() {
     try {
       setSchwabStatus(await fetchSchwabStatus());
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : "Unable to load Schwab status.");
+      setStatusError(cleanDataParityErrorMessage(error instanceof Error ? error.message : null, "Unable to load Schwab status."));
     } finally {
       setStatusLoading(false);
     }
@@ -198,7 +526,7 @@ export function DataParityLab() {
     try {
       setSnapshots(await fetchDataParitySnapshots());
     } catch (error) {
-      setSnapshotError(error instanceof Error ? error.message : "Unable to load snapshots.");
+      setSnapshotError(cleanDataParityErrorMessage(error instanceof Error ? error.message : null, "Unable to load snapshots."));
     }
   }
 
@@ -238,7 +566,7 @@ export function DataParityLab() {
       await loadStatus();
       if (saveSnapshot) await loadSnapshots();
     } catch (error) {
-      setRunError(error instanceof Error ? error.message : "Data parity run failed.");
+      setRunError(cleanDataParityErrorMessage(error instanceof Error ? error.message : null, "Data parity run failed."));
     } finally {
       setRunning(false);
     }
@@ -250,12 +578,17 @@ export function DataParityLab() {
       setResult(await fetchDataParitySnapshot(runId));
       setExpandedKey(null);
     } catch (error) {
-      setSnapshotError(error instanceof Error ? error.message : "Unable to open snapshot.");
+      setSnapshotError(cleanDataParityErrorMessage(error instanceof Error ? error.message : null, "Unable to open snapshot."));
     }
   }
 
-  const statusBadge = statusLoading ? "loading" : schwabStatus?.token_status ?? "unknown";
-  const statusTone = statusLoading ? "neutral" : verdictTone(schwabStatus?.token_status ?? schwabStatus?.status);
+  const schwabConnected = isSchwabConnected(schwabStatus);
+  const statusBadge = statusLoading ? "loading" : schwabConnected ? "Connected" : schwabStatus?.token_status ?? "unknown";
+  const statusTone = statusLoading ? "neutral" : schwabConnected ? "good" : verdictTone(schwabStatus?.token_status ?? schwabStatus?.status);
+  const currentProviderName = String(asRecord(result?.providers.current).provider ?? "not run");
+  const trueMismatchCount = countResults(result, (item) => TRUE_MISMATCH_VERDICTS.has(item.rootCause));
+  const notComparableCount = countResults(result, (item) => NOT_COMPARABLE_VERDICTS.has(item.rootCause));
+  const comparableCount = countResults(result, (item) => !NOT_COMPARABLE_VERDICTS.has(item.rootCause));
 
   return (
     <section className="dp-stack">
@@ -264,12 +597,14 @@ export function DataParityLab() {
         subtitle="Compare current MacMarket provider vs Schwab market data and derived MacMarket analytics. Read-only diagnostics only."
         actions={
           <>
-            <button type="button" onClick={() => void loadStatus()} disabled={statusLoading}>
-              Refresh status
+            <button type="button" className="op-btn op-btn-primary" onClick={() => void loadStatus()} disabled={statusLoading}>
+              Refresh Schwab status
             </button>
-            <button type="button" onClick={() => window.location.assign("/api/admin/schwab/start")}>
-              {schwabStatus?.token_status === "connected" ? "Reconnect Schwab" : "Connect Schwab"}
-            </button>
+            {shouldShowSchwabReconnect(schwabStatus) ? (
+              <button type="button" onClick={() => window.location.assign("/api/admin/schwab/start")}>
+                {schwabStatus?.oauth_connected ? "Reconnect Schwab" : "Connect Schwab"}
+              </button>
+            ) : null}
           </>
         }
       />
@@ -281,13 +616,38 @@ export function DataParityLab() {
           <div><span>status</span><StatusBadge tone={statusTone}>{statusBadge}</StatusBadge></div>
           <div><span>configured</span><strong>{schwabStatus?.configured ? "yes" : "no"}</strong></div>
           <div><span>credentials</span><strong>{schwabStatus?.credentials_present ? "present" : "missing"}</strong></div>
-          <div><span>OAuth</span><strong>{schwabStatus?.oauth_connected ? "connected" : "not connected"}</strong></div>
+          <div><span>OAuth/token</span><strong>{schwabConnected ? "usable" : schwabStatus?.token_status ?? "unknown"}</strong></div>
+          <div><span>access state</span><strong>{schwabStatus?.access_state ?? "-"}</strong></div>
+          <div><span>refresh state</span><strong>{schwabStatus?.refresh_state ?? "-"}</strong></div>
           <div><span>last refresh</span><strong>{formatTimestamp(schwabStatus?.last_refresh_at)}</strong></div>
           <div><span>mode</span><strong>{schwabStatus?.mode ?? "diagnostic"}</strong></div>
         </div>
         <p className="dp-muted">{schwabStatus?.details ?? "Schwab diagnostics have not been loaded yet."}</p>
+        <p className="dp-muted">Diagnostic pulls use the stored backend OAuth token while usable; browser code never receives Schwab tokens or secrets.</p>
         <p className="dp-muted">{schwabStatus?.operational_impact ?? "Diagnostic market-data comparison only."}</p>
       </Card>
+
+      <div className="dp-summary-strip dp-cockpit-strip">
+        {[
+          ["Schwab status", statusBadge],
+          ["Current provider", currentProviderName],
+          ["Symbols", parseParitySymbols(symbolsText).join(", ") || "-"],
+          ["Timeframes", selectedTfList.join(", ") || "-"],
+          ["Comparable rows", comparableCount],
+          ["True mismatches", trueMismatchCount],
+          ["Not comparable", notComparableCount],
+          ["Last run", result ? formatTimestamp(result.asOf) : "-"],
+        ].map(([label, value]) => (
+          <Card key={String(label)}>
+            <div className="dp-summary-card">
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <FreshnessDelaySection result={result} />
 
       <Card title="Run controls">
         <div className="dp-control-grid">
@@ -427,16 +787,16 @@ export function DataParityLab() {
         {[
           ["total comparisons", "total"],
           ["matches", "match"],
-          ["raw provider mismatches", "raw_provider_mismatch"],
-          ["normalization mismatches", "normalization_mismatch"],
-          ["indicator mismatches", "indicator_mismatch"],
+          ["raw mismatches", "comparable_raw_mismatch"],
+          ["normalization mismatches", "comparable_normalized_mismatch"],
+          ["indicator mismatches", "comparable_indicator_mismatch"],
           ["TOS mismatches", "tos_reference_mismatch"],
-          ["insufficient/errors", "insufficient_data"],
+          ["not comparable", "not_comparable"],
         ].map(([label, key]) => (
           <Card key={key}>
             <div className="dp-summary-card">
               <span>{label}</span>
-              <strong>{key === "insufficient_data" ? summaryValue(result, "insufficient_data") + summaryValue(result, "error") : summaryValue(result, key)}</strong>
+              <strong>{key === "not_comparable" ? notComparableCount : summaryValue(result, key)}</strong>
             </div>
           </Card>
         ))}
@@ -459,15 +819,22 @@ export function DataParityLab() {
                   <tr>
                     <th>Symbol</th>
                     <th>TF</th>
-                    <th>Raw bars verdict</th>
-                    <th>Canonical bars verdict</th>
-                    <th>True Momentum</th>
-                    <th>HACO</th>
-                    <th>HACOLT</th>
-                    <th>Hi/Lo</th>
-                    <th>Squeeze</th>
+                    <th>Current provider asOf</th>
+                    <th>Schwab asOf</th>
+                    <th>Timestamp delta</th>
+                    <th>Aligned latest</th>
+                    <th>Raw A close</th>
+                    <th>Raw B close</th>
+                    <th>Raw delta / tolerance</th>
+                    <th>Raw verdict</th>
+                    <th>Canonical A close</th>
+                    <th>Canonical B close</th>
+                    <th>Canonical delta / tolerance</th>
+                    <th>Canonical verdict</th>
+                    <th>Indicators</th>
                     <th>TOS Reference</th>
                     <th>Root Cause</th>
+                    <th>Verdict reason</th>
                     <th>Details</th>
                   </tr>
                 </thead>
@@ -480,15 +847,22 @@ export function DataParityLab() {
                         <tr>
                           <td>{item.symbol}</td>
                           <td>{item.timeframe}</td>
+                          <td>{providerAsOf(item, "current")}</td>
+                          <td>{providerAsOf(item, "candidate")}</td>
+                          <td>{timestampDeltaMinutes(item)} min</td>
+                          <td>{alignedLatestTimestamp(item)}</td>
+                          <td>{latestCommonClose(item.rawBars, "latest_common_current")}</td>
+                          <td>{latestCommonClose(item.rawBars, "latest_common_candidate")}</td>
+                          <td>{latestDelta(item.rawBars, "close")} / {priceTolerance(item.rawBars)}</td>
                           <td><StatusBadge tone={verdictTone(comparisonVerdict(item, "rawBars"))}>{comparisonVerdict(item, "rawBars")}</StatusBadge></td>
+                          <td>{latestCommonClose(item.canonicalBars, "latest_common_current")}</td>
+                          <td>{latestCommonClose(item.canonicalBars, "latest_common_candidate")}</td>
+                          <td>{latestDelta(item.canonicalBars, "close")} / {priceTolerance(item.canonicalBars)}</td>
                           <td><StatusBadge tone={verdictTone(comparisonVerdict(item, "canonicalBars"))}>{comparisonVerdict(item, "canonicalBars")}</StatusBadge></td>
-                          <td><StatusBadge tone={verdictTone(componentVerdict(item, "trueMomentum"))}>{componentVerdict(item, "trueMomentum")}</StatusBadge></td>
-                          <td><StatusBadge tone={verdictTone(componentVerdict(item, "haco"))}>{componentVerdict(item, "haco")}</StatusBadge></td>
-                          <td><StatusBadge tone={verdictTone(componentVerdict(item, "hacolt"))}>{componentVerdict(item, "hacolt")}</StatusBadge></td>
-                          <td><StatusBadge tone={verdictTone(componentVerdict(item, "hiLo"))}>{componentVerdict(item, "hiLo")}</StatusBadge></td>
-                          <td><StatusBadge tone={verdictTone(componentVerdict(item, "squeeze"))}>{componentVerdict(item, "squeeze")}</StatusBadge></td>
+                          <td><StatusBadge tone={verdictTone(String(asRecord(item.indicators).verdict ?? ""))}>{formatValue(asRecord(item.indicators).verdict)}</StatusBadge></td>
                           <td><StatusBadge tone={verdictTone(item.tosReference?.verdict)}>{item.tosReference?.verdict ?? "-"}</StatusBadge></td>
                           <td><StatusBadge tone={rootCauseTone(item.rootCause)}>{item.rootCause}</StatusBadge></td>
+                          <td>{verdictReason(item)}</td>
                           <td>
                             <button
                               type="button"
@@ -501,11 +875,19 @@ export function DataParityLab() {
                         </tr>
                         {expanded ? (
                           <tr className="dp-detail-row">
-                            <td colSpan={12}>
+                            <td colSpan={19}>
                               <div className="dp-detail-grid">
+                                {item.rootCause === "stale_source" ? (
+                                  <section className="dp-stale-callout dp-wide-detail">
+                                    <strong>Stale/as-of mismatch</strong>
+                                    <p>Latest provider timestamps differ beyond tolerance, so indicators are not treated as comparable for this row.</p>
+                                  </section>
+                                ) : null}
                                 <ComparisonDetail title="Raw provider bars" comparison={item.rawBars} />
                                 <ComparisonDetail title="Canonical MacMarket bars" comparison={item.canonicalBars} />
-                                <JsonBlock label="Indicator payload comparison" value={item.indicators} />
+                                <SideBySideBarsTable title="Raw aligned bars" comparison={item.rawBars} />
+                                <SideBySideBarsTable title="Canonical aligned bars" comparison={item.canonicalBars} />
+                                <IndicatorSideBySideTable comparison={item.indicators} />
                                 <JsonBlock label="TOS reference comparison" value={item.tosReference} />
                                 <JsonBlock label="Warnings and errors" value={{ warnings: item.warnings, errors: item.errors }} />
                               </div>

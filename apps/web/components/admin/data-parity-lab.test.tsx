@@ -32,7 +32,12 @@ vi.mock("@/components/operator-ui", async () => {
   };
 });
 
-import { DataParityLab } from "@/components/admin/data-parity-lab";
+import {
+  DataParityLab,
+  cleanDataParityErrorMessage,
+  isSchwabConnected,
+  shouldShowSchwabReconnect,
+} from "@/components/admin/data-parity-lab";
 
 const require = createRequire(import.meta.url);
 const { renderToStaticMarkup } = require("react-dom/server") as {
@@ -47,6 +52,7 @@ describe("DataParityLab", () => {
 
     expect(html).toContain("Market Data Parity Lab");
     expect(html).toContain("Schwab connection");
+    expect(html).toContain("Freshness / Delay");
     expect(html).toContain("Run controls");
     expect(html).toContain("TOS manual reference");
     expect(html).toContain("No comparison run yet");
@@ -69,22 +75,57 @@ describe("DataParityLab", () => {
     expect(source).not.toContain("Authorization");
   });
 
-  it("keeps the matrix focused on raw, canonical, indicator, and TOS verdicts", () => {
+  it("keeps the matrix focused on side-by-side raw, canonical, indicator, and TOS verdicts", () => {
     for (const label of [
-      "Raw bars verdict",
-      "Canonical bars verdict",
-      "True Momentum",
-      "HACO",
-      "HACOLT",
-      "Hi/Lo",
-      "Squeeze",
+      "Raw A close",
+      "Raw B close",
+      "Raw delta / tolerance",
+      "Canonical A close",
+      "Canonical B close",
+      "Canonical delta / tolerance",
+      "Indicators",
       "TOS Reference",
       "Root Cause",
+      "Current provider asOf",
+      "Schwab asOf",
+      "Timestamp delta",
+      "Aligned latest",
+      "Verdict reason",
     ]) {
       expect(source).toContain(label);
     }
-    expect(source).toContain("Indicator payload comparison");
+    expect(source).toContain("Indicator side-by-side");
+    expect(source).toContain("Provider freshness and delay by comparison row");
+    expect(source).toContain("delayed_15_min_like");
+    expect(source).toContain("SideBySideBarsTable");
     expect(source).toContain("Raw provider bars");
     expect(source).toContain("Canonical MacMarket bars");
+  });
+
+  it("does not push reconnect as the primary action while Schwab is connected", () => {
+    const connected = {
+      provider: "schwab_market_data",
+      mode: "diagnostic",
+      status: "ok",
+      configured: true,
+      credentials_present: true,
+      oauth_connected: true,
+      token_status: "connected",
+      details: "connected",
+    };
+
+    expect(isSchwabConnected(connected)).toBe(true);
+    expect(shouldShowSchwabReconnect(connected)).toBe(false);
+    expect(source).toContain("Refresh Schwab status");
+  });
+
+  it("cleans raw HTML API errors before rendering feedback", () => {
+    expect(
+      cleanDataParityErrorMessage(
+        "<!doctype html><html><body>404 - This page could not be found.</body></html>",
+        "Data parity run failed.",
+      ),
+    ).toBe("Data parity run failed.");
+    expect(cleanDataParityErrorMessage("Backend unavailable", "Data parity run failed.")).toBe("Backend unavailable");
   });
 });

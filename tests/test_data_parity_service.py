@@ -61,6 +61,25 @@ def _intraday_bars(*, count: int = 320) -> list[Bar]:
     return bars
 
 
+def _bars_at(timestamps: list[datetime], *, provider: str = "polygon") -> list[Bar]:
+    return [
+        Bar(
+            date=timestamp.date(),
+            timestamp=timestamp,
+            open=100 + index,
+            high=101 + index,
+            low=99 + index,
+            close=100.5 + index,
+            volume=1_000_000 + index,
+            session_policy="regular_hours",
+            source_session_policy="provider_regular_hours",
+            source_timeframe="30M",
+            provider=provider,
+        )
+        for index, timestamp in enumerate(timestamps)
+    ]
+
+
 class StubProvider:
     name = "polygon"
 
@@ -184,9 +203,9 @@ def test_raw_provider_mismatch_classification(monkeypatch) -> None:
 
     response = service.run(_request(), app_user_id=1)
 
-    assert response["summary"]["raw_provider_mismatch"] == 1
-    assert response["results"][0]["rootCause"] == "raw_provider_mismatch"
-    assert response["results"][0]["rawBars"]["verdict"] == "mismatch"
+    assert response["summary"]["comparable_raw_mismatch"] == 1
+    assert response["results"][0]["rootCause"] == "comparable_raw_mismatch"
+    assert response["results"][0]["rawBars"]["verdict"] == "comparable_raw_mismatch"
 
 
 def test_normalization_mismatch_classification(monkeypatch) -> None:
@@ -196,10 +215,11 @@ def test_normalization_mismatch_classification(monkeypatch) -> None:
 
     response = service.run(_request(), app_user_id=1)
 
-    assert response["summary"]["normalization_mismatch"] == 1
-    assert response["results"][0]["rootCause"] == "normalization_mismatch"
+    assert response["summary"]["comparable_normalized_mismatch"] == 1
+    assert response["results"][0]["rootCause"] == "comparable_normalized_mismatch"
     assert response["results"][0]["rawBars"]["verdict"] == "match"
-    assert response["results"][0]["canonicalBars"]["verdict"] == "mismatch"
+    assert response["results"][0]["canonicalBars"]["verdict"] == "comparable_normalized_mismatch"
+    assert response["results"][0]["indicators"]["verdict"] == "not_compared"
 
 
 def test_indicator_component_missing_returns_available_false(monkeypatch) -> None:
@@ -222,6 +242,76 @@ def test_indicator_component_missing_returns_available_false(monkeypatch) -> Non
 
     assert indicator == {"available": False, "reason": "component_not_found"}
     assert response["results"][0]["indicators"]["verdict"] == "match"
+
+
+def test_no_indicator_mismatch_when_aligned_bars_are_zero(monkeypatch) -> None:
+    current = _bars()
+    schwab = [
+        Bar(
+            date=bar.date + timedelta(days=180),
+            timestamp=bar.timestamp + timedelta(days=180) if bar.timestamp else None,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close + 10,
+            volume=bar.volume,
+            session_policy=bar.session_policy,
+            source_session_policy=bar.source_session_policy,
+            source_timeframe=bar.source_timeframe,
+            provider="schwab",
+        )
+        for bar in _bars()
+    ]
+    service = _service(monkeypatch, current=current, schwab_raw=schwab)
+
+    response = service.run(_request(), app_user_id=1)
+    result = response["results"][0]
+
+    assert result["canonicalBars"]["aligned_timestamps"] == 0
+    assert result["rootCause"] in {"no_aligned_bars", "stale_source"}
+    assert result["rootCause"] != "comparable_indicator_mismatch"
+    assert result["indicators"]["verdict"] == "not_compared"
+
+
+def test_stale_provider_data_classifies_before_indicator_compare(monkeypatch) -> None:
+    current = _bars(count=80)
+    schwab = _bars(count=75)
+    service = _service(monkeypatch, current=current, schwab_raw=schwab)
+
+    response = service.run(_request(), app_user_id=1)
+    result = response["results"][0]
+
+    assert result["rootCause"] == "stale_source"
+    assert result["canonicalBars"]["verdict"] == "stale_source"
+    assert result["canonicalBars"]["latest_timestamp_delta_seconds"] > result["canonicalBars"]["latest_timestamp_tolerance_seconds"]
+    assert result["indicators"]["verdict"] == "not_compared"
+
+
+def test_freshness_classifies_delay_from_measured_timestamps(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "macmarket_trader.data_parity.service._utc_now",
+        lambda: datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+    )
+    timestamps = [
+        datetime(2026, 1, 2, 13, 45, tzinfo=UTC),
+        datetime(2026, 1, 2, 14, 15, tzinfo=UTC),
+        datetime(2026, 1, 2, 14, 45, tzinfo=UTC),
+    ]
+    current = _bars_at(timestamps, provider="polygon")
+    schwab = _bars_at(timestamps, provider="schwab")
+    service = _service(monkeypatch, current=current, schwab_raw=schwab)
+
+    response = service.run(_request(timeframes=["30M"], lookbackBars=5), app_user_id=1)
+    freshness = response["results"][0]["freshness"]
+
+    assert freshness["market_session_state"] == "regular"
+    assert freshness["expected_latest_market_bar"]["utc"] == "2026-01-02T15:00:00+00:00"
+    assert freshness["current"]["latest_bar_timestamp"]["utc"] == "2026-01-02T14:45:00+00:00"
+    assert freshness["current"]["latest_bar_timestamp"]["new_york"].startswith("2026-01-02T09:45:00")
+    assert freshness["current"]["provider_lag_minutes_vs_expected_latest_market_bar"] == 15.0
+    assert freshness["current"]["classification"] == "delayed_15_min_like"
+    assert freshness["candidate"]["classification"] == "delayed_15_min_like"
+    assert freshness["timestamp_delta_minutes"] == 0.0
 
 
 def test_tos_reference_mismatch_classification(monkeypatch) -> None:

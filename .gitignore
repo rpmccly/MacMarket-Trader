@@ -74,7 +74,8 @@ logs/
 # =========================
 # Build / deployment artifacts
 # =========================
-build/
+# Root build output only. Nested Next route segments may be named "build".
+/build/
 release/
 *.pid
 *.seed

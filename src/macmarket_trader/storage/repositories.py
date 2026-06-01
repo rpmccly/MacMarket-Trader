@@ -236,6 +236,23 @@ class AgentModeRepository:
             )
             return session.execute(stmt).scalar_one_or_none()
 
+    def list_runs(
+        self,
+        *,
+        app_user_id: int,
+        limit: int = 50,
+        status: str | None = None,
+        dry_run: bool | None = None,
+    ) -> list[AgentModeRunModel]:
+        with self.session_factory() as session:
+            stmt = select(AgentModeRunModel).where(AgentModeRunModel.app_user_id == app_user_id)
+            if status:
+                stmt = stmt.where(AgentModeRunModel.status == status)
+            if dry_run is not None:
+                stmt = stmt.where(AgentModeRunModel.dry_run.is_(dry_run))
+            stmt = stmt.order_by(AgentModeRunModel.created_at.desc()).limit(max(1, min(int(limit), 100)))
+            return list(session.execute(stmt).scalars())
+
     def list_enabled_settings(self) -> list[AgentModeSettingsModel]:
         with self.session_factory() as session:
             stmt = select(AgentModeSettingsModel).where(

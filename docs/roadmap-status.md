@@ -2,6 +2,56 @@
 
 Last updated: 2026-05-31
 
+## 2026-05-31 Update - Market Data Parity Lab UX/Verdict Hardening
+
+Completed in the current Phase 1 provider-trust track:
+- Tightened the admin-only Data Parity Lab so Schwab shows connected when its
+  stored backend OAuth token is usable or refreshable, with refresh status as
+  the safe primary action and reconnect reserved for missing/invalid tokens.
+- Split parity verdicts into not-comparable states versus true comparable
+  mismatches, and limited indicator comparison to matched canonical bars on
+  aligned timestamps.
+- Reworked the parity UI into a side-by-side cockpit with comparable/not-
+  comparable counts, provider A/B close values, deltas/tolerances, stale-source
+  callouts, aligned bar tables, and indicator comparison rows.
+- Added measured Freshness / Delay diagnostics so each row shows full UTC and
+  America/New_York as-of timestamps, market-session state, expected latest
+  regular-hours bar, provider lag versus server time and expected bar time,
+  timestamp delta, latest common aligned timestamp, and measured
+  `real_time_like` / `delayed_15_min_like` / `stale` / `not_comparable`
+  classification.
+
+No provider default, broker routing, live trading, recommendation, replay,
+Agent Mode, Daily Target Book, HACO/Momentum, schedule, or paper-lifecycle
+behavior changed.
+
+## 2026-05-31 Update - Daily Target Book MVP
+
+Completed in the current Phase 1 workflow-trust track:
+- Added protected `/daily-target-book` console surface as a read-only
+  manual-review counterpart to Agent Mode. It builds exactly five target slots
+  from current paper positions plus deterministic ranked candidates.
+- Added approved-user Daily Target Book endpoints for safe defaults/latest
+  state and read-only target-book builds. Existing positions are preserved,
+  candidate rows are deduplicated by symbol, failed gates become
+  `CASH_NO_TRADE`, and all actions are labeled as operator review only.
+- The backend reuses existing workflow market-data bars, session/fallback
+  labeling, ranking, risk-calendar assessment, watchlist/symbol-universe
+  resolution, and paper-position diagnostics without calling paper broker,
+  order, fill, position-close, schedule, live broker, or provider-default
+  selection paths.
+- The UI distinguishes the page from Agent Mode with read-only copy, no
+  enabled-run controls, Current Book vs Target Book comparison, grouped
+  candidate queue, decision memo, and data-quality sections.
+
+Open/deferred:
+- The MVP does not persist Daily Target Book history; `latest` returns safe
+  defaults and an empty state. Persisted review snapshots can be added later if
+  audit requirements need them.
+- Profile resolution is read-only and uses request/default profile symbols in
+  this pass; richer profile pickers can be added later without changing the
+  read-only execution boundary.
+
 ## 2026-05-31 Update - Agent Mode MVP
 
 Completed in the current Phase 1 private-alpha hardening track:
@@ -26,6 +76,27 @@ Open/deferred:
   explicit setting and review intent only.
 - The daily runner is CLI-driven and must be invoked by the operator's existing
   scheduler if autonomous daily operation is desired.
+
+Audit hardening:
+- The Agent Mode service and due-runner now enforce local approved-user status
+  even outside the HTTP dependency layer. A user who is later moved out of
+  `approved` is skipped before any paper order or paper position lifecycle path
+  can run. This preserves the paper-only/no-live-routing boundary and does not
+  change recommendation, replay, HACO, Momentum, provider, schedule, or general
+  paper-order behavior outside Agent Mode.
+
+MVP cockpit hardening:
+- Agent Mode now exposes user-scoped run history, trade ledger, and performance
+  endpoints backed by the existing run audit plus paper position/trade tables.
+  New run payloads separate paper opens, paper closes, holds, blocked actions,
+  cash/no-trade decisions, and total executed paper actions.
+- The `/agent-mode` UI is organized into Overview, Runs, Trades, Positions,
+  Performance, and Settings sections. It groups duplicate candidate rows by
+  symbol, rounds price/quantity/P&L display, keeps dry-run as the safe primary
+  action, and requires confirmation for enabled paper lifecycle runs.
+- This pass remains Agent Mode-only and does not change provider defaults,
+  recommendations, replay, HACO, Momentum, broker routing, live trading, or
+  the paper lifecycle outside Agent Mode.
 
 ## 2026-05-29 Update - Market Data Parity Lab
 

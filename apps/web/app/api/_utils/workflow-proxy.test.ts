@@ -33,4 +33,27 @@ describe("proxyWorkflowRequest", () => {
     await expect(response.json()).resolves.toEqual({ detail: "Configured provider unavailable" });
     fetchSpy.mockRestore();
   });
+
+  it("converts upstream HTML 404 pages into structured JSON errors", async () => {
+    resolveAuthTokenStateMock.mockResolvedValue({ token: "session-token", authPending: false });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<!doctype html><html><body>Not found</body></html>", {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    const { proxyWorkflowRequest } = await import("@/app/api/_utils/workflow-proxy");
+
+    const response = await proxyWorkflowRequest({
+      request: new Request("http://localhost/api/user/daily-target-book/build", { method: "POST" }),
+      backendPath: "/user/daily-target-book/build",
+      bodyText: "{}",
+    });
+
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as { detail?: string };
+    expect(body.detail).toContain("Route not found");
+    expect(body.detail).not.toContain("<html");
+    fetchSpy.mockRestore();
+  });
 });

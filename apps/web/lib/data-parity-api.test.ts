@@ -95,6 +95,27 @@ describe("data parity API helpers", () => {
     });
   });
 
+  it("returns a clean message when the proxy returns an HTML 404 page", async () => {
+    fetchSpy.mockResolvedValue(
+      new Response("<!doctype html><html><body>404 - This page could not be found.</body></html>", {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+
+    await expect(
+      runDataParity({
+        symbols: ["SPY"],
+        timeframes: ["1D"],
+        lookbackBars: 250,
+        sessionPolicy: "regular_hours",
+        includeExtendedHours: false,
+        saveSnapshot: false,
+        tosReferences: [],
+      }),
+    ).rejects.toThrow("Route not found");
+  });
+
   it("loads snapshot summaries through the proxy route", async () => {
     fetchSpy.mockResolvedValue(
       new Response(

@@ -19,6 +19,7 @@ This root `README.md` is the **canonical architecture charter** for the reposito
 
 - `docs/` may expand on specific topics.
 - `docs/agent-mode.md` covers the paper-only autonomous Agent Mode operator loop.
+- `docs/daily-target-book.md` covers the read-only Daily Target Book manual-review cockpit.
 - `docs/data-parity-lab.md` covers the admin-only Schwab-vs-current-provider market-data parity diagnostic lab.
 - `docs/` must not replace or materially shrink the root architecture definition.
 - Do not auto-condense this README into a status page.

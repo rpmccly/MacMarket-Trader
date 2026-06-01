@@ -20,6 +20,7 @@ const navSections = [
       ["/replay-runs", "Replay"],
       ["/orders", "Paper Order"],
       ["/agent-mode", "Agent Mode"],
+      ["/daily-target-book", "Daily Target Book"],
     ],
   },
   {

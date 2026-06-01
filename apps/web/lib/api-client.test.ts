@@ -36,6 +36,26 @@ describe("fetchNormalized", () => {
     expect(result.error).toBe("AUTH_NOT_READY");
     fetchSpy.mockRestore();
   });
+
+  it("does not expose raw HTML error pages to callers", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<!doctype html><html><body>404</body></html>", {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+
+    const result = await fetchNormalized<{ ok: boolean }>("/api/user/daily-target-book/build", {
+      method: "POST",
+      body: "{}",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Route not found");
+    expect(result.error).not.toContain("<html");
+    expect(JSON.stringify(result.raw)).not.toContain("<html");
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("fetchWorkflowApi", () => {
