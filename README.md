@@ -692,6 +692,10 @@ existing schedule symbol input as a static snapshot while leaving schedule run
 behavior unchanged. `10W8D` closes the current selector scope with docs/test
 alignment and confirms the preview/apply paths remain separate from queue
 submit and schedule save/run behavior.
+New approved operators also receive an editable, deletable **Starter Market
+Watchlist** seeded through the existing user-scoped `watchlists.symbols` JSON
+path so Recommendations and Schedules have a useful first-run universe without
+provider-backed symbol lookup or normalized watchlist migration.
 Current manual entry now shows clearer separator guidance, parsed uppercase
 previews, duplicate feedback, and ETF/index substitute copy, but remains a
 temporary manual universe until richer watchlist management is implemented.

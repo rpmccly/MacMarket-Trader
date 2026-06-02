@@ -89,6 +89,11 @@ describe("DataParityLab", () => {
       "Schwab asOf",
       "Timestamp delta",
       "Aligned latest",
+      "alignment mode",
+      "latest alignment label",
+      "Current timestamp",
+      "Schwab timestamp",
+      "diagnostic notes",
       "Verdict reason",
       "lag vs server",
       "lag vs expected",
@@ -102,6 +107,7 @@ describe("DataParityLab", () => {
     expect(source).toContain("SideBySideBarsTable");
     expect(source).toContain("Raw provider bars");
     expect(source).toContain("Canonical MacMarket bars");
+    expect(source).toContain("indicator_input_alignment");
   });
 
   it("does not push reconnect as the primary action while Schwab is connected", () => {

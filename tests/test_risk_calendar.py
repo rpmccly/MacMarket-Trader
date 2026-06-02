@@ -321,6 +321,58 @@ def test_missing_or_stale_index_data_adds_data_quality_warning_not_no_trade() ->
     assert any(item.startswith("index:") for item in assessment.data_quality_flags)
 
 
+def test_premarket_prior_session_index_close_is_fresh_risk_context() -> None:
+    service = _service_with_events([])
+    as_of = datetime(2026, 6, 2, 12, 55, tzinfo=timezone.utc)  # 08:55 ET, premarket.
+    prior_close = datetime(2026, 6, 1, 20, 4, tzinfo=timezone.utc)
+    context = {
+        "indices": [
+            {"symbol": "SPX", "latest_value": 5000.0, "day_change_pct": 0.0, "as_of": prior_close.isoformat(), "stale": False},
+            {"symbol": "NDX", "latest_value": 18000.0, "day_change_pct": 0.0, "as_of": datetime(2026, 6, 1, 21, 15, tzinfo=timezone.utc).isoformat(), "stale": False},
+            {"symbol": "RUT", "latest_value": 2100.0, "day_change_pct": 0.0, "as_of": prior_close.isoformat(), "stale": False},
+            {"symbol": "VIX", "latest_value": 18.0, "day_change_pct": 0.0, "as_of": datetime(2026, 6, 2, 12, 40, tzinfo=timezone.utc).isoformat(), "stale": False},
+        ]
+    }
+
+    assessment = service.assess(symbol="SPY", as_of=as_of, index_context=context)
+
+    assert assessment.decision.decision_state == "normal"
+    assert assessment.index_risk_signals is not None
+    assert assessment.index_risk_signals.index_data_stale_or_missing is False
+    freshness = assessment.index_risk_signals.provenance["freshness"]
+    assert freshness["market_session"] == "premarket"
+    spx = freshness["symbols"]["SPX"]
+    assert spx["accepted"] is True
+    assert spx["reason"] == "accepted_prior_regular_session_close"
+    assert spx["expected_latest_index_timestamp"] == "2026-06-01T20:00:00+00:00"
+
+
+def test_regular_session_old_index_timestamp_still_warns_with_delay_tolerance() -> None:
+    service = _service_with_events([])
+    as_of = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)  # 11:00 ET, regular session.
+    stale_index_time = datetime(2026, 6, 1, 20, 4, tzinfo=timezone.utc)
+    context = {
+        "indices": [
+            {"symbol": "SPX", "latest_value": 5000.0, "day_change_pct": 0.0, "as_of": stale_index_time.isoformat(), "stale": False},
+            {"symbol": "NDX", "latest_value": 18000.0, "day_change_pct": 0.0, "as_of": stale_index_time.isoformat(), "stale": False},
+            {"symbol": "RUT", "latest_value": 2100.0, "day_change_pct": 0.0, "as_of": stale_index_time.isoformat(), "stale": False},
+            {"symbol": "VIX", "latest_value": 18.0, "day_change_pct": 0.0, "as_of": stale_index_time.isoformat(), "stale": False},
+        ]
+    }
+
+    assessment = service.assess(symbol="SPY", as_of=as_of, index_context=context)
+
+    assert assessment.decision.decision_state == "caution"
+    assert assessment.decision.allow_new_entries is True
+    assert "index:SPX:as_of_stale" in assessment.data_quality_flags
+    freshness = assessment.index_risk_signals.provenance["freshness"]
+    assert freshness["market_session"] == "regular"
+    spx = freshness["symbols"]["SPX"]
+    assert spx["accepted"] is False
+    assert spx["freshness_threshold_minutes"] == 80
+    assert spx["reason"] == "regular_session_as_of_exceeds_stale_threshold"
+
+
 def test_rth_normalized_intraday_data_passes_session_policy_check(monkeypatch) -> None:
     monkeypatch.setattr(settings, "intraday_rth_session_required", True)
     service = _service_with_events([])

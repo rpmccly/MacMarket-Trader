@@ -31,6 +31,10 @@ from macmarket_trader.domain.models import (
     WatchlistModel,
     WatchlistSymbolModel,
 )
+from macmarket_trader.symbols.starter_watchlists import (
+    STARTER_MARKET_WATCHLIST_NAME,
+    starter_market_watchlist_symbols,
+)
 from macmarket_trader.storage.db import SessionLocal
 
 
@@ -90,6 +94,88 @@ def test_pending_user_blocked_then_admin_approves() -> None:
 
     ok = client.get('/user/dashboard', headers={'Authorization': 'Bearer user-token'})
     assert ok.status_code == 200
+
+
+def test_admin_approval_seeds_starter_watchlist_for_pending_user() -> None:
+    _seed_mock_user('admin-token')
+    with SessionLocal() as session:
+        admin = session.execute(
+            select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_admin')
+        ).scalar_one()
+        admin.app_role = 'admin'
+        admin.approval_status = 'approved'
+        admin.mfa_enabled = True
+        invited = AppUserModel(
+            external_auth_user_id='invited::starter.invitee@example.com',
+            email='starter.invitee@example.com',
+            display_name='Starter Invitee',
+            approval_status='pending',
+            app_role='user',
+            mfa_enabled=False,
+        )
+        session.add(invited)
+        session.commit()
+        target_id = invited.id
+
+    approve = client.post(
+        f'/admin/users/{target_id}/approve',
+        headers={'Authorization': 'Bearer admin-token'},
+        json={'user_id': target_id, 'note': 'approved for starter seed'},
+    )
+    assert approve.status_code == 200
+
+    with SessionLocal() as session:
+        rows = list(
+            session.execute(
+                select(WatchlistModel).where(WatchlistModel.app_user_id == target_id)
+            ).scalars()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].name == STARTER_MARKET_WATCHLIST_NAME
+    assert rows[0].symbols == starter_market_watchlist_symbols()
+
+
+def test_admin_approval_does_not_overwrite_existing_watchlist() -> None:
+    _seed_mock_user('admin-token')
+    with SessionLocal() as session:
+        admin = session.execute(
+            select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_admin')
+        ).scalar_one()
+        admin.app_role = 'admin'
+        admin.approval_status = 'approved'
+        admin.mfa_enabled = True
+        invited = AppUserModel(
+            external_auth_user_id='invited::custom.invitee@example.com',
+            email='custom.invitee@example.com',
+            display_name='Custom Invitee',
+            approval_status='pending',
+            app_role='user',
+            mfa_enabled=False,
+        )
+        session.add(invited)
+        session.flush()
+        target_id = invited.id
+        session.add(WatchlistModel(app_user_id=target_id, name='Custom List', symbols=['NFLX']))
+        session.commit()
+
+    approve = client.post(
+        f'/admin/users/{target_id}/approve',
+        headers={'Authorization': 'Bearer admin-token'},
+        json={'user_id': target_id, 'note': 'approved with existing watchlist'},
+    )
+    assert approve.status_code == 200
+
+    with SessionLocal() as session:
+        rows = list(
+            session.execute(
+                select(WatchlistModel).where(WatchlistModel.app_user_id == target_id)
+            ).scalars()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].name == 'Custom List'
+    assert rows[0].symbols == ['NFLX']
 
 
 def test_admin_can_reject_user() -> None:

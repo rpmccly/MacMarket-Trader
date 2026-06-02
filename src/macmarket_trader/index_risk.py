@@ -7,8 +7,9 @@ routes, exits, rolls, or broker actions.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from macmarket_trader.config import Settings, settings
 from macmarket_trader.domain.schemas import IndexRiskSignals
@@ -16,6 +17,13 @@ from macmarket_trader.domain.time import utc_now
 
 
 REQUIRED_INDEX_SYMBOLS = ("SPX", "NDX", "RUT", "VIX")
+US_EQUITY_TIMEZONE = ZoneInfo("America/New_York")
+PREMARKET_START_MINUTE = 4 * 60
+REGULAR_OPEN_MINUTE = 9 * 60 + 30
+REGULAR_CLOSE_MINUTE = 16 * 60
+AFTER_HOURS_END_MINUTE = 20 * 60
+REGULAR_SESSION_PROVIDER_DELAY_TOLERANCE_MINUTES = 20
+PRIOR_CLOSE_EARLY_TOLERANCE_MINUTES = 30
 
 
 def extract_index_risk_signals(
@@ -59,7 +67,11 @@ def extract_index_risk_signals(
     ndx_rel = round(ndx_change - spx_change, 4) if ndx_change is not None and spx_change is not None else None
     rut_rel = round(rut_change - spx_change, 4) if rut_change is not None and spx_change is not None else None
 
-    data_quality_flags = _data_quality_flags(points, current, int(cfg.index_data_stale_minutes))
+    data_quality_flags, freshness_diagnostics = _data_quality_flags(
+        points,
+        current,
+        int(cfg.index_data_stale_minutes),
+    )
     reasons: list[str] = []
     decision_effect = "normal"
     risk_level_effect = "normal"
@@ -127,6 +139,7 @@ def extract_index_risk_signals(
         provenance={
             "source": "IndexContextSummary",
             "symbol": (symbol or "").upper() or None,
+            "freshness": freshness_diagnostics,
             "thresholds": {
                 "vix_caution_level": cfg.vix_caution_level,
                 "vix_restricted_level": cfg.vix_restricted_level,
@@ -180,28 +193,126 @@ def _float_value(point: object | None, field_name: str) -> float | None:
     return round(parsed, 4)
 
 
-def _data_quality_flags(points: dict[str, object], now: datetime, stale_minutes: int) -> list[str]:
+def _data_quality_flags(points: dict[str, object], now: datetime, stale_minutes: int) -> tuple[list[str], dict[str, object]]:
     flags: list[str] = []
+    session_state = _market_session_state(now)
+    expected_latest = _expected_latest_index_timestamp(now)
+    diagnostics: dict[str, object] = {
+        "policy": "session_aware_regular_hours_weekday",
+        "market_session": session_state,
+        "server_time_utc": now.astimezone(UTC).isoformat(),
+        "server_time_new_york": now.astimezone(US_EQUITY_TIMEZONE).isoformat(),
+        "expected_latest_index_timestamp": expected_latest.isoformat() if expected_latest else None,
+        "stale_minutes_config": stale_minutes,
+        "regular_session_provider_delay_tolerance_minutes": REGULAR_SESSION_PROVIDER_DELAY_TOLERANCE_MINUTES,
+        "prior_close_early_tolerance_minutes": PRIOR_CLOSE_EARLY_TOLERANCE_MINUTES,
+        "symbols": {},
+    }
+    symbol_diagnostics = diagnostics["symbols"]
     for symbol in REQUIRED_INDEX_SYMBOLS:
         point = points.get(symbol)
         if point is None:
             flags.append(f"{symbol}:missing")
+            if isinstance(symbol_diagnostics, dict):
+                symbol_diagnostics[symbol] = {
+                    "accepted": False,
+                    "reason": "index_point_missing",
+                    "actual_as_of": None,
+                    "expected_latest_index_timestamp": expected_latest.isoformat() if expected_latest else None,
+                    "freshness_threshold_minutes": None,
+                    "threshold_basis": "missing_point",
+                }
             continue
+        symbol_flags: list[str] = []
         if _float_value(point, "latest_value") is None:
-            flags.append(f"{symbol}:latest_value_missing")
+            symbol_flags.append(f"{symbol}:latest_value_missing")
         if _float_value(point, "day_change_pct") is None:
-            flags.append(f"{symbol}:day_change_pct_missing")
-        if bool(_field(point, "stale")):
-            flags.append(f"{symbol}:stale")
+            symbol_flags.append(f"{symbol}:day_change_pct_missing")
         as_of = _parse_as_of(_field(point, "as_of"))
         if as_of is None:
-            flags.append(f"{symbol}:as_of_missing")
-        elif stale_minutes > 0 and (now - as_of).total_seconds() > stale_minutes * 60:
-            flags.append(f"{symbol}:as_of_stale")
+            symbol_flags.append(f"{symbol}:as_of_missing")
+            freshness = {
+                "accepted": False,
+                "reason": "as_of_missing",
+                "actual_as_of": None,
+                "expected_latest_index_timestamp": expected_latest.isoformat() if expected_latest else None,
+                "freshness_threshold_minutes": None,
+                "threshold_basis": "missing_timestamp",
+            }
+        else:
+            freshness = _index_freshness_decision(
+                as_of=as_of,
+                now=now,
+                expected_latest=expected_latest,
+                session_state=session_state,
+                stale_minutes=stale_minutes,
+            )
+            if not bool(freshness["accepted"]):
+                symbol_flags.append(f"{symbol}:as_of_stale")
+        if bool(_field(point, "stale")) and not bool(freshness.get("accepted")):
+            symbol_flags.append(f"{symbol}:stale")
         missing = _field(point, "missing_data")
         if isinstance(missing, list):
-            flags.extend(f"{symbol}:{item}" for item in missing if str(item).strip())
-    return sorted(set(flags))
+            symbol_flags.extend(f"{symbol}:{item}" for item in missing if str(item).strip())
+        flags.extend(symbol_flags)
+        if isinstance(symbol_diagnostics, dict):
+            symbol_diagnostics[symbol] = {
+                **freshness,
+                "provider_stale": bool(_field(point, "stale")),
+                "actual_as_of": as_of.isoformat() if as_of else None,
+                "missing_data": [str(item) for item in missing] if isinstance(missing, list) else [],
+                "data_quality_flags": sorted(set(symbol_flags)),
+            }
+    return sorted(set(flags)), diagnostics
+
+
+def _index_freshness_decision(
+    *,
+    as_of: datetime,
+    now: datetime,
+    expected_latest: datetime,
+    session_state: str,
+    stale_minutes: int,
+) -> dict[str, object]:
+    actual = as_of.astimezone(UTC)
+    expected = expected_latest.astimezone(UTC)
+    age_minutes = round((now.astimezone(UTC) - actual).total_seconds() / 60.0, 3)
+    lag_minutes_vs_expected = round((expected - actual).total_seconds() / 60.0, 3)
+    if session_state == "regular":
+        threshold = stale_minutes + REGULAR_SESSION_PROVIDER_DELAY_TOLERANCE_MINUTES
+        accepted = stale_minutes <= 0 or age_minutes <= threshold
+        reason = (
+            "accepted_regular_session_with_provider_delay_tolerance"
+            if accepted
+            else "regular_session_as_of_exceeds_stale_threshold"
+        )
+        return {
+            "accepted": accepted,
+            "reason": reason,
+            "market_session": session_state,
+            "expected_latest_index_timestamp": expected.isoformat(),
+            "age_minutes_vs_server_time": age_minutes,
+            "lag_minutes_vs_expected_latest": lag_minutes_vs_expected,
+            "freshness_threshold_minutes": threshold,
+            "threshold_basis": "server_time_age_minutes",
+        }
+
+    accepted = lag_minutes_vs_expected <= PRIOR_CLOSE_EARLY_TOLERANCE_MINUTES
+    reason = (
+        "accepted_prior_regular_session_close"
+        if accepted
+        else "prior_regular_session_close_not_current"
+    )
+    return {
+        "accepted": accepted,
+        "reason": reason,
+        "market_session": session_state,
+        "expected_latest_index_timestamp": expected.isoformat(),
+        "age_minutes_vs_server_time": age_minutes,
+        "lag_minutes_vs_expected_latest": lag_minutes_vs_expected,
+        "freshness_threshold_minutes": PRIOR_CLOSE_EARLY_TOLERANCE_MINUTES,
+        "threshold_basis": "minutes_before_expected_prior_regular_close",
+    }
 
 
 def _parse_as_of(value: object | None) -> datetime | None:
@@ -217,6 +328,48 @@ def _parse_as_of(value: object | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _minute_of_day(value: datetime) -> int:
+    local = value.astimezone(US_EQUITY_TIMEZONE)
+    return local.hour * 60 + local.minute
+
+
+def _market_session_state(value: datetime) -> str:
+    local = value.astimezone(US_EQUITY_TIMEZONE)
+    if local.weekday() >= 5:
+        return "closed"
+    minute = _minute_of_day(value)
+    if PREMARKET_START_MINUTE <= minute < REGULAR_OPEN_MINUTE:
+        return "premarket"
+    if REGULAR_OPEN_MINUTE <= minute < REGULAR_CLOSE_MINUTE:
+        return "regular"
+    if REGULAR_CLOSE_MINUTE <= minute < AFTER_HOURS_END_MINUTE:
+        return "after-hours"
+    return "closed"
+
+
+def _previous_weekday(day: date) -> date:
+    candidate = day
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _session_close_timestamp(session_day: date) -> datetime:
+    local = datetime.combine(session_day, time(hour=16), tzinfo=US_EQUITY_TIMEZONE)
+    return local.astimezone(UTC)
+
+
+def _expected_latest_index_timestamp(now: datetime) -> datetime:
+    current = now.astimezone(UTC)
+    local = current.astimezone(US_EQUITY_TIMEZONE)
+    minute = _minute_of_day(current)
+    if local.weekday() < 5 and REGULAR_OPEN_MINUTE <= minute < REGULAR_CLOSE_MINUTE:
+        return current
+    if local.weekday() < 5 and minute >= REGULAR_CLOSE_MINUTE:
+        return _session_close_timestamp(local.date())
+    return _session_close_timestamp(_previous_weekday(local.date() - timedelta(days=1)))
 
 
 def _broad_index_direction(values: list[float]) -> str:

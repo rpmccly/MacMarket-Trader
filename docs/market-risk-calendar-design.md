@@ -80,6 +80,15 @@ the restricted threshold or a large SPX downside move can move the state to
 restricted risk-calendar handling. Missing or stale index data is reported as a
 data-quality warning and does not automatically create `no_trade`.
 
+Index freshness is session-aware. During premarket, after-hours, closed, and
+weekend periods, the most recent prior regular-session close for `SPX`, `NDX`,
+`RUT`, and `VIX` is valid risk context. During the regular session, the
+`INDEX_DATA_STALE_MINUTES` threshold remains active and includes a small
+provider-delay tolerance so delayed-but-recent snapshots are not treated as
+missing. Each `index_risk_signals.provenance.freshness` payload records the
+market session, expected latest index timestamp, actual provider `as_of`,
+threshold used, and the reason each index was accepted or flagged.
+
 For now, symbol relevance is mostly broad-market context. QQQ and tech-heavy
 names should be read as more sensitive to NDX weakness, IWM/small-cap names as
 more sensitive to RUT weakness, and broad-market ETFs as more sensitive to

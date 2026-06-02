@@ -81,7 +81,7 @@ def test_market_data_cache_keys_include_provider_identity(monkeypatch) -> None:
     service.historical_bars("AAPL", "1D", 5)
     service.latest_snapshot("AAPL", "1D")
 
-    assert "hist::fallback::AAPL::1D::5" in service._historical_cache._store
+    assert "hist::fallback::AAPL::1D::5::session=provider_session::adjusted=provider_default" in service._historical_cache._store
     assert "latest::fallback::AAPL::1D" in service._latest_cache._store
 
 
@@ -341,13 +341,13 @@ def test_polygon_weekly_mapping_supports_1w(monkeypatch) -> None:
 
     def fake_request_json(path: str, query: dict[str, str]) -> dict[str, object]:
         assert path.startswith("/v2/aggs/ticker/AAPL/range/1/week/")
-        assert query["sort"] == "asc"
+        assert query["sort"] == "desc"
         assert query["limit"] == "3"
         return {
             "results": [
-                {"t": 1775088000000, "o": 190.1, "h": 192.0, "l": 189.4, "c": 191.2, "v": 123456},
-                {"t": 1775692800000, "o": 191.2, "h": 193.5, "l": 190.7, "c": 193.0, "v": 150000},
                 {"t": 1776297600000, "o": 193.0, "h": 195.0, "l": 192.0, "c": 194.0, "v": 160000},
+                {"t": 1775692800000, "o": 191.2, "h": 193.5, "l": 190.7, "c": 193.0, "v": 150000},
+                {"t": 1775088000000, "o": 190.1, "h": 192.0, "l": 189.4, "c": 191.2, "v": 123456},
             ]
         }
 
@@ -356,8 +356,16 @@ def test_polygon_weekly_mapping_supports_1w(monkeypatch) -> None:
     bars = provider.fetch_historical_bars(symbol="AAPL", timeframe="1W", limit=3)
 
     assert len(bars) == 3
+    assert [bar.timestamp for bar in bars] == [
+        datetime.fromtimestamp(1775088000000 / 1000, tz=UTC),
+        datetime.fromtimestamp(1775692800000 / 1000, tz=UTC),
+        datetime.fromtimestamp(1776297600000 / 1000, tz=UTC),
+    ]
     assert provider.last_aggregate_request_metadata is not None
     assert provider.last_aggregate_request_metadata["timeframe"] == "1W"
+    assert provider.last_aggregate_request_metadata["sort"] == "desc"
+    assert provider.last_aggregate_request_metadata["adjusted"] is True
+    assert provider.last_aggregate_request_metadata["latest_bar_selection"] == "sort_by_timestamp_then_take_latest_limit"
 
 
 def test_polygon_rth_normalization_uses_new_york_dst_boundaries(monkeypatch) -> None:

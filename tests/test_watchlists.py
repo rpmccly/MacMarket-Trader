@@ -2,8 +2,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from macmarket_trader.api.main import app
-from macmarket_trader.domain.models import AppUserModel
+from macmarket_trader.domain.models import AppUserModel, WatchlistModel
+from macmarket_trader.symbols.starter_watchlists import (
+    STARTER_MARKET_WATCHLIST_NAME,
+    starter_market_watchlist_symbols,
+)
 from macmarket_trader.storage.db import SessionLocal
+from macmarket_trader.storage.repositories import WatchlistRepository
 
 client = TestClient(app)
 
@@ -17,6 +22,116 @@ def _seed_and_approve_user() -> int:
         user.approval_status = "approved"
         session.commit()
         return user.id
+
+
+def _approve_user(*, token: str, external_auth_user_id: str) -> int:
+    client.get("/user/me", headers={"Authorization": f"Bearer {token}"})
+    with SessionLocal() as session:
+        user = session.execute(
+            select(AppUserModel).where(AppUserModel.external_auth_user_id == external_auth_user_id)
+        ).scalar_one()
+        user.approval_status = "approved"
+        session.commit()
+        return user.id
+
+
+def _watchlists_for_user(app_user_id: int) -> list[WatchlistModel]:
+    with SessionLocal() as session:
+        return list(
+            session.execute(
+                select(WatchlistModel)
+                .where(WatchlistModel.app_user_id == app_user_id)
+                .order_by(WatchlistModel.id.asc())
+            ).scalars()
+        )
+
+
+def test_new_auth_user_creation_seeds_starter_watchlist_once() -> None:
+    client.get("/user/me", headers={"Authorization": "Bearer user-token"})
+
+    with SessionLocal() as session:
+        user = session.execute(
+            select(AppUserModel).where(AppUserModel.external_auth_user_id == "clerk_user")
+        ).scalar_one()
+        rows = list(
+            session.execute(
+                select(WatchlistModel).where(WatchlistModel.app_user_id == user.id)
+            ).scalars()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].name == STARTER_MARKET_WATCHLIST_NAME
+    assert rows[0].symbols == starter_market_watchlist_symbols()
+    assert len(rows[0].symbols) == 25
+
+
+def test_get_watchlists_returns_seeded_list_for_newly_approved_user() -> None:
+    _seed_and_approve_user()
+
+    resp = client.get("/user/watchlists", headers={"Authorization": "Bearer user-token"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert len(payload) == 1
+    assert payload[0]["name"] == STARTER_MARKET_WATCHLIST_NAME
+    assert payload[0]["symbols"] == starter_market_watchlist_symbols()
+
+
+def test_get_watchlists_does_not_reseed_after_user_deletes_all_watchlists() -> None:
+    _seed_and_approve_user()
+    initial = client.get("/user/watchlists", headers={"Authorization": "Bearer user-token"})
+    assert initial.status_code == 200
+    starter_id = initial.json()[0]["id"]
+
+    deleted = client.delete(
+        f"/user/watchlists/{starter_id}",
+        headers={"Authorization": "Bearer user-token"},
+    )
+    assert deleted.status_code == 200
+
+    after_delete = client.get("/user/watchlists", headers={"Authorization": "Bearer user-token"})
+    assert after_delete.status_code == 200
+    assert after_delete.json() == []
+
+
+def test_starter_watchlist_repository_helper_is_idempotent() -> None:
+    with SessionLocal() as session:
+        user = AppUserModel(
+            external_auth_user_id="manual_backfill_user",
+            email="manual.backfill@example.com",
+            display_name="Manual Backfill",
+            approval_status="approved",
+            app_role="user",
+            mfa_enabled=False,
+        )
+        session.add(user)
+        session.commit()
+        user_id = user.id
+
+    repo = WatchlistRepository(SessionLocal)
+
+    first = repo.ensure_starter_watchlist_for_user(user_id)
+    second = repo.ensure_starter_watchlist_for_user(user_id)
+
+    rows = _watchlists_for_user(user_id)
+    assert first is not None
+    assert second is None
+    assert len(rows) == 1
+    assert rows[0].name == STARTER_MARKET_WATCHLIST_NAME
+
+
+def test_starter_watchlist_is_user_scoped() -> None:
+    user_a_id = _approve_user(token="user-token", external_auth_user_id="clerk_user")
+    user_b_id = _approve_user(token="admin-token", external_auth_user_id="clerk_admin")
+
+    user_a_rows = _watchlists_for_user(user_a_id)
+    user_b_rows = _watchlists_for_user(user_b_id)
+
+    assert len(user_a_rows) == 1
+    assert len(user_b_rows) == 1
+    assert user_a_rows[0].app_user_id == user_a_id
+    assert user_b_rows[0].app_user_id == user_b_id
+    assert user_a_rows[0].id != user_b_rows[0].id
 
 
 def test_watchlist_create_and_list() -> None:

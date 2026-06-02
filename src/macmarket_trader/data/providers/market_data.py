@@ -875,23 +875,31 @@ class PolygonMarketDataProvider(MarketDataProvider):
         ticker = normalize_polygon_ticker(symbol)
         multiplier, timespan, from_ts, to_ts, request_limit = self._map_polygon_range(timeframe=timeframe, limit=limit)
         is_intraday = self._is_intraday_timeframe(timeframe)
-        sort_direction = "desc" if is_intraday else "asc"
+        sort_direction = "desc" if is_intraday or timeframe.upper() == "1W" else "asc"
         needs_rth_normalization = timeframe.upper() in RTH_BUCKETS_BY_TIMEFRAME
         target_result_count = request_limit if needs_rth_normalization else (min(limit, request_limit) if is_intraday else request_limit)
+        request_path = f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_ts}/{to_ts}"
+        request_query = {"adjusted": "true", "sort": sort_direction, "limit": str(request_limit)}
         payload = self._request_json(
-            f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_ts}/{to_ts}",
-            {"adjusted": "true", "sort": sort_direction, "limit": str(request_limit)},
+            request_path,
+            request_query,
         )
         results: list[dict[str, Any]] = list(payload.get("results") or [])
         self.last_aggregate_request_metadata = {
             "symbol": ticker,
             "timeframe": timeframe,
+            "request_path": request_path,
+            "request_query": request_query,
+            "request_multiplier": multiplier,
+            "request_timespan": timespan,
             "from": from_ts,
             "to": to_ts,
             "sort": sort_direction,
+            "adjusted": True,
             "limit": request_limit,
             "requested_bars": limit,
             "results_count": len(results),
+            "latest_bar_selection": "sort_by_timestamp_then_take_latest_limit",
         }
         # Follow Polygon pagination only until the requested latest bar window is available.
         page = 0
@@ -1477,10 +1485,18 @@ class MarketDataService:
 
     def historical_bars(self, symbol: str, timeframe: str = "1D", limit: int = 120) -> tuple[list[Bar], str, bool]:
         provider_key = self._provider.name
-        cache_key = f"hist::{provider_key}::{symbol.upper()}::{timeframe}::{limit}"
+        normalized_timeframe = timeframe.upper()
+        session_policy_key = "regular_hours" if normalized_timeframe in RTH_BUCKETS_BY_TIMEFRAME else "provider_session"
+        adjusted_key = "true" if provider_key == "polygon" else "provider_default"
+        cache_key = (
+            f"hist::{provider_key}::{symbol.upper()}::{normalized_timeframe}::{limit}"
+            f"::session={session_policy_key}::adjusted={adjusted_key}"
+        )
         cached = self._historical_cache.get(cache_key)
         if cached is not None:
             bars, source, fallback_mode, metadata = cached
+            if isinstance(metadata, dict):
+                metadata.setdefault("cache_key", cache_key)
             self.last_historical_metadata = metadata
             return bars, source, fallback_mode
 
@@ -1503,17 +1519,37 @@ class MarketDataService:
                     )
                 )
                 metadata.setdefault("symbol", symbol.upper())
-                metadata.setdefault("timeframe", timeframe)
+                metadata.setdefault("timeframe", normalized_timeframe)
                 metadata.setdefault("provider", source)
                 metadata.setdefault("fallback_mode", self._provider.name == "fallback")
+                metadata.setdefault("cache_key", cache_key)
+                metadata.setdefault("cache_key_fields", {
+                    "provider": provider_key,
+                    "symbol": symbol.upper(),
+                    "timeframe": normalized_timeframe,
+                    "lookback": limit,
+                    "session_policy": session_policy_key,
+                    "adjusted": adjusted_key,
+                })
                 result = (bars, source, self._provider.name == "fallback", metadata)
         except (SymbolNotFoundError, DataNotEntitledError):
             raise
         except Exception:
             result = self._fallback_result(symbol=symbol, timeframe=timeframe, limit=limit)
 
-        self._historical_cache.set(cache_key, result, settings.market_data_historical_cache_ttl_seconds)
         bars, source, fallback_mode, metadata = result
+        if isinstance(metadata, dict):
+            metadata.setdefault("cache_key", cache_key)
+            metadata.setdefault("cache_key_fields", {
+                "provider": provider_key,
+                "symbol": symbol.upper(),
+                "timeframe": normalized_timeframe,
+                "lookback": limit,
+                "session_policy": session_policy_key,
+                "adjusted": adjusted_key,
+            })
+            result = (bars, source, fallback_mode, metadata)
+        self._historical_cache.set(cache_key, result, settings.market_data_historical_cache_ttl_seconds)
         self.last_historical_metadata = metadata
         return bars, source, fallback_mode
 

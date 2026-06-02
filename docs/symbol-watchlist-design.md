@@ -1,6 +1,6 @@
 # Symbol Discovery and Watchlist Design
 
-Last updated: 2026-04-30
+Last updated: 2026-06-02
 
 ## Purpose
 
@@ -116,6 +116,41 @@ Current limitations:
   symbol field, but schedule create/update still persists the same
   `payload.symbols` static snapshot and scheduled runs do not dynamically
   refresh watchlists.
+
+## Starter Watchlist Compatibility Seed
+
+Status: complete for the current backend lifecycle-seed scope.
+
+New local app users receive one editable/deletable `Starter Market Watchlist`
+through the existing user-scoped `watchlists.symbols` JSON/list compatibility
+path. The seed is deterministic, contains 25 uppercase U.S. equity / liquid ETF
+symbols, and does not call provider-backed symbol lookup.
+
+Lifecycle behavior:
+
+- brand-new local users created from auth are seeded after the user row has an
+  id
+- pending/invited users approved by an admin are seeded only if they still have
+  zero watchlists
+- users with any existing watchlist are not overwritten or given an additional
+  starter list
+- `/user/watchlists` does not reseed on GET, so a user who intentionally
+  deletes every watchlist stays empty until they create a new one
+
+Backfill behavior:
+
+- this pass does not add a recurring maintenance subsystem
+- already-approved users with zero watchlists can be backfilled manually by
+  calling `WatchlistRepository.ensure_starter_watchlist_for_user(app_user_id)`
+  from an approved maintenance context
+
+Still unchanged:
+
+- normalized `user_symbol_universe` / `watchlist_symbols` production UI usage
+- provider-backed symbol discovery
+- recommendation ranking, scoring, and queue submission behavior
+- schedule creation, saved `payload.symbols` snapshots, and schedule execution
+- paper orders, replay behavior, broker routing, and live-trading boundaries
 
 ## 10W2 Current Manual-entry Cleanup
 

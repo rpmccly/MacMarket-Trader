@@ -169,9 +169,15 @@ function timestampDeltaMinutes(result: DataParityResult): string {
 }
 
 function alignedLatestTimestamp(result: DataParityResult): string {
+  const canonical = asRecord(result.canonicalBars);
+  const alignmentLabel = canonical.latest_common_alignment_label;
+  const alignmentMode = canonical.alignment_mode;
+  if (alignmentLabel && alignmentMode && alignmentMode !== "exact_timestamp") {
+    return `${formatValue(alignmentLabel)} (${formatValue(alignmentMode)})`;
+  }
   const payload = asRecord(canonicalFreshnessRecord(result).latest_common_aligned_timestamp);
   if (payload.utc || payload.new_york) return formatTimestamp(payload);
-  return formatTimestamp(asRecord(result.canonicalBars).latest_common_timestamp);
+  return formatTimestamp(canonical.latest_common_timestamp);
 }
 
 function verdictReason(result: DataParityResult): string {
@@ -277,6 +283,8 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
   const freshness = asRecord(record.freshness);
   const currentFreshness = asRecord(freshness.current);
   const candidateFreshness = asRecord(freshness.candidate);
+  const diagnostics = asRecord(record.comparison_diagnostics);
+  const diagnosticNotes = Array.isArray(diagnostics.notes) ? diagnostics.notes.map(formatValue).join(", ") : formatValue(diagnostics.notes);
   return (
     <section className="dp-detail-section">
       <div className="dp-detail-title">
@@ -290,6 +298,12 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>current latest close</span><strong>{latestClose(record, "latest_current")}</strong>
         <span>Schwab latest close</span><strong>{latestClose(record, "latest_candidate")}</strong>
         <span>latest common timestamp</span><strong>{formatTimestamp(record.latest_common_timestamp)}</strong>
+        <span>alignment mode</span><strong>{formatValue(record.alignment_mode)}</strong>
+        <span>latest alignment label</span><strong>{formatValue(record.latest_common_alignment_label)}</strong>
+        <span>current common raw timestamp</span><strong>{formatTimestamp(record.latest_common_current_raw_timestamp)}</strong>
+        <span>Schwab common raw timestamp</span><strong>{formatTimestamp(record.latest_common_candidate_raw_timestamp)}</strong>
+        <span>latest alignment match</span><strong>{formatValue(record.latest_alignment_key_match)}</strong>
+        <span>alignment failure</span><strong>{formatValue(record.alignment_failure_reason)}</strong>
         <span>current as-of</span><strong>{formatTimestamp(asRecord(currentFreshness.latest_bar_timestamp))}</strong>
         <span>Schwab as-of</span><strong>{formatTimestamp(asRecord(candidateFreshness.latest_bar_timestamp))}</strong>
         <span>market session</span><strong>{formatValue(freshness.market_session_state)}</strong>
@@ -316,6 +330,7 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>current source</span><strong>{formatValue(currentMeta.provider)}</strong>
         <span>Schwab source</span><strong>{formatValue(candidateMeta.provider)}</strong>
         <span>session policy</span><strong>{formatValue(candidateMeta.session_policy ?? currentMeta.session_policy)}</strong>
+        <span>diagnostic notes</span><strong>{diagnosticNotes}</strong>
       </div>
     </section>
   );
@@ -339,7 +354,9 @@ function SideBySideBarsTable({ title, comparison }: { title: string; comparison:
         <table className="op-table dp-bars-table">
           <thead>
             <tr>
-              <th>Timestamp</th>
+              <th>Alignment</th>
+              <th>Current timestamp</th>
+              <th>Schwab timestamp</th>
               <th>Current provider O/H/L/C/V</th>
               <th>Schwab O/H/L/C/V</th>
               <th>Close delta</th>
@@ -353,8 +370,10 @@ function SideBySideBarsTable({ title, comparison }: { title: string; comparison:
               const candidate = asRecord(record.candidate);
               const deltas = asRecord(record.deltas);
               return (
-                <tr key={`${String(record.timestamp)}-${index}`}>
-                  <td>{formatTimestamp(record.timestamp)}</td>
+                <tr key={`${String(record.alignment_key ?? record.timestamp)}-${index}`}>
+                  <td>{formatValue(record.alignment_label ?? record.alignment_key)}</td>
+                  <td>{formatTimestamp(record.current_raw_provider_timestamp ?? record.timestamp)}</td>
+                  <td>{formatTimestamp(record.candidate_raw_provider_timestamp)}</td>
                   <td>{[current.open, current.high, current.low, current.close, current.volume].map(formatValue).join(" / ")}</td>
                   <td>{[candidate.open, candidate.high, candidate.low, candidate.close, candidate.volume].map(formatValue).join(" / ")}</td>
                   <td>{formatValue(deltas.close)}</td>
@@ -372,12 +391,18 @@ function SideBySideBarsTable({ title, comparison }: { title: string; comparison:
 function IndicatorSideBySideTable({ comparison }: { comparison: unknown }) {
   const record = asRecord(comparison);
   const rows = Array.isArray(record.rows) ? record.rows as unknown[] : [];
+  const inputAlignment = asRecord(record.indicator_input_alignment);
   return (
     <section className="dp-detail-section dp-wide-detail">
       <div className="dp-detail-title">
         <strong>Indicator side-by-side</strong>
         <StatusBadge tone={verdictTone(String(record.verdict ?? ""))}>{formatValue(record.verdict)}</StatusBadge>
       </div>
+      {Object.keys(inputAlignment).length ? (
+        <p className="dp-muted">
+          Indicator input alignment: {formatValue(inputAlignment.mode)}; normalized: {formatValue(inputAlignment.normalized)}; latest label: {formatValue(inputAlignment.latest_common_alignment_label)}.
+        </p>
+      ) : null}
       {!rows.length ? (
         <p className="dp-muted">Indicators were not compared: {formatValue(record.not_comparable_reason ?? "no comparable indicator rows")}.</p>
       ) : (

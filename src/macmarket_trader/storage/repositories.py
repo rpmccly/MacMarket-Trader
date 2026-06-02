@@ -71,11 +71,38 @@ from macmarket_trader.domain.schemas import (
 )
 from macmarket_trader.options.paper_close import OptionPaperCloseError
 from macmarket_trader.options.paper_contracts import prepare_option_paper_structure
+from macmarket_trader.symbols.starter_watchlists import (
+    STARTER_MARKET_WATCHLIST_NAME,
+    starter_market_watchlist_symbols,
+)
 
 SessionFactory = Callable[[], Session]
 
 
 DEFAULT_AGENT_MODE_MANUAL_SYMBOLS = ["SPY", "QQQ", "MTUM"]
+
+
+def _ensure_starter_watchlist_for_user_in_session(
+    session: Session,
+    *,
+    app_user_id: int,
+) -> WatchlistModel | None:
+    existing_count = session.scalar(
+        select(func.count())
+        .select_from(WatchlistModel)
+        .where(WatchlistModel.app_user_id == app_user_id)
+    )
+    if int(existing_count or 0) > 0:
+        return None
+
+    row = WatchlistModel(
+        app_user_id=app_user_id,
+        name=STARTER_MARKET_WATCHLIST_NAME,
+        symbols=starter_market_watchlist_symbols(),
+    )
+    session.add(row)
+    session.flush()
+    return row
 
 
 # Pass 4 — display_id support.
@@ -2336,6 +2363,7 @@ class UserRepository:
             if not users and not normalized_email:
                 raise ValueError("email required to create local app user")
 
+            should_seed_starter_watchlist = False
             if not users:
                 safe_display_name = normalized_display_name if normalized_display_name else normalized_email.split("@")[0]
                 user = AppUserModel(
@@ -2349,7 +2377,12 @@ class UserRepository:
                 session.add(user)
                 session.flush()
                 session.add(UserApprovalRequestModel(app_user_id=user.id, status=ApprovalStatus.PENDING.value, note="signup"))
+                should_seed_starter_watchlist = True
             else:
+                should_seed_starter_watchlist = any(
+                    candidate.external_auth_user_id.startswith("invited::")
+                    for candidate in users
+                )
                 user = self._merge_users(
                     session=session,
                     candidates=users,
@@ -2358,6 +2391,8 @@ class UserRepository:
                     normalized_display_name=normalized_display_name,
                     mfa_enabled=mfa_enabled,
                 )
+            if should_seed_starter_watchlist:
+                _ensure_starter_watchlist_for_user_in_session(session, app_user_id=user.id)
             session.commit()
             session.refresh(user)
             return user
@@ -2477,10 +2512,13 @@ class UserRepository:
             user = session.get(AppUserModel, user_id)
             if user is None:
                 raise ValueError("User not found")
+            previous_status = user.approval_status
             user.approval_status = status.value
             user.approved_by = approved_by
             user.approved_at = utc_now() if status == ApprovalStatus.APPROVED else None
             session.add(UserApprovalRequestModel(app_user_id=user.id, status=status.value, note=note))
+            if status == ApprovalStatus.APPROVED and previous_status == ApprovalStatus.PENDING.value:
+                _ensure_starter_watchlist_for_user_in_session(session, app_user_id=user.id)
             session.commit()
             session.refresh(user)
             return user
@@ -2887,6 +2925,16 @@ class DashboardRepository:
 class WatchlistRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self.session_factory = session_factory
+
+    def ensure_starter_watchlist_for_user(self, app_user_id: int) -> WatchlistModel | None:
+        with self.session_factory() as session:
+            row = _ensure_starter_watchlist_for_user_in_session(session, app_user_id=app_user_id)
+            if row is None:
+                session.rollback()
+                return None
+            session.commit()
+            session.refresh(row)
+            return row
 
     def list_for_user(self, app_user_id: int) -> list[WatchlistModel]:
         with self.session_factory() as session:

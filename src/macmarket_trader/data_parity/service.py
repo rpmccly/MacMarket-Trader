@@ -94,6 +94,74 @@ def _bar_time_key(bar: Bar) -> str:
     return bar.date.isoformat()
 
 
+def _bar_session_date(bar: Bar) -> date:
+    return bar.date
+
+
+def _canonical_week_bounds(day: date) -> tuple[date, date]:
+    # Polygon weekly aggregates can be timestamped at the Sunday boundary before
+    # the trading week that Schwab/TOS labels with Monday. Normalize that
+    # boundary to the following Monday for parity diagnostics only.
+    if day.weekday() == 6:
+        week_start = day + timedelta(days=1)
+    else:
+        week_start = day - timedelta(days=day.weekday())
+    return week_start, week_start + timedelta(days=4)
+
+
+def _bar_alignment_mode(timeframe: str) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "1D":
+        return "normalized_session_date"
+    if tf == "1W":
+        return "normalized_trading_week"
+    return "exact_timestamp"
+
+
+def _bar_alignment_key(bar: Bar, *, timeframe: str) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "1D":
+        return f"session:{_bar_session_date(bar).isoformat()}"
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
+        return f"week:{week_start.isoformat()}/{week_end.isoformat()}"
+    return _bar_time_key(bar)
+
+
+def _bar_alignment_label(bar: Bar, *, timeframe: str) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "1D":
+        return _bar_session_date(bar).isoformat()
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
+        return f"{week_start.isoformat()}/{week_end.isoformat()}"
+    return _bar_time_key(bar)
+
+
+def _bar_alignment_diagnostics(bar: Bar | None, *, timeframe: str) -> dict[str, object]:
+    if bar is None:
+        return {
+            "raw_provider_timestamp": None,
+            "canonical_session_date": None,
+            "canonical_trading_week": None,
+            "alignment_key": None,
+            "alignment_label": None,
+        }
+    tf = validate_chart_timeframe(timeframe)
+    session_date = _bar_session_date(bar)
+    week_label = None
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(session_date)
+        week_label = f"{week_start.isoformat()}/{week_end.isoformat()}"
+    return {
+        "raw_provider_timestamp": _bar_time_key(bar),
+        "canonical_session_date": session_date.isoformat() if tf == "1D" else None,
+        "canonical_trading_week": week_label,
+        "alignment_key": _bar_alignment_key(bar, timeframe=tf),
+        "alignment_label": _bar_alignment_label(bar, timeframe=tf),
+    }
+
+
 def _bar_sort_key(bar: Bar) -> tuple[datetime, str]:
     if bar.timestamp is not None:
         return bar.timestamp.astimezone(UTC), bar.date.isoformat()
@@ -254,12 +322,17 @@ def _verdict_reason(
     latest_timestamp_tolerance_seconds: int,
     material_price: bool,
     material_volume: bool,
+    alignment_mode: str,
 ) -> str:
     if verdict == "match":
         return "bars_aligned_and_values_within_tolerance"
     if verdict == "no_bars":
         return "one_or_both_providers_returned_no_bars"
     if verdict == "no_aligned_bars":
+        if alignment_mode == "normalized_session_date":
+            return "providers_returned_bars_but_no_session_dates_overlap"
+        if alignment_mode == "normalized_trading_week":
+            return "providers_returned_bars_but_no_canonical_trading_weeks_overlap"
         return "providers_returned_bars_but_no_timestamps_overlap"
     if verdict == "stale_source":
         delta_minutes = latest_timestamp_delta_seconds / 60.0 if latest_timestamp_delta_seconds is not None else None
@@ -286,6 +359,9 @@ def _comparison_freshness(
     latest_current: Bar | None,
     latest_candidate: Bar | None,
     latest_common_current: Bar | None,
+    latest_common_alignment_key: str | None,
+    latest_common_alignment_label: str | None,
+    alignment_mode: str,
     timeframe: str,
     server_run_at: datetime,
     verdict: str,
@@ -328,6 +404,9 @@ def _comparison_freshness(
         "latest_bar_timestamp_current": _timestamp_payload(current_latest),
         "latest_bar_timestamp_candidate": _timestamp_payload(candidate_latest),
         "latest_common_aligned_timestamp": _timestamp_payload(latest_common),
+        "latest_common_alignment_key": latest_common_alignment_key,
+        "latest_common_alignment_label": latest_common_alignment_label,
+        "alignment_mode": alignment_mode,
         "timestamp_delta_minutes": _minutes_delta(current_latest, candidate_latest, absolute=True),
         "classification": classification,
         "verdict": verdict,
@@ -430,7 +509,14 @@ def _latest_timestamp_tolerance_seconds(timeframe: str) -> int:
     return LATEST_TIMESTAMP_TOLERANCE_SECONDS.get(validate_chart_timeframe(timeframe), 60 * 60)
 
 
-def _bar_delta_payload(current: Bar, candidate: Bar) -> dict[str, object]:
+def _bar_delta_payload(
+    current: Bar,
+    candidate: Bar,
+    *,
+    timeframe: str,
+    alignment_key: str,
+    alignment_mode: str,
+) -> dict[str, object]:
     deltas = {
         "open": round(abs(float(current.open) - float(candidate.open)), 6),
         "high": round(abs(float(current.high) - float(candidate.high)), 6),
@@ -440,14 +526,106 @@ def _bar_delta_payload(current: Bar, candidate: Bar) -> dict[str, object]:
     }
     return {
         "timestamp": _bar_time_key(current),
+        "alignment_key": alignment_key,
+        "alignment_label": _bar_alignment_label(current, timeframe=timeframe),
+        "alignment_mode": alignment_mode,
+        "current_raw_provider_timestamp": _bar_time_key(current),
+        "candidate_raw_provider_timestamp": _bar_time_key(candidate),
+        "current_alignment": _bar_alignment_diagnostics(current, timeframe=timeframe),
+        "candidate_alignment": _bar_alignment_diagnostics(candidate, timeframe=timeframe),
         "current": _json_safe_bar(current),
         "candidate": _json_safe_bar(candidate),
         "deltas": deltas,
     }
 
 
-def _filter_bars_to_keys(bars: list[Bar], keys: set[str]) -> list[Bar]:
-    return [bar for bar in sorted(bars, key=_bar_sort_key) if _bar_time_key(bar) in keys]
+def _filter_bars_to_alignment_keys(bars: list[Bar], keys: set[str], *, timeframe: str) -> list[Bar]:
+    return [bar for bar in sorted(bars, key=_bar_sort_key) if _bar_alignment_key(bar, timeframe=timeframe) in keys]
+
+
+def _normalize_indicator_bars_for_alignment(bars: list[Bar], *, timeframe: str) -> list[Bar]:
+    tf = validate_chart_timeframe(timeframe)
+    if _bar_alignment_mode(tf) == "exact_timestamp":
+        return sorted(bars, key=_bar_sort_key)
+
+    normalized: list[Bar] = []
+    for bar in sorted(bars, key=_bar_sort_key):
+        if tf == "1W":
+            canonical_date, _week_end = _canonical_week_bounds(_bar_session_date(bar))
+        else:
+            canonical_date = _bar_session_date(bar)
+        normalized.append(
+            Bar(
+                date=canonical_date,
+                timestamp=datetime.combine(canonical_date, time.min, tzinfo=UTC),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                rel_volume=bar.rel_volume,
+                session_policy=bar.session_policy,
+                source_session_policy=bar.source_session_policy,
+                source_timeframe=bar.source_timeframe,
+                provider=bar.provider,
+            )
+        )
+    return normalized
+
+
+def _metadata_value(metadata: dict[str, object], key: str, default: object = None) -> object:
+    if key in metadata:
+        return metadata.get(key)
+    request_query = metadata.get("request_query")
+    if isinstance(request_query, dict) and key in request_query:
+        return request_query.get(key)
+    return default
+
+
+def _comparison_diagnostics(
+    *,
+    timeframe: str,
+    alignment_mode: str,
+    latest_alignment_key_match: bool,
+    current_metadata: dict[str, object],
+    candidate_metadata: dict[str, object],
+    material_price: bool,
+    material_volume: bool,
+) -> dict[str, object]:
+    tf = validate_chart_timeframe(timeframe)
+    current_adjusted = _metadata_value(current_metadata, "adjusted", "not_reported")
+    candidate_adjusted = _metadata_value(candidate_metadata, "adjusted", "provider_default")
+    current_extended = _metadata_value(current_metadata, "needExtendedHoursData", "not_reported")
+    candidate_extended = _metadata_value(candidate_metadata, "needExtendedHoursData", "false")
+    current_boundaries = list(current_metadata.get("rth_bucket_boundaries") or [])
+    candidate_boundaries = list(candidate_metadata.get("rth_bucket_boundaries") or [])
+    notes: list[str] = []
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        if current_boundaries and candidate_boundaries and current_boundaries == candidate_boundaries:
+            notes.append("macmarket_regular_hours_bucket_boundaries_match")
+        elif current_boundaries or candidate_boundaries:
+            notes.append("aggregation_window_boundary_difference_possible")
+        if str(current_extended).lower() in {"false", "0", "no"} and str(candidate_extended).lower() in {"false", "0", "no"}:
+            notes.append("extended_hours_not_an_obvious_cause")
+        if str(current_adjusted).lower() != str(candidate_adjusted).lower():
+            notes.append("adjusted_mode_difference_possible")
+        if latest_alignment_key_match and (material_price or material_volume):
+            notes.append("exact_timestamps_align_so_remaining_ohlcv_difference_is_provider_data_or_adjustment_related")
+    return {
+        "alignment_mode": alignment_mode,
+        "latest_alignment_key_match": latest_alignment_key_match,
+        "current_adjusted": current_adjusted,
+        "candidate_adjusted": candidate_adjusted,
+        "current_extended_hours_flag": current_extended,
+        "candidate_extended_hours_flag": candidate_extended,
+        "current_session_policy": current_metadata.get("session_policy"),
+        "candidate_session_policy": candidate_metadata.get("session_policy"),
+        "current_source_timeframe": current_metadata.get("source_timeframe"),
+        "candidate_source_timeframe": candidate_metadata.get("source_timeframe"),
+        "current_rth_bucket_boundaries": current_boundaries,
+        "candidate_rth_bucket_boundaries": candidate_boundaries,
+        "notes": notes,
+    }
 
 
 def _compare_bars(
@@ -460,12 +638,14 @@ def _compare_bars(
     mismatch_verdict: str,
     server_run_at: datetime,
 ) -> dict[str, object]:
+    tf = validate_chart_timeframe(timeframe)
+    alignment_mode = _bar_alignment_mode(tf)
     ordered_current = sorted(current, key=_bar_sort_key)
     ordered_candidate = sorted(candidate, key=_bar_sort_key)
-    current_by_time = {_bar_time_key(bar): bar for bar in ordered_current}
-    candidate_by_time = {_bar_time_key(bar): bar for bar in ordered_candidate}
-    current_keys = set(current_by_time)
-    candidate_keys = set(candidate_by_time)
+    current_by_key = {_bar_alignment_key(bar, timeframe=tf): bar for bar in ordered_current}
+    candidate_by_key = {_bar_alignment_key(bar, timeframe=tf): bar for bar in ordered_candidate}
+    current_keys = set(current_by_key)
+    candidate_keys = set(candidate_by_key)
     aligned = sorted(current_keys & candidate_keys)
     missing_on_current = sorted(candidate_keys - current_keys)
     missing_on_candidate = sorted(current_keys - candidate_keys)
@@ -477,13 +657,20 @@ def _compare_bars(
         latest_timestamp_delta_seconds is not None
         and latest_timestamp_delta_seconds > latest_timestamp_tolerance_seconds
     )
+    latest_current_alignment_key = _bar_alignment_key(latest_current, timeframe=tf) if latest_current else None
+    latest_candidate_alignment_key = _bar_alignment_key(latest_candidate, timeframe=tf) if latest_candidate else None
+    latest_alignment_key_match = bool(
+        latest_current_alignment_key
+        and latest_candidate_alignment_key
+        and latest_current_alignment_key == latest_candidate_alignment_key
+    )
 
     max_price_delta = 0.0
     max_price_field: str | None = None
     max_volume_delta = 0.0
     for key in aligned:
-        left = current_by_time[key]
-        right = candidate_by_time[key]
+        left = current_by_key[key]
+        right = candidate_by_key[key]
         for field in ("open", "high", "low", "close"):
             delta = abs(float(getattr(left, field)) - float(getattr(right, field)))
             if delta > max_price_delta:
@@ -497,8 +684,8 @@ def _compare_bars(
     material_volume = False
     if aligned:
         for key in aligned:
-            left = current_by_time[key]
-            right = candidate_by_time[key]
+            left = current_by_key[key]
+            right = candidate_by_key[key]
             for field in ("open", "high", "low", "close"):
                 delta = abs(float(getattr(left, field)) - float(getattr(right, field)))
                 if delta > _max_price_allowed(float(getattr(left, field))):
@@ -525,44 +712,91 @@ def _compare_bars(
         latest_timestamp_tolerance_seconds=latest_timestamp_tolerance_seconds,
         material_price=material_price,
         material_volume=material_volume,
+        alignment_mode=alignment_mode,
     )
     latest_common_key = aligned[-1] if aligned else None
-    latest_common_current = current_by_time[latest_common_key] if latest_common_key else None
-    latest_common_candidate = candidate_by_time[latest_common_key] if latest_common_key else None
+    latest_common_current = current_by_key[latest_common_key] if latest_common_key else None
+    latest_common_candidate = candidate_by_key[latest_common_key] if latest_common_key else None
+    latest_common_alignment_label = (
+        _bar_alignment_label(latest_common_current, timeframe=tf)
+        if latest_common_current is not None
+        else None
+    )
     latest_delta = (
-        _bar_delta_payload(latest_common_current, latest_common_candidate)["deltas"]
+        _bar_delta_payload(
+            latest_common_current,
+            latest_common_candidate,
+            timeframe=tf,
+            alignment_key=latest_common_key,
+            alignment_mode=alignment_mode,
+        )["deltas"]
         if latest_common_current and latest_common_candidate
         else {}
     )
     aligned_rows = [
-        _bar_delta_payload(current_by_time[key], candidate_by_time[key])
+        _bar_delta_payload(
+            current_by_key[key],
+            candidate_by_key[key],
+            timeframe=tf,
+            alignment_key=key,
+            alignment_mode=alignment_mode,
+        )
         for key in aligned[-25:]
     ]
     freshness = _comparison_freshness(
         latest_current=latest_current,
         latest_candidate=latest_candidate,
         latest_common_current=latest_common_current,
+        latest_common_alignment_key=latest_common_key,
+        latest_common_alignment_label=latest_common_alignment_label,
+        alignment_mode=alignment_mode,
         timeframe=timeframe,
         server_run_at=server_run_at,
         verdict=verdict,
         verdict_reason=verdict_reason,
     )
+    comparison_diagnostics = _comparison_diagnostics(
+        timeframe=tf,
+        alignment_mode=alignment_mode,
+        latest_alignment_key_match=latest_alignment_key_match,
+        current_metadata=current_metadata,
+        candidate_metadata=candidate_metadata,
+        material_price=material_price,
+        material_volume=material_volume,
+    )
+    alignment_failure_reason = None
+    if not aligned and ordered_current and ordered_candidate:
+        alignment_failure_reason = (
+            f"no_common_alignment_keys_for_{alignment_mode};"
+            f"latest_current={latest_current_alignment_key};latest_candidate={latest_candidate_alignment_key}"
+        )
 
     return {
         "verdict": verdict,
         "verdict_reason": verdict_reason,
         "is_comparable": verdict not in NOT_COMPARABLE_VERDICTS,
         "not_comparable_reason": verdict if verdict in NOT_COMPARABLE_VERDICTS else None,
+        "alignment_mode": alignment_mode,
+        "alignment_key_type": alignment_mode,
+        "alignment_failure_reason": alignment_failure_reason,
         "bars_current": len(ordered_current),
         "bars_candidate": len(ordered_candidate),
         "aligned_timestamps": len(aligned),
         "aligned_timestamp_keys": aligned,
+        "aligned_alignment_keys": aligned,
         "latest_common_timestamp": latest_common_key,
+        "latest_common_alignment_key": latest_common_key,
+        "latest_common_alignment_label": latest_common_alignment_label,
+        "latest_common_current_raw_timestamp": _bar_time_key(latest_common_current) if latest_common_current else None,
+        "latest_common_candidate_raw_timestamp": _bar_time_key(latest_common_candidate) if latest_common_candidate else None,
         "first_timestamp_current": _bar_time_key(ordered_current[0]) if ordered_current else None,
         "first_timestamp_candidate": _bar_time_key(ordered_candidate[0]) if ordered_candidate else None,
         "last_timestamp_current": _bar_time_key(latest_current) if latest_current else None,
         "last_timestamp_candidate": _bar_time_key(latest_candidate) if latest_candidate else None,
         "latest_timestamp_match": latest_timestamp_match,
+        "latest_alignment_key_match": latest_alignment_key_match,
+        "latest_current_alignment": _bar_alignment_diagnostics(latest_current, timeframe=tf),
+        "latest_candidate_alignment": _bar_alignment_diagnostics(latest_candidate, timeframe=tf),
         "latest_timestamp_delta_seconds": round(latest_timestamp_delta_seconds, 3) if latest_timestamp_delta_seconds is not None else None,
         "latest_timestamp_tolerance_seconds": latest_timestamp_tolerance_seconds,
         "latest_current": _json_safe_bar(latest_current),
@@ -582,8 +816,11 @@ def _compare_bars(
         "volume_relative_tolerance": VOLUME_REL_TOLERANCE,
         "missing_timestamps_current": missing_on_current[:50],
         "extra_timestamps_current": missing_on_candidate[:50],
+        "missing_alignment_keys_current": missing_on_current[:50],
+        "extra_alignment_keys_current": missing_on_candidate[:50],
         "missing_timestamps_current_count": len(missing_on_current),
         "extra_timestamps_current_count": len(missing_on_candidate),
+        "comparison_diagnostics": comparison_diagnostics,
         "current_metadata": current_metadata,
         "candidate_metadata": candidate_metadata,
     }
@@ -1126,13 +1363,29 @@ class ProviderParityService:
                     )
                     if canonical_comparison.get("verdict") == "match":
                         aligned_keys = set(str(key) for key in canonical_comparison.get("aligned_timestamp_keys", []) if key)
-                        current_indicator_bars = _filter_bars_to_keys(current_canonical, aligned_keys)
-                        schwab_indicator_bars = _filter_bars_to_keys(schwab_canonical, aligned_keys)
+                        current_indicator_bars = _filter_bars_to_alignment_keys(current_canonical, aligned_keys, timeframe=timeframe)
+                        schwab_indicator_bars = _filter_bars_to_alignment_keys(schwab_canonical, aligned_keys, timeframe=timeframe)
+                        current_indicator_bars = _normalize_indicator_bars_for_alignment(current_indicator_bars, timeframe=timeframe)
+                        schwab_indicator_bars = _normalize_indicator_bars_for_alignment(schwab_indicator_bars, timeframe=timeframe)
                         current_bundle = _compute_indicator_bundle(current_indicator_bars, symbol=symbol, timeframe=timeframe)
                         schwab_bundle = _compute_indicator_bundle(schwab_indicator_bars, symbol=symbol, timeframe=timeframe)
                         indicators_comparison = _compare_indicator_bundles(current_bundle, schwab_bundle)
                         indicators_comparison["latest_common_aligned_timestamp"] = canonical_comparison.get("latest_common_timestamp")
-                        indicators_comparison["compared_on_aligned_timestamp"] = bool(canonical_comparison.get("latest_common_timestamp"))
+                        indicators_comparison["latest_common_alignment_label"] = canonical_comparison.get("latest_common_alignment_label")
+                        indicators_comparison["alignment_mode"] = canonical_comparison.get("alignment_mode")
+                        indicators_comparison["compared_on_aligned_timestamp"] = (
+                            canonical_comparison.get("alignment_mode") == "exact_timestamp"
+                            and bool(canonical_comparison.get("latest_common_timestamp"))
+                        )
+                        indicators_comparison["compared_on_alignment_key"] = bool(canonical_comparison.get("latest_common_alignment_key"))
+                        indicators_comparison["indicator_input_alignment"] = {
+                            "mode": canonical_comparison.get("alignment_mode"),
+                            "normalized": canonical_comparison.get("alignment_mode") != "exact_timestamp",
+                            "latest_common_alignment_label": canonical_comparison.get("latest_common_alignment_label"),
+                            "reason": "daily_weekly_indicator_inputs_use_canonical_session_labels"
+                            if canonical_comparison.get("alignment_mode") != "exact_timestamp"
+                            else "intraday_indicator_inputs_preserve_exact_provider_timestamps",
+                        }
                         tos_comparison = _compare_tos_reference(tos_by_key.get((symbol, timeframe)), current_bundle, schwab_bundle)
                     else:
                         reason = str(canonical_comparison.get("verdict") or "canonical_bars_not_comparable")

@@ -1,6 +1,73 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
+
+## 2026-06-02 Update - Data Parity Session Alignment Diagnostics
+
+Completed in the current Phase 1 provider-trust track:
+- Updated Data Parity Lab bar comparison so `1D` bars align by canonical market
+  session date and `1W` bars align by canonical Monday-Friday trading week,
+  while preserving exact timestamp alignment for intraday bars.
+- Preserved raw provider timestamps in the diagnostic payload and UI alongside
+  the normalized session/week label, alignment mode, latest common raw
+  timestamps, and alignment failure reason.
+- Normalized only Data Parity Lab indicator input copies for `1D` and `1W` so
+  Sunday/Monday or daily UTC-anchor differences do not create false indicator
+  mismatches when OHLCV bars cover the same session/week.
+- Surfaced intraday mismatch diagnostics for adjusted-mode, extended-hours,
+  session-policy, source-timeframe, and regular-hours bucket-boundary evidence.
+
+No production provider default, broker routing, live trading, recommendation
+scoring, risk-calendar decisions, volatility-breaker threshold, replay, Agent
+Mode, Daily Target Book, schedule, or paper-lifecycle behavior changed.
+
+## 2026-06-02 Update - Starter Watchlist Lifecycle Seed
+
+Completed in the current Phase 1 onboarding/workflow trust track:
+- Added a deterministic, user-scoped `Starter Market Watchlist` seed for new
+  auth-provisioned app users and pending/invited users when they are approved,
+  using the existing `watchlists.symbols` JSON compatibility path.
+- Preserved existing user-created watchlists: users with any watchlist are not
+  overwritten or given a duplicate starter list.
+- Kept `/user/watchlists` read behavior non-seeding so a user who intentionally
+  deletes all watchlists does not get the starter list recreated on every GET.
+- Documented that already-approved zero-watchlist users need a manual
+  repository-level backfill if desired; no recurring maintenance subsystem was
+  added.
+
+No provider-backed symbol lookup, normalized watchlist production migration,
+recommendation scoring/ranking, replay behavior, schedule execution, provider
+defaults, broker routing, live trading, Agent Mode, Daily Target Book, or paper
+lifecycle behavior changed.
+
+## 2026-06-02 Update - Risk Calendar Freshness and Weekly Parity Hardening
+
+Completed in the current Phase 1 provider/risk trust track:
+- Made index-risk freshness session-aware so prior regular-session closes for
+  `SPX`, `NDX`, `RUT`, and `VIX` remain valid during premarket, after-hours,
+  closed, and weekend periods while regular-session checks keep the configured
+  stale threshold plus provider-delay tolerance.
+- Added index freshness diagnostics to `index_risk_signals.provenance`, showing
+  market session, expected latest index timestamp, actual provider `as_of`,
+  threshold basis, and accept/flag reason for each required index.
+- Hardened Polygon/Massive weekly historical requests so weekly bars request
+  newest aggregates first before canonical timestamp sorting, fixing stale
+  weekly latest timestamps in Data Parity Lab diagnostics.
+- Expanded historical metadata/cache diagnostics so request params and cache key
+  fields include provider, symbol, timeframe, lookback, session policy, and
+  adjusted mode.
+
+Remaining diagnostic context:
+- Schwab/TOS and Polygon/Massive still expose different raw daily/weekly
+  timestamp anchors, but the Data Parity Session Alignment Diagnostics pass now
+  compares those rows by canonical session date or trading-week label. Remaining
+  aligned-row OHLCV mismatches should be investigated through adjusted-mode,
+  extended-hours, session-policy, aggregation-boundary, and provider-difference
+  diagnostics.
+
+No provider default, broker routing, live trading, recommendation scoring,
+volatility-breaker threshold, replay, Agent Mode, Daily Target Book, schedule,
+or paper-lifecycle behavior changed.
 
 ## 2026-06-01 Update - Clerk Invite Approval Reconciliation Hardening
 

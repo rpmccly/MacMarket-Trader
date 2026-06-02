@@ -521,6 +521,12 @@ class SchwabMarketDataProvider(MarketDataProvider):
                 "weekly_anchor": "schwab_provider_weekly_frequency" if tf == "1W" else None,
                 "rth_bucket_boundaries": _format_rth_bucket_boundaries(tf) if tf in RTH_BUCKETS_BY_TIMEFRAME else [],
                 "fallback_mode": False,
+                "adjusted": "provider_default",
+                "needExtendedHoursData": query.get("needExtendedHoursData"),
+                "needPreviousClose": query.get("needPreviousClose"),
+                "request_period_type": query.get("periodType"),
+                "request_frequency_type": query.get("frequencyType"),
+                "request_frequency": query.get("frequency"),
                 "candles_returned": 0,
             }
         selection_limit = (
@@ -539,6 +545,12 @@ class SchwabMarketDataProvider(MarketDataProvider):
             "weekly_anchor": "schwab_provider_weekly_frequency" if tf == "1W" else None,
             "rth_bucket_boundaries": _format_rth_bucket_boundaries(tf) if tf in RTH_BUCKETS_BY_TIMEFRAME else [],
             "fallback_mode": False,
+            "adjusted": "provider_default",
+            "needExtendedHoursData": query.get("needExtendedHoursData"),
+            "needPreviousClose": query.get("needPreviousClose"),
+            "request_period_type": query.get("periodType"),
+            "request_frequency_type": query.get("frequencyType"),
+            "request_frequency": query.get("frequency"),
             "candles_returned": len(candles),
             "raw_selection_limit": selection_limit,
             "first_bar_timestamp": selected[0].timestamp.isoformat() if selected[0].timestamp else None,
@@ -558,6 +570,8 @@ class SchwabMarketDataProvider(MarketDataProvider):
                 source_session_policy="provider_regular_hours",
             )
             metadata["fallback_mode"] = False
+            metadata["adjusted"] = "provider_default"
+            metadata["needExtendedHoursData"] = "false"
             return selected, metadata
         selected = sorted(bars, key=lambda bar: bar.timestamp or datetime.combine(bar.date, datetime.min.time(), tzinfo=UTC))[-limit:]
         for bar in selected:
@@ -576,6 +590,8 @@ class SchwabMarketDataProvider(MarketDataProvider):
             "regular_hours_timezone": str(US_EQUITY_TIMEZONE),
             "weekly_anchor": "schwab_provider_weekly_frequency" if tf == "1W" else None,
             "fallback_mode": False,
+            "adjusted": "provider_default",
+            "needExtendedHoursData": "false",
             "first_bar_timestamp": first.timestamp.isoformat() if first and first.timestamp else None,
             "last_bar_timestamp": last.timestamp.isoformat() if last and last.timestamp else None,
         }

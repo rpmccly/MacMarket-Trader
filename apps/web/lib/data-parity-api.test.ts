@@ -154,7 +154,17 @@ describe("data parity API helpers", () => {
           symbol: "SPY",
           timeframe: "1D",
           rawBars: { verdict: "match", latest_current: { close: 100 }, latest_candidate: { close: 100 } },
-          canonicalBars: { verdict: "match", latest_current: { close: 100 }, latest_candidate: { close: 100 } },
+          canonicalBars: {
+            verdict: "match",
+            alignment_mode: "normalized_session_date",
+            latest_common_alignment_label: "2026-05-29",
+            latest_common_current_raw_timestamp: "2026-05-29T04:00:00+00:00",
+            latest_common_candidate_raw_timestamp: "2026-05-29T05:00:00+00:00",
+            latest_alignment_key_match: true,
+            latest_current: { close: 100 },
+            latest_candidate: { close: 100 },
+            comparison_diagnostics: { notes: ["extended_hours_not_an_obvious_cause"] },
+          },
           indicators: { verdict: "match", current: {}, candidate: {}, mismatches: [] },
           tosReference: { provided: false, verdict: "not_provided", mismatches: [] },
           rootCause: "match",
@@ -174,6 +184,10 @@ describe("data parity API helpers", () => {
     expect(csv).toContain('"current_provider_lag_minutes_vs_server_run_time"');
     expect(csv).toContain('"schwab_lag_minutes_vs_expected_market_bar"');
     expect(csv).toContain('"latest_common_aligned_timestamp_new_york"');
+    expect(csv).toContain('"canonical_alignment_mode"');
+    expect(csv).toContain('"canonical_latest_alignment_label"');
+    expect(csv).toContain('"normalized_session_date"');
+    expect(csv).toContain('"2026-05-29"');
     expect(csv).toContain('"SPY","1D","match","match","match","not_provided","match"');
   });
 });

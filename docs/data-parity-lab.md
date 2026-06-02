@@ -107,6 +107,31 @@ Intraday comparisons use MacMarket's regular-hours buckets in
 frequency as the source anchor; the parity response exposes that source metadata
 instead of implying a custom Thinkorswim weekly anchor.
 
+Polygon/Massive weekly requests ask for the newest weekly aggregates first and
+then sort by canonical timestamp before returning the latest requested window.
+The expanded metadata includes the redacted request path/query, `from`/`to`,
+`sort`, `adjusted`, result count, pages followed, and returned first/latest
+timestamps.
+
+Daily and weekly parity alignment is diagnostic-normalized before comparing
+OHLCV and indicator bundles:
+
+- `1D` bars align by market session date, so provider-specific UTC anchors such
+  as `04:00Z` versus `05:00Z` remain visible but do not force
+  `no_aligned_bars`.
+- `1W` bars align by canonical trading week (`Monday` through `Friday`), so a
+  Polygon Sunday boundary and Schwab/TOS Monday boundary for the same covered
+  week compare under one week label.
+- Intraday `30M`, `1H`, and `4H` bars still align by exact timestamp after
+  MacMarket regular-hours normalization/resampling.
+
+The response preserves raw provider timestamps, the canonical session date or
+week label, the alignment mode used, and an alignment failure reason when bars
+remain not comparable. Indicator comparison uses aligned canonical copies for
+`1D` and `1W` so date-anchor differences alone do not create false indicator
+mismatches. This is Data Parity Lab-only diagnostic behavior and does not alter
+production recommendation inputs or math.
+
 Layer 3 compares derived MacMarket indicator bundles using existing repo
 functions only:
 
