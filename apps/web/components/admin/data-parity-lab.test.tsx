@@ -86,17 +86,19 @@ describe("DataParityLab", () => {
       "Indicators",
       "TOS Reference",
       "Root Cause",
-      "Current provider asOf",
       "Schwab asOf",
       "Timestamp delta",
       "Aligned latest",
       "Verdict reason",
+      "lag vs server",
+      "lag vs expected",
     ]) {
       expect(source).toContain(label);
     }
     expect(source).toContain("Indicator side-by-side");
     expect(source).toContain("Provider freshness and delay by comparison row");
     expect(source).toContain("delayed_15_min_like");
+    expect(source).toContain("market_session_state");
     expect(source).toContain("SideBySideBarsTable");
     expect(source).toContain("Raw provider bars");
     expect(source).toContain("Canonical MacMarket bars");

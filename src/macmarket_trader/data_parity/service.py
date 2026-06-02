@@ -460,15 +460,17 @@ def _compare_bars(
     mismatch_verdict: str,
     server_run_at: datetime,
 ) -> dict[str, object]:
-    current_by_time = {_bar_time_key(bar): bar for bar in current}
-    candidate_by_time = {_bar_time_key(bar): bar for bar in candidate}
+    ordered_current = sorted(current, key=_bar_sort_key)
+    ordered_candidate = sorted(candidate, key=_bar_sort_key)
+    current_by_time = {_bar_time_key(bar): bar for bar in ordered_current}
+    candidate_by_time = {_bar_time_key(bar): bar for bar in ordered_candidate}
     current_keys = set(current_by_time)
     candidate_keys = set(candidate_by_time)
     aligned = sorted(current_keys & candidate_keys)
     missing_on_current = sorted(candidate_keys - current_keys)
     missing_on_candidate = sorted(current_keys - candidate_keys)
-    latest_current = current[-1] if current else None
-    latest_candidate = candidate[-1] if candidate else None
+    latest_current = ordered_current[-1] if ordered_current else None
+    latest_candidate = ordered_candidate[-1] if ordered_candidate else None
     latest_timestamp_delta_seconds = _latest_timestamp_delta_seconds(latest_current, latest_candidate)
     latest_timestamp_tolerance_seconds = _latest_timestamp_tolerance_seconds(timeframe)
     latest_is_stale = (
@@ -504,7 +506,7 @@ def _compare_bars(
             allowed_volume_delta = max(0.0, abs(float(left.volume)) * VOLUME_REL_TOLERANCE)
             if abs(float(left.volume) - float(right.volume)) > allowed_volume_delta:
                 material_volume = True
-    if not current or not candidate:
+    if not ordered_current or not ordered_candidate:
         verdict = "no_bars"
     elif not aligned:
         verdict = "stale_source" if latest_is_stale else "no_aligned_bars"
@@ -551,13 +553,13 @@ def _compare_bars(
         "verdict_reason": verdict_reason,
         "is_comparable": verdict not in NOT_COMPARABLE_VERDICTS,
         "not_comparable_reason": verdict if verdict in NOT_COMPARABLE_VERDICTS else None,
-        "bars_current": len(current),
-        "bars_candidate": len(candidate),
+        "bars_current": len(ordered_current),
+        "bars_candidate": len(ordered_candidate),
         "aligned_timestamps": len(aligned),
         "aligned_timestamp_keys": aligned,
         "latest_common_timestamp": latest_common_key,
-        "first_timestamp_current": _bar_time_key(current[0]) if current else None,
-        "first_timestamp_candidate": _bar_time_key(candidate[0]) if candidate else None,
+        "first_timestamp_current": _bar_time_key(ordered_current[0]) if ordered_current else None,
+        "first_timestamp_candidate": _bar_time_key(ordered_candidate[0]) if ordered_candidate else None,
         "last_timestamp_current": _bar_time_key(latest_current) if latest_current else None,
         "last_timestamp_candidate": _bar_time_key(latest_candidate) if latest_candidate else None,
         "latest_timestamp_match": latest_timestamp_match,

@@ -148,6 +148,13 @@ latest market bar is labeled `delayed_15_min_like`; a bar within tolerance is
 for U.S. equities and ETFs; it does not replace a full exchange holiday
 calendar.
 
+Provider-returned bars are sorted by canonical timestamp before latest/as-of
+and lag calculations are made, so freshness diagnostics do not depend on the
+HTTP adapter's response ordering. The UI and CSV export both include UTC and
+`America/New_York` timestamps, provider lag versus server run time, provider
+lag versus expected latest market bar, timestamp delta, aligned latest
+timestamp, classification, and verdict reason.
+
 ## Thinkorswim References
 
 Schwab market-data APIs provide market data, not custom Thinkorswim study output.

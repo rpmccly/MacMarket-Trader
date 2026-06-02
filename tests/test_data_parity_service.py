@@ -314,6 +314,30 @@ def test_freshness_classifies_delay_from_measured_timestamps(monkeypatch) -> Non
     assert freshness["timestamp_delta_minutes"] == 0.0
 
 
+def test_freshness_uses_sorted_latest_timestamp_from_provider_bars(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "macmarket_trader.data_parity.service._utc_now",
+        lambda: datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+    )
+    timestamps = [
+        datetime(2026, 1, 2, 13, 45, tzinfo=UTC),
+        datetime(2026, 1, 2, 14, 15, tzinfo=UTC),
+        datetime(2026, 1, 2, 14, 45, tzinfo=UTC),
+    ]
+    current = list(reversed(_bars_at(timestamps, provider="polygon")))
+    schwab = list(reversed(_bars_at(timestamps, provider="schwab")))
+    service = _service(monkeypatch, current=current, schwab_raw=schwab)
+
+    response = service.run(_request(timeframes=["30M"], lookbackBars=5), app_user_id=1)
+    raw = response["results"][0]["rawBars"]
+    freshness = response["results"][0]["freshness"]
+
+    assert raw["first_timestamp_current"] == "2026-01-02T13:45:00+00:00"
+    assert raw["last_timestamp_current"] == "2026-01-02T14:45:00+00:00"
+    assert freshness["current"]["latest_bar_timestamp"]["utc"] == "2026-01-02T14:45:00+00:00"
+    assert freshness["current"]["classification"] == "delayed_15_min_like"
+
+
 def test_tos_reference_mismatch_classification(monkeypatch) -> None:
     service = _service(monkeypatch, current=_bars(), schwab_raw=_bars())
 

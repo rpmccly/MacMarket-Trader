@@ -1,6 +1,6 @@
 # Private Alpha Operator Runbook (Phase 5/6)
 
-Last updated: 2026-04-16
+Last updated: 2026-06-01
 
 This runbook is for internal operators validating the **Phase 5/6 product center**:
 
@@ -325,16 +325,29 @@ conn.close()
 "
 ```
 
-### Clerk external_auth_user_id = JWT sub claim
+### Clerk identity binding and invite placeholders
 
-The `external_auth_user_id` column in `app_users` is always the `sub` claim from the Clerk JWT.
-This is the only stable identifier — email and display name can change.
+After a user's first successful backend identity sync, `app_users.external_auth_user_id`
+should be the Clerk JWT `sub` claim. Before signup, invite-created local rows use
+a temporary placeholder external ID:
+
+```text
+invited::<normalized email>
+```
+
+That placeholder lets admins invite and approve a future operator before the
+operator has a Clerk user ID. On first authenticated `/user/me` sync, the backend
+matches by real Clerk `sub`, normalized email, and the invite placeholder, then
+binds the canonical local row to the real Clerk `sub`.
 
 To find your sub claim:
 - **Clerk dashboard** → Users → select user → copy the **User ID** field (format: `user_XXXXXXXXXXXXXXXXXX`)
 - **Or** decode any Clerk JWT: the middle base64 segment is the payload. Extract `sub` from it.
 
-Do not use email as the lookup key. Only `sub` is guaranteed stable across Clerk identity changes.
+Do not move authorization to Clerk metadata. Local `app_users.approval_status`
+and `app_users.app_role` remain authoritative. Normalized email is used only as
+a backend reconciliation bridge for invite/signup binding; after binding, Clerk
+`sub` remains the stable external identity.
 
 ### Warning: bootstrap_admin.py only works if users already exist in the DB
 
@@ -351,9 +364,30 @@ Running `bootstrap_admin.py` on an empty DB looks successful but does nothing.
 
 ---
 
-## 8) Clerk configuration requirements (environment, not code)
+## 8) Clerk configuration requirements and invite-first approval flow
 
-These settings must be configured in the **Clerk dashboard** before a second operator can sign up and be approved. They are environment config — not wired in code.
+These settings must be configured before a second operator can sign up and be approved.
+They include both Clerk dashboard settings and backend `.env` settings.
+
+### Required backend `.env` settings
+
+Set these in the backend runtime `.env` and restart the backend so the process
+loads them:
+
+```env
+AUTH_PROVIDER=clerk
+CLERK_JWT_ISSUER=
+CLERK_JWKS_URL=
+CLERK_JWT_AUDIENCE=
+CLERK_SECRET_KEY=
+CLERK_API_BASE_URL=https://api.clerk.com
+```
+
+`CLERK_SECRET_KEY` is required for backend Clerk profile hydration when a JWT
+does not include email/name claims. The secret must never be sent to frontend
+code or logged. Check `/admin/provider-health`; the `auth` row should be `ok`
+with Clerk JWT and Clerk profile hydration configured.
+
 
 ### Required Clerk dashboard settings
 
@@ -364,23 +398,102 @@ These settings must be configured in the **Clerk dashboard** before a second ope
 | Sign-in identifiers | Email address | Same section |
 | Redirect after sign-up | `/pending-approval` | Clerk dashboard → Paths → After sign-up |
 | Redirect after sign-in | `/dashboard` | Clerk dashboard → Paths → After sign-in |
-| JWT templates | None required (default Clerk JWT claims are sufficient) | — |
+| JWT templates | Optional. Sparse JWT claims are supported because backend hydration uses `CLERK_SECRET_KEY`. | dashboard/env |
 
 ### Sign-up flow for a new operator
 
-1. New operator navigates to `/sign-up` and creates a Clerk account.
-2. After sign-up, they are redirected to `/pending-approval` (pending approval page).
-3. Console layout gate checks `approval_status` from local DB. If `pending`, gate holds at `/pending-approval`.
-4. Admin logs in, navigates to `/admin/pending-users`, and approves the new operator.
-5. After approval, the operator can sign in and access the console without re-login (next page load checks the updated status).
-6. Operator lands on `/dashboard` with the onboarding checklist and guided workflow CTA visible.
+1. Admin sends an invite from `/admin/pending-users` or `/admin/users`.
+2. Invite creation creates/updates a local `app_users` row by normalized email
+   with `external_auth_user_id=invited::<email>`, `approval_status=pending`,
+   and `app_role=user`.
+   Existing approved/admin users are not demoted. If the email already belongs
+   to a real bound Clerk user ID, the invite update keeps that real ID; legacy
+   email-like placeholder IDs are normalized to `invited::<email>`.
+3. Admin may approve before signup. That local approval must survive first login.
+4. New operator follows the invite/sign-up flow and creates a Clerk account.
+5. First backend `/user/me` sync binds the invite row to the real Clerk `sub`.
+6. Console layout gate checks local DB approval:
+   - `approved` -> console access
+   - `pending` -> `/pending-approval`
+   - `rejected` or `suspended` -> `/access-denied`
+7. If the Clerk session is valid but backend identity hydration fails, the user
+   is routed to `/pending-approval?reason=identity-sync`; this is an admin
+   config/identity-sync issue, not a true pending-approval state.
 
-### If the `/admin/invites` page is configured
+### Invite email behavior
 
-The invite send flow (if wired to an email provider) sends a Clerk invite link. To enable:
+The invite send flow sends a sign-up link. To enable email delivery:
 - Set `EMAIL_PROVIDER=resend` (or equivalent) and `EMAIL_FROM=...` in backend `.env`.
-- Clerk invite links bypass the sign-up page and go directly to account creation.
-- The approval flow is the same: new user starts as `pending` and must be approved.
+- The approval flow is the same: new user starts as `pending` and must be approved unless an admin pre-approves them.
+- For local QA with `EMAIL_PROVIDER=console`, check backend logs for the invite body.
+
+### Root cause of the heneghan3@gmail.com pending loop
+
+The operator was invited and approved locally, then signed up in Clerk as
+`user_3EVFBQq8nMbQG3LOtsAx8lKUWv2`, but the running app still treated the
+session as pending until the DB row was manually bound. The failure mode was a
+split identity: an approved invite/email row was not reconciled with the real
+Clerk `sub` during backend identity sync. The hardened flow now binds
+`invited::<email>` rows to the Clerk `sub`, merges split rows, preserves the
+strongest local approval/role, and re-links user-scoped records before retiring
+duplicates.
+
+### Deployment steps for Clerk reconciliation hardening
+
+1. Deploy the code changes.
+2. Restart the backend process after confirming the deployed `.env` includes
+   the backend Clerk settings above.
+3. Run database initialization/migrations as usual for the deployment:
+   `python -m macmarket_trader.cli init-db`.
+4. Open `/admin/provider-health` and confirm the `auth` row is healthy. If it is
+   degraded for Clerk profile hydration, fix backend Clerk env and restart.
+5. Sign out and sign back in as the affected operator.
+6. Verify `/user/me` returns the expected local `approval_status` and `app_role`.
+7. If old split rows remain from before this fix, run:
+
+```powershell
+python scripts/reconcile_duplicate_users.py --email heneghan3@gmail.com --external-id user_3EVFBQq8nMbQG3LOtsAx8lKUWv2
+```
+
+### Changed files and validation for this hardening pass
+
+Core files:
+- `src/macmarket_trader/api/deps/auth.py`
+- `src/macmarket_trader/storage/repositories.py`
+- `src/macmarket_trader/api/routes/admin.py`
+- `src/macmarket_trader/data/providers/clerk_profile.py`
+- `apps/web/app/(console)/layout.tsx`
+- `apps/web/app/pending-approval/page.tsx`
+
+Regression/docs files:
+- `tests/test_auth_approval_api.py`
+- `apps/web/app/(console)/layout.test.ts`
+- `apps/web/app/pending-approval/page.test.tsx`
+- `apps/web/app/sign-up/[[...sign-up]]/page.test.ts`
+- `docs/auth-and-approval.md`
+- `docs/private-alpha-operator-runbook.md`
+- `docs/roadmap-status.md`
+
+Focused validation commands:
+
+```powershell
+pytest tests/test_auth_approval_api.py -q --basetemp C:\Dashboard\macmarket-pytest-auth -o cache_dir=C:\Dashboard\macmarket-pytest-cache-auth
+Set-Location apps/web
+npm test -- sign-up pending-approval layout
+npx tsc --noEmit
+npm test
+npm run build
+```
+
+Focused validation results from this pass:
+- `pytest tests/test_auth_approval_api.py -q --basetemp C:\Dashboard\macmarket-pytest-auth -o cache_dir=C:\Dashboard\macmarket-pytest-cache-auth` -> 37 passed.
+- `cd apps/web; npm test -- sign-up pending-approval layout` -> 5 passed.
+
+Full validation results from this pass:
+- `pytest -q --basetemp C:\Dashboard\macmarket-pytest-full -o cache_dir=C:\Dashboard\macmarket-pytest-cache-full` -> 1094 passed, 4 skipped.
+- `cd apps/web; npm test` -> 1002 passed.
+- `cd apps/web; npx tsc --noEmit` -> passed.
+- `cd apps/web; npm run build` -> passed.
 
 ---
 
@@ -391,22 +504,24 @@ Use this checklist when onboarding an additional operator to the private-alpha c
 ### Pre-flight (admin)
 
 - [ ] Backend `.env` has `ENVIRONMENT=local` (or `production`) and `AUTH_PROVIDER=clerk`
+- [ ] Backend `.env` has `CLERK_JWT_ISSUER`, `CLERK_JWKS_URL`, and `CLERK_SECRET_KEY`
 - [ ] Clerk dashboard has sign-up enabled (see section 8)
 - [ ] Admin is signed in and can reach `/admin/pending-users`
+- [ ] `/admin/provider-health` `auth` row is healthy, not degraded for profile hydration
 - [ ] Deploy script has been run and the system is healthy (`pytest -q` clean, services up)
 
 ### Step 1 — Invite send (optional but recommended)
 
-- [ ] Navigate to `/admin/invites` (if the invite flow is wired)
+- [ ] Navigate to `/admin/invites` or the invite form in `/admin/pending-users`
 - [ ] Enter the new operator's email and send invite
 - [ ] Confirm the invite email arrives (check `EMAIL_PROVIDER` setting)
-- [ ] **OR** share the `/sign-up` URL directly with the operator
+- [ ] If using direct `/sign-up` instead of an invite, expect a new local pending row after first backend sync
 
 ### Step 2 — New operator sign-up
 
-- [ ] Operator navigates to `/sign-up` and creates a Clerk account
-- [ ] After sign-up, operator is redirected to `/pending-approval`
-- [ ] Operator sees "Your account is pending approval" copy (not a blank page)
+- [ ] Operator follows the invite link or navigates to `/sign-up` and creates a Clerk account with the invited email
+- [ ] If not pre-approved, operator is redirected to `/pending-approval`
+- [ ] Operator sees "Pending approval" copy, not an identity-sync warning or raw backend error
 
 ### Step 3 — Admin approval
 

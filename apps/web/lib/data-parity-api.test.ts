@@ -171,6 +171,9 @@ describe("data parity API helpers", () => {
 
     const csv = buildDataParityCsv(response);
     expect(csv).toContain('"symbol","timeframe","raw_bars"');
+    expect(csv).toContain('"current_provider_lag_minutes_vs_server_run_time"');
+    expect(csv).toContain('"schwab_lag_minutes_vs_expected_market_bar"');
+    expect(csv).toContain('"latest_common_aligned_timestamp_new_york"');
     expect(csv).toContain('"SPY","1D","match","match","match","not_provided","match"');
   });
 });

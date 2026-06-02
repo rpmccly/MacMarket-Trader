@@ -25,7 +25,7 @@ from macmarket_trader.analysis_packets import (
     render_analysis_packet_html,
     render_analysis_packet_markdown,
 )
-from macmarket_trader.api.deps.auth import current_user, require_admin, require_approved_user
+from macmarket_trader.api.deps.auth import auth_profile_hydration_status, current_user, require_admin, require_approved_user
 from macmarket_trader.api.routes.workflow_lineage import extract_recommendation_key_levels, extract_recommendation_strategy
 from macmarket_trader.api.security import (
     MAX_BULK_SYMBOLS,
@@ -6276,6 +6276,61 @@ def _readiness_status(*, config_state: str, probe_state: str) -> str:
     return "configured"
 
 
+def _auth_readiness() -> dict[str, object]:
+    mode = settings.auth_provider.strip().lower() or "mock"
+    jwt_configured = bool(settings.clerk_jwt_issuer.strip() and settings.clerk_jwks_url.strip())
+    hydration = auth_profile_hydration_status()
+    hydration_configured = bool(hydration.get("configured"))
+    last_error_code = hydration.get("last_error_code")
+    if mode != "clerk":
+        return {
+            "provider": "auth",
+            "mode": mode,
+            "status": "ok",
+            "config_state": "configured",
+            "probe_state": "ok",
+            "configured": True,
+            "clerk_jwt_configured": jwt_configured,
+            "clerk_profile_hydration_configured": hydration_configured,
+            "clerk_secret_present": bool(hydration.get("secret_key_present")),
+            "last_profile_hydration_error": None,
+            "details": "Auth provider verifies identity; app_role and approval stay local.",
+        }
+
+    config_state = _config_state(configured=jwt_configured and hydration_configured)
+    probe_state = "ok"
+    status = "ok"
+    details = "Clerk verifies identity and backend profile hydration is configured; app_role and approval stay local."
+    if not jwt_configured or not hydration_configured:
+        probe_state = "degraded"
+        status = "degraded"
+        missing = []
+        if not jwt_configured:
+            missing.append("Clerk JWT issuer/JWKS")
+        if not hydration_configured:
+            missing.append("CLERK_SECRET_KEY profile hydration")
+        details = f"Clerk auth is enabled but {' and '.join(missing)} is missing. Local app_role and approval remain authoritative."
+    elif last_error_code:
+        probe_state = "degraded"
+        status = "degraded"
+        details = f"Clerk profile hydration last failed with safe code {last_error_code}. Local app_role and approval remain authoritative."
+
+    return {
+        "provider": "auth",
+        "mode": mode,
+        "status": status,
+        "config_state": config_state,
+        "probe_state": probe_state,
+        "configured": jwt_configured and hydration_configured,
+        "clerk_jwt_configured": jwt_configured,
+        "clerk_profile_hydration_configured": hydration_configured,
+        "clerk_secret_present": bool(hydration.get("secret_key_present")),
+        "last_profile_hydration_error": last_error_code,
+        "last_profile_hydration_error_at": hydration.get("last_error_at"),
+        "details": details,
+    }
+
+
 def _readiness_json_probe(
     url: str,
     *,
@@ -6857,14 +6912,7 @@ def provider_health(
     return {
         "checked_at": utc_now().isoformat(),
         "providers": [
-            {
-                "provider": "auth",
-                "mode": summary["auth"],
-                "status": "ok",
-                "config_state": "configured",
-                "probe_state": "ok",
-                "details": "Auth provider verifies identity; app_role and approval stay local.",
-            },
+            _auth_readiness(),
             {
                 "provider": "email",
                 "mode": summary["email"],

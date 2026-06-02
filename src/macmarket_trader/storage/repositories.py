@@ -1921,6 +1921,15 @@ class UserRepository:
         normalized_email = cls._normalize_email(email)
         return f"invited::{normalized_email}" if normalized_email else ""
 
+    @classmethod
+    def _has_stable_bound_external_id(cls, value: str) -> bool:
+        normalized = cls._normalize_identity(value)
+        if not normalized:
+            return False
+        if normalized.startswith("invited::") or normalized.startswith("retired::"):
+            return False
+        return "@" not in normalized
+
     @staticmethod
     def _approval_rank(status: str) -> int:
         if status == ApprovalStatus.APPROVED.value:
@@ -1965,6 +1974,225 @@ class UserRepository:
             return (id_priority, auth_priority, user.id)
 
         return min(candidates, key=_priority)
+
+    @staticmethod
+    def _bulk_relink_app_user(
+        *,
+        session: Session,
+        model,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        session.query(model).filter(model.app_user_id == duplicate_user_id).update(
+            {model.app_user_id: canonical_user_id},
+            synchronize_session=False,
+        )
+
+    def _merge_agent_mode_settings(
+        self,
+        *,
+        session: Session,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        duplicate = session.execute(
+            select(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == duplicate_user_id)
+        ).scalar_one_or_none()
+        if duplicate is None:
+            return
+        canonical = session.execute(
+            select(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == canonical_user_id)
+        ).scalar_one_or_none()
+        if canonical is not None:
+            session.delete(duplicate)
+        else:
+            duplicate.app_user_id = canonical_user_id
+
+    def _merge_user_symbol_universe(
+        self,
+        *,
+        session: Session,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        duplicate_symbols = list(
+            session.execute(
+                select(UserSymbolUniverseModel).where(UserSymbolUniverseModel.app_user_id == duplicate_user_id)
+            ).scalars()
+        )
+        for duplicate_symbol in duplicate_symbols:
+            canonical_symbol = session.execute(
+                select(UserSymbolUniverseModel).where(
+                    UserSymbolUniverseModel.app_user_id == canonical_user_id,
+                    UserSymbolUniverseModel.normalized_symbol == duplicate_symbol.normalized_symbol,
+                )
+            ).scalar_one_or_none()
+            if canonical_symbol is None:
+                duplicate_symbol.app_user_id = canonical_user_id
+                continue
+            session.query(WatchlistSymbolModel).filter(WatchlistSymbolModel.user_symbol_id == duplicate_symbol.id).update(
+                {WatchlistSymbolModel.user_symbol_id: canonical_symbol.id},
+                synchronize_session=False,
+            )
+            session.delete(duplicate_symbol)
+
+    def _merge_momentum_heatmap_profiles(
+        self,
+        *,
+        session: Session,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        duplicate_profiles = list(
+            session.execute(
+                select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == duplicate_user_id)
+            ).scalars()
+        )
+        for duplicate_profile in duplicate_profiles:
+            canonical_profile = session.execute(
+                select(MomentumHeatmapProfileModel).where(
+                    MomentumHeatmapProfileModel.app_user_id == canonical_user_id,
+                    MomentumHeatmapProfileModel.profile_uid == duplicate_profile.profile_uid,
+                )
+            ).scalar_one_or_none()
+            if canonical_profile is None:
+                duplicate_profile.app_user_id = canonical_user_id
+                continue
+            session.query(MomentumHeatmapSnapshotModel).filter(
+                MomentumHeatmapSnapshotModel.profile_id == duplicate_profile.id
+            ).update(
+                {
+                    MomentumHeatmapSnapshotModel.profile_id: canonical_profile.id,
+                    MomentumHeatmapSnapshotModel.app_user_id: canonical_user_id,
+                },
+                synchronize_session=False,
+            )
+            duplicate_preferences = list(
+                session.execute(
+                    select(MomentumHeatmapSchedulePreferenceModel).where(
+                        MomentumHeatmapSchedulePreferenceModel.profile_id == duplicate_profile.id
+                    )
+                ).scalars()
+            )
+            for duplicate_preference in duplicate_preferences:
+                canonical_preference = session.execute(
+                    select(MomentumHeatmapSchedulePreferenceModel).where(
+                        MomentumHeatmapSchedulePreferenceModel.app_user_id == canonical_user_id,
+                        MomentumHeatmapSchedulePreferenceModel.profile_id == canonical_profile.id,
+                    )
+                ).scalar_one_or_none()
+                if canonical_preference is not None:
+                    session.delete(duplicate_preference)
+                else:
+                    duplicate_preference.app_user_id = canonical_user_id
+                    duplicate_preference.profile_id = canonical_profile.id
+            session.delete(duplicate_profile)
+
+        session.query(MomentumHeatmapSnapshotModel).filter(
+            MomentumHeatmapSnapshotModel.app_user_id == duplicate_user_id
+        ).update(
+            {MomentumHeatmapSnapshotModel.app_user_id: canonical_user_id},
+            synchronize_session=False,
+        )
+        session.query(MomentumHeatmapSchedulePreferenceModel).filter(
+            MomentumHeatmapSchedulePreferenceModel.app_user_id == duplicate_user_id
+        ).update(
+            {MomentumHeatmapSchedulePreferenceModel.app_user_id: canonical_user_id},
+            synchronize_session=False,
+        )
+
+    def _merge_haco_heatmap_profiles(
+        self,
+        *,
+        session: Session,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        duplicate_profiles = list(
+            session.execute(
+                select(HacoHeatmapProfileModel).where(HacoHeatmapProfileModel.app_user_id == duplicate_user_id)
+            ).scalars()
+        )
+        for duplicate_profile in duplicate_profiles:
+            canonical_profile = session.execute(
+                select(HacoHeatmapProfileModel).where(
+                    HacoHeatmapProfileModel.app_user_id == canonical_user_id,
+                    HacoHeatmapProfileModel.profile_uid == duplicate_profile.profile_uid,
+                )
+            ).scalar_one_or_none()
+            if canonical_profile is None:
+                duplicate_profile.app_user_id = canonical_user_id
+                continue
+            session.query(HacoHeatmapSnapshotModel).filter(
+                HacoHeatmapSnapshotModel.profile_id == duplicate_profile.id
+            ).update(
+                {
+                    HacoHeatmapSnapshotModel.profile_id: canonical_profile.id,
+                    HacoHeatmapSnapshotModel.app_user_id: canonical_user_id,
+                },
+                synchronize_session=False,
+            )
+            session.delete(duplicate_profile)
+
+        session.query(HacoHeatmapSnapshotModel).filter(HacoHeatmapSnapshotModel.app_user_id == duplicate_user_id).update(
+            {HacoHeatmapSnapshotModel.app_user_id: canonical_user_id},
+            synchronize_session=False,
+        )
+
+    def _relink_duplicate_user_records(
+        self,
+        *,
+        session: Session,
+        duplicate_user_id: int,
+        canonical_user_id: int,
+    ) -> None:
+        self._merge_agent_mode_settings(
+            session=session,
+            duplicate_user_id=duplicate_user_id,
+            canonical_user_id=canonical_user_id,
+        )
+        self._merge_user_symbol_universe(
+            session=session,
+            duplicate_user_id=duplicate_user_id,
+            canonical_user_id=canonical_user_id,
+        )
+        self._merge_momentum_heatmap_profiles(
+            session=session,
+            duplicate_user_id=duplicate_user_id,
+            canonical_user_id=canonical_user_id,
+        )
+        self._merge_haco_heatmap_profiles(
+            session=session,
+            duplicate_user_id=duplicate_user_id,
+            canonical_user_id=canonical_user_id,
+        )
+        for model in (
+            ProviderOAuthTokenModel,
+            ProviderOAuthStateModel,
+            ProviderParitySnapshotModel,
+            RecommendationModel,
+            OrderModel,
+            ReplayRunModel,
+            UserApprovalRequestModel,
+            EmailDeliveryLogModel,
+            WatchlistModel,
+            WatchlistSymbolModel,
+            StrategyReportScheduleModel,
+            MomentumHeatmapSnapshotModel,
+            HacoHeatmapSnapshotModel,
+            PaperPositionModel,
+            PaperTradeModel,
+            AgentModeRunModel,
+            PaperOptionOrderModel,
+            PaperOptionPositionModel,
+            PaperOptionTradeModel,
+        ):
+            self._bulk_relink_app_user(
+                session=session,
+                model=model,
+                duplicate_user_id=duplicate_user_id,
+                canonical_user_id=canonical_user_id,
+            )
 
     def _merge_users(
         self,
@@ -2022,17 +2250,10 @@ class UserRepository:
                 canonical.display_name = normalized_email.split("@")[0]
 
         for duplicate in duplicates:
-            session.query(UserApprovalRequestModel).filter(UserApprovalRequestModel.app_user_id == duplicate.id).update(
-                {UserApprovalRequestModel.app_user_id: canonical.id}
-            )
-            session.query(WatchlistModel).filter(WatchlistModel.app_user_id == duplicate.id).update(
-                {WatchlistModel.app_user_id: canonical.id}
-            )
-            session.query(StrategyReportScheduleModel).filter(StrategyReportScheduleModel.app_user_id == duplicate.id).update(
-                {StrategyReportScheduleModel.app_user_id: canonical.id}
-            )
-            session.query(EmailDeliveryLogModel).filter(EmailDeliveryLogModel.app_user_id == duplicate.id).update(
-                {EmailDeliveryLogModel.app_user_id: canonical.id}
+            self._relink_duplicate_user_records(
+                session=session,
+                duplicate_user_id=duplicate.id,
+                canonical_user_id=canonical.id,
             )
             session.delete(duplicate)
 
@@ -2156,14 +2377,23 @@ class UserRepository:
             return user
 
     def create_or_update_invited_pending_user(self, *, email: str, display_name: str | None) -> AppUserModel:
-        normalized_email = email.strip().lower()
+        normalized_email = self._normalize_email(email)
         if not normalized_email:
             raise ValueError("email required for invite")
         safe_display_name = (display_name or "").strip() or normalized_email.split("@")[0]
-        invite_external_id = f"invited::{normalized_email}"
+        invite_external_id = self._invite_external_id_for_email(normalized_email)
         with self.session_factory() as session:
-            user = session.execute(select(AppUserModel).where(AppUserModel.email == normalized_email)).scalar_one_or_none()
-            if user is None:
+            candidates = list(
+                session.execute(
+                    select(AppUserModel).where(
+                        or_(
+                            AppUserModel.email == normalized_email,
+                            AppUserModel.external_auth_user_id == invite_external_id,
+                        )
+                    )
+                ).scalars()
+            )
+            if not candidates:
                 user = AppUserModel(
                     external_auth_user_id=invite_external_id,
                     email=normalized_email,
@@ -2176,6 +2406,22 @@ class UserRepository:
                 session.flush()
                 session.add(UserApprovalRequestModel(app_user_id=user.id, status=ApprovalStatus.PENDING.value, note="invite"))
             else:
+                bound_external_id = next(
+                    (
+                        candidate.external_auth_user_id
+                        for candidate in candidates
+                        if self._has_stable_bound_external_id(candidate.external_auth_user_id)
+                    ),
+                    invite_external_id,
+                )
+                user = self._merge_users(
+                    session=session,
+                    candidates=candidates,
+                    external_auth_user_id=bound_external_id,
+                    normalized_email=normalized_email,
+                    normalized_display_name=safe_display_name,
+                    mfa_enabled=any(candidate.mfa_enabled for candidate in candidates),
+                )
                 user.display_name = safe_display_name or user.display_name
             session.commit()
             session.refresh(user)

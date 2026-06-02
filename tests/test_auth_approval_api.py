@@ -1,10 +1,36 @@
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from macmarket_trader.api.main import app
-from macmarket_trader.domain.models import AppInviteModel, AppUserModel
+from macmarket_trader.domain.models import (
+    AgentModeRunModel,
+    AgentModeSettingsModel,
+    AppInviteModel,
+    AppUserModel,
+    EmailDeliveryLogModel,
+    HacoHeatmapProfileModel,
+    HacoHeatmapSnapshotModel,
+    MomentumHeatmapProfileModel,
+    MomentumHeatmapSchedulePreferenceModel,
+    MomentumHeatmapSnapshotModel,
+    OrderModel,
+    PaperOptionOrderModel,
+    PaperOptionPositionModel,
+    PaperOptionTradeModel,
+    PaperPositionModel,
+    PaperTradeModel,
+    ProviderOAuthStateModel,
+    ProviderParitySnapshotModel,
+    RecommendationModel,
+    ReplayRunModel,
+    StrategyReportScheduleModel,
+    UserApprovalRequestModel,
+    UserSymbolUniverseModel,
+    WatchlistModel,
+    WatchlistSymbolModel,
+)
 from macmarket_trader.storage.db import SessionLocal
 
 
@@ -122,6 +148,32 @@ def test_admin_provider_health() -> None:
     assert any(item['provider'] == 'auth' for item in payload['providers'])
 
 
+def test_provider_health_degrades_when_clerk_profile_hydration_missing(monkeypatch) -> None:
+    from macmarket_trader.api.deps import auth as auth_deps
+
+    _seed_mock_user('admin-token')
+    with SessionLocal() as session:
+        admin = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_admin')).scalar_one()
+        admin.app_role = 'admin'
+        admin.approval_status = 'approved'
+        admin.mfa_enabled = True
+        session.commit()
+
+    monkeypatch.setattr(auth_deps.settings, 'auth_provider', 'clerk')
+    monkeypatch.setattr(auth_deps.settings, 'clerk_jwt_issuer', 'https://clerk.example')
+    monkeypatch.setattr(auth_deps.settings, 'clerk_jwks_url', 'https://clerk.example/.well-known/jwks.json')
+    monkeypatch.setattr(auth_deps.settings, 'clerk_secret_key', '')
+
+    resp = client.get('/admin/provider-health', headers={'Authorization': 'Bearer admin-token'})
+    assert resp.status_code == 200
+    auth_row = next(item for item in resp.json()['providers'] if item['provider'] == 'auth')
+    assert auth_row['mode'] == 'clerk'
+    assert auth_row['status'] == 'degraded'
+    assert auth_row['config_state'] == 'missing_config'
+    assert auth_row['clerk_profile_hydration_configured'] is False
+    assert auth_row['clerk_secret_present'] is False
+
+
 def test_mock_admin_token_does_not_auto_grant_admin_on_fresh_db() -> None:
     me = client.get('/user/me', headers={'Authorization': 'Bearer admin-token'})
     assert me.status_code == 200
@@ -185,7 +237,10 @@ def test_new_user_without_email_is_not_provisioned(monkeypatch) -> None:
     monkeypatch.setattr(auth_deps._clerk_profile_provider, 'fetch_identity', lambda _external_id: None)
 
     resp = client.get('/user/me', headers={'Authorization': 'Bearer clerk-token'})
-    assert resp.status_code == 401
+    assert resp.status_code == 424
+    detail = resp.json()['detail']
+    assert detail['code'] == 'identity_sync_failed'
+    assert detail['reason'] in {'profile_hydration_unavailable', 'missing_stable_email'}
 
     with SessionLocal() as session:
         user = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_missing_identity')).scalar_one_or_none()
@@ -252,6 +307,73 @@ def test_admin_can_send_private_alpha_invite() -> None:
         assert invited.external_auth_user_id == 'invited::invitee@example.com'
 
 
+def test_invite_update_normalizes_legacy_placeholder_without_demoting_user() -> None:
+    _seed_mock_user('admin-token')
+    with SessionLocal() as session:
+        admin = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_admin')).scalar_one()
+        admin.app_role = 'admin'
+        admin.approval_status = 'approved'
+        admin.mfa_enabled = True
+        session.add(
+            AppUserModel(
+                external_auth_user_id='legacy.invitee@example.com',
+                email='legacy.invitee@example.com',
+                display_name='Legacy Invitee',
+                approval_status='approved',
+                app_role='admin',
+                mfa_enabled=True,
+            )
+        )
+        session.commit()
+
+    resp = client.post(
+        '/admin/invites',
+        headers={'Authorization': 'Bearer admin-token'},
+        json={'email': 'Legacy.Invitee@Example.com', 'display_name': 'Legacy Invitee'},
+    )
+    assert resp.status_code == 200
+
+    with SessionLocal() as session:
+        row = session.execute(select(AppUserModel).where(AppUserModel.email == 'legacy.invitee@example.com')).scalar_one()
+        assert row.external_auth_user_id == 'invited::legacy.invitee@example.com'
+        assert row.approval_status == 'approved'
+        assert row.app_role == 'admin'
+        assert row.mfa_enabled is True
+
+
+def test_invite_update_does_not_replace_bound_clerk_user_id() -> None:
+    _seed_mock_user('admin-token')
+    with SessionLocal() as session:
+        admin = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == 'clerk_admin')).scalar_one()
+        admin.app_role = 'admin'
+        admin.approval_status = 'approved'
+        admin.mfa_enabled = True
+        session.add(
+            AppUserModel(
+                external_auth_user_id='user_bound_invitee',
+                email='bound.invitee@example.com',
+                display_name='Bound Invitee',
+                approval_status='pending',
+                app_role='user',
+                mfa_enabled=False,
+            )
+        )
+        session.commit()
+
+    resp = client.post(
+        '/admin/invites',
+        headers={'Authorization': 'Bearer admin-token'},
+        json={'email': 'bound.invitee@example.com', 'display_name': 'Bound Invitee'},
+    )
+    assert resp.status_code == 200
+
+    with SessionLocal() as session:
+        row = session.execute(select(AppUserModel).where(AppUserModel.email == 'bound.invitee@example.com')).scalar_one()
+        assert row.external_auth_user_id == 'user_bound_invitee'
+        assert row.approval_status == 'pending'
+        assert row.app_role == 'user'
+
+
 def test_invited_user_sync_keeps_pending_until_approved(monkeypatch) -> None:
     _seed_mock_user('admin-token')
     with SessionLocal() as session:
@@ -278,6 +400,127 @@ def test_invited_user_sync_keeps_pending_until_approved(monkeypatch) -> None:
     payload = resp.json()
     assert payload['approval_status'] == 'pending'
     assert payload['app_role'] == 'user'
+    assert payload['email'] == 'invitee@example.com'
+
+    with SessionLocal() as session:
+        invited = session.execute(select(AppUserModel).where(AppUserModel.email == 'invitee@example.com')).scalar_one()
+        assert invited.external_auth_user_id == 'clerk_invited_user'
+        assert invited.approval_status == 'pending'
+
+
+def test_approved_invited_user_first_login_preserves_approval_and_binds_real_clerk_sub(monkeypatch) -> None:
+    from macmarket_trader.api.deps import auth as auth_deps
+
+    with SessionLocal() as session:
+        session.add(
+            AppUserModel(
+                external_auth_user_id='invited::approved.invitee@example.com',
+                email='approved.invitee@example.com',
+                display_name='Approved Invitee',
+                approval_status='approved',
+                app_role='user',
+                mfa_enabled=False,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        auth_deps._auth_provider,
+        'verify_token',
+        lambda _token: {
+            'sub': 'user_approved_invitee',
+            'email': 'approved.invitee@example.com',
+            'name': 'Approved Invitee',
+            'mfa': False,
+        },
+    )
+
+    resp = client.get('/user/me', headers={'Authorization': 'Bearer approved-invite-token'})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload['approval_status'] == 'approved'
+    assert payload['app_role'] == 'user'
+
+    with SessionLocal() as session:
+        rows = list(session.execute(select(AppUserModel).where(AppUserModel.email == 'approved.invitee@example.com')).scalars())
+        assert len(rows) == 1
+        assert rows[0].external_auth_user_id == 'user_approved_invitee'
+
+
+def test_heneghan_invited_approved_regression_binds_real_clerk_sub(monkeypatch) -> None:
+    from macmarket_trader.api.deps import auth as auth_deps
+
+    with SessionLocal() as session:
+        session.add(
+            AppUserModel(
+                external_auth_user_id='invited::heneghan3@gmail.com',
+                email='heneghan3@gmail.com',
+                display_name='Heneghan',
+                approval_status='approved',
+                app_role='user',
+                mfa_enabled=False,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        auth_deps._auth_provider,
+        'verify_token',
+        lambda _token: {
+            'sub': 'user_3EVFBQq8nMbQG3LOtsAx8lKUWv2',
+            'email': 'heneghan3@gmail.com',
+            'name': 'Heneghan',
+            'mfa': False,
+        },
+    )
+
+    resp = client.get('/user/me', headers={'Authorization': 'Bearer heneghan-token'})
+    assert resp.status_code == 200
+    assert resp.json()['approval_status'] == 'approved'
+
+    with SessionLocal() as session:
+        row = session.execute(select(AppUserModel).where(AppUserModel.email == 'heneghan3@gmail.com')).scalar_one()
+        assert row.external_auth_user_id == 'user_3EVFBQq8nMbQG3LOtsAx8lKUWv2'
+        assert row.approval_status == 'approved'
+        assert row.app_role == 'user'
+
+
+def test_jwt_without_email_hydrates_from_clerk_and_merges_invite_row(monkeypatch) -> None:
+    from macmarket_trader.api.deps import auth as auth_deps
+    from macmarket_trader.data.providers.clerk_profile import ClerkHydratedIdentity
+
+    with SessionLocal() as session:
+        session.add(
+            AppUserModel(
+                external_auth_user_id='invited::hydrated.invite@example.com',
+                email='hydrated.invite@example.com',
+                display_name='Hydrated Invite',
+                approval_status='approved',
+                app_role='admin',
+                mfa_enabled=True,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(auth_deps.settings, 'auth_provider', 'clerk')
+    monkeypatch.setattr(auth_deps._auth_provider, 'verify_token', lambda _token: {'sub': 'user_hydrated_invite', 'mfa': False})
+    monkeypatch.setattr(
+        auth_deps._clerk_profile_provider,
+        'fetch_identity',
+        lambda _external_id: ClerkHydratedIdentity(email='hydrated.invite@example.com', display_name='Hydrated Invite'),
+    )
+
+    resp = client.get('/user/me', headers={'Authorization': 'Bearer hydrated-invite-token'})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload['approval_status'] == 'approved'
+    assert payload['app_role'] == 'admin'
+    assert payload['email'] == 'hydrated.invite@example.com'
+
+    with SessionLocal() as session:
+        rows = list(session.execute(select(AppUserModel).where(AppUserModel.email == 'hydrated.invite@example.com')).scalars())
+        assert len(rows) == 1
+        assert rows[0].external_auth_user_id == 'user_hydrated_invite'
 
 
 def test_existing_admin_user_remains_admin_after_login_sync() -> None:
@@ -340,8 +583,10 @@ def test_template_identity_claims_do_not_create_duplicate_blank_users(monkeypatc
 
     first = client.get('/user/me', headers={'Authorization': 'Bearer template-missing-token'})
     second = client.get('/user/me', headers={'Authorization': 'Bearer template-missing-token'})
-    assert first.status_code == 401
-    assert second.status_code == 401
+    assert first.status_code == 424
+    assert second.status_code == 424
+    assert first.json()['detail']['code'] == 'identity_sync_failed'
+    assert second.json()['detail']['code'] == 'identity_sync_failed'
 
     with SessionLocal() as session:
         rows = list(
@@ -422,6 +667,133 @@ def test_user_me_returns_real_email_after_duplicate_identity_reconciliation(monk
 
 
 # ── New admin user-management tests ──────────────────────────────────────────
+
+def test_split_identity_merge_relinks_current_user_scoped_records(monkeypatch) -> None:
+    from macmarket_trader.api.deps import auth as auth_deps
+
+    with SessionLocal() as session:
+        canonical = AppUserModel(
+            external_auth_user_id='invited::split.relink@example.com',
+            email='split.relink@example.com',
+            display_name='Split Relink',
+            approval_status='approved',
+            app_role='admin',
+            mfa_enabled=True,
+        )
+        duplicate = AppUserModel(
+            external_auth_user_id='clerk_split_relink',
+            email='{{user.primary_email_address.email_address}}',
+            display_name='{{user.first_name}}',
+            approval_status='pending',
+            app_role='user',
+            mfa_enabled=False,
+        )
+        session.add_all([canonical, duplicate])
+        session.flush()
+        canonical_id = canonical.id
+        duplicate_id = duplicate.id
+
+        canonical_symbol = UserSymbolUniverseModel(app_user_id=canonical_id, symbol='SPY', normalized_symbol='SPY')
+        duplicate_symbol = UserSymbolUniverseModel(app_user_id=duplicate_id, symbol='SPY', normalized_symbol='SPY')
+        duplicate_watchlist = WatchlistModel(app_user_id=duplicate_id, name='Duplicate Watchlist', symbols=['SPY'])
+        canonical_momentum = MomentumHeatmapProfileModel(app_user_id=canonical_id, profile_uid='default', name='Canonical Momentum')
+        duplicate_momentum = MomentumHeatmapProfileModel(app_user_id=duplicate_id, profile_uid='default', name='Duplicate Momentum')
+        canonical_haco = HacoHeatmapProfileModel(app_user_id=canonical_id, profile_uid='default', name='Canonical HACO')
+        duplicate_haco = HacoHeatmapProfileModel(app_user_id=duplicate_id, profile_uid='default', name='Duplicate HACO')
+        session.add_all([canonical_symbol, duplicate_symbol, duplicate_watchlist, canonical_momentum, duplicate_momentum, canonical_haco, duplicate_haco])
+        session.flush()
+        canonical_symbol_id = canonical_symbol.id
+
+        session.add_all(
+            [
+                WatchlistSymbolModel(watchlist_id=duplicate_watchlist.id, app_user_id=duplicate_id, user_symbol_id=duplicate_symbol.id, symbol='SPY', normalized_symbol='SPY'),
+                MomentumHeatmapSnapshotModel(snapshot_uid='mh_split_relink', profile_id=duplicate_momentum.id, app_user_id=duplicate_id, status='partial'),
+                MomentumHeatmapSchedulePreferenceModel(schedule_uid='mh_canonical_pref', app_user_id=canonical_id, profile_id=canonical_momentum.id),
+                MomentumHeatmapSchedulePreferenceModel(schedule_uid='mh_duplicate_pref', app_user_id=duplicate_id, profile_id=duplicate_momentum.id),
+                HacoHeatmapSnapshotModel(snapshot_uid='hh_split_relink', profile_id=duplicate_haco.id, app_user_id=duplicate_id, status='partial'),
+                AgentModeSettingsModel(app_user_id=canonical_id),
+                AgentModeSettingsModel(app_user_id=duplicate_id),
+                ProviderOAuthStateModel(provider='schwab', app_user_id=duplicate_id, state='oauth_state_split_relink', expires_at=datetime.now(tz=UTC) + timedelta(minutes=10)),
+                ProviderParitySnapshotModel(app_user_id=duplicate_id, run_id='dpar_split_relink', request_json={}, response_json={}, provider_current='polygon'),
+                RecommendationModel(recommendation_id='rec_split_relink', app_user_id=duplicate_id, symbol='SPY', payload={}),
+                ReplayRunModel(app_user_id=duplicate_id, symbol='SPY', recommendation_count=0, approved_count=0, fill_count=0, ending_heat=0.0, ending_open_notional=0.0),
+                OrderModel(order_id='ord_split_relink', app_user_id=duplicate_id, recommendation_id='rec_split_relink', symbol='SPY', status='created', side='buy', shares=1, limit_price=100.0),
+                UserApprovalRequestModel(app_user_id=duplicate_id, status='pending', note='split'),
+                EmailDeliveryLogModel(app_user_id=duplicate_id, template_name='invite', destination='split.relink@example.com', status='sent'),
+                StrategyReportScheduleModel(app_user_id=duplicate_id, name='Split Schedule', email_target='split.relink@example.com'),
+                PaperPositionModel(app_user_id=duplicate_id, symbol='SPY', side='long', quantity=1, average_price=100.0),
+                PaperTradeModel(app_user_id=duplicate_id, symbol='SPY', side='long', entry_price=100.0, quantity=1),
+                AgentModeRunModel(run_id='agent_split_relink', app_user_id=duplicate_id, status='completed', execution_mode='paper', dry_run=True, intent_count=0, executed_order_count=0, request_json={}, response_json={}),
+                PaperOptionOrderModel(app_user_id=duplicate_id, underlying_symbol='SPY', structure_type='iron_condor'),
+                PaperOptionPositionModel(app_user_id=duplicate_id, underlying_symbol='SPY', structure_type='iron_condor'),
+                PaperOptionTradeModel(app_user_id=duplicate_id, underlying_symbol='SPY', structure_type='iron_condor'),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        auth_deps._auth_provider,
+        'verify_token',
+        lambda _token: {'sub': 'clerk_split_relink', 'email': 'split.relink@example.com', 'name': 'Split Relink', 'mfa': False},
+    )
+
+    resp = client.get('/user/me', headers={'Authorization': 'Bearer split-relink-token'})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload['approval_status'] == 'approved'
+    assert payload['app_role'] == 'admin'
+
+    with SessionLocal() as session:
+        users = list(session.execute(select(AppUserModel).where(AppUserModel.email == 'split.relink@example.com')).scalars())
+        assert len(users) == 1
+        assert users[0].id == canonical_id
+        assert users[0].external_auth_user_id == 'clerk_split_relink'
+        assert session.get(AppUserModel, duplicate_id) is None
+
+        for model, unique_field, unique_value in (
+            (ProviderOAuthStateModel, ProviderOAuthStateModel.state, 'oauth_state_split_relink'),
+            (ProviderParitySnapshotModel, ProviderParitySnapshotModel.run_id, 'dpar_split_relink'),
+            (RecommendationModel, RecommendationModel.recommendation_id, 'rec_split_relink'),
+            (OrderModel, OrderModel.order_id, 'ord_split_relink'),
+            (AgentModeRunModel, AgentModeRunModel.run_id, 'agent_split_relink'),
+        ):
+            row = session.execute(select(model).where(unique_field == unique_value)).scalar_one()
+            assert row.app_user_id == canonical_id
+
+        for model in (ReplayRunModel, UserApprovalRequestModel, EmailDeliveryLogModel, WatchlistModel, WatchlistSymbolModel, StrategyReportScheduleModel, PaperPositionModel, PaperTradeModel, PaperOptionOrderModel, PaperOptionPositionModel, PaperOptionTradeModel):
+            assert session.execute(select(func.count()).select_from(model).where(model.app_user_id == duplicate_id)).scalar_one() == 0
+            assert session.execute(select(func.count()).select_from(model).where(model.app_user_id == canonical_id)).scalar_one() >= 1
+
+        assert session.execute(
+            select(func.count()).select_from(UserSymbolUniverseModel).where(UserSymbolUniverseModel.app_user_id == canonical_id, UserSymbolUniverseModel.normalized_symbol == 'SPY')
+        ).scalar_one() == 1
+        watch_symbol = session.execute(select(WatchlistSymbolModel).where(WatchlistSymbolModel.app_user_id == canonical_id)).scalar_one()
+        assert watch_symbol.user_symbol_id == canonical_symbol_id
+
+        assert session.execute(select(func.count()).select_from(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == canonical_id)).scalar_one() == 1
+        assert session.execute(select(func.count()).select_from(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == duplicate_id)).scalar_one() == 0
+
+        momentum_profiles = list(
+            session.execute(
+                select(MomentumHeatmapProfileModel).where(MomentumHeatmapProfileModel.app_user_id == canonical_id, MomentumHeatmapProfileModel.profile_uid == 'default')
+            ).scalars()
+        )
+        assert len(momentum_profiles) == 1
+        momentum_snapshot = session.execute(select(MomentumHeatmapSnapshotModel).where(MomentumHeatmapSnapshotModel.snapshot_uid == 'mh_split_relink')).scalar_one()
+        assert momentum_snapshot.app_user_id == canonical_id
+        assert momentum_snapshot.profile_id == momentum_profiles[0].id
+        assert session.execute(select(func.count()).select_from(MomentumHeatmapSchedulePreferenceModel).where(MomentumHeatmapSchedulePreferenceModel.app_user_id == canonical_id)).scalar_one() == 1
+
+        haco_profiles = list(
+            session.execute(
+                select(HacoHeatmapProfileModel).where(HacoHeatmapProfileModel.app_user_id == canonical_id, HacoHeatmapProfileModel.profile_uid == 'default')
+            ).scalars()
+        )
+        assert len(haco_profiles) == 1
+        haco_snapshot = session.execute(select(HacoHeatmapSnapshotModel).where(HacoHeatmapSnapshotModel.snapshot_uid == 'hh_split_relink')).scalar_one()
+        assert haco_snapshot.app_user_id == canonical_id
+        assert haco_snapshot.profile_id == haco_profiles[0].id
+
 
 def _seed_admin(session_local=SessionLocal) -> int:
     """Seed admin-token user as approved admin and return their id."""

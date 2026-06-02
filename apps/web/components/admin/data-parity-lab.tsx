@@ -122,7 +122,14 @@ function formatTimestamp(value: unknown): string {
   if (Object.keys(record).length > 0 && !record.utc && !record.new_york) return "-";
   const utcValue = record.utc ?? value;
   const newYorkValue = record.new_york ?? utcValue;
-  return `${formatTimestampInZone(utcValue, "UTC")} / ${formatTimestampInZone(newYorkValue, "America/New_York")}`;
+  const session = record.market_session_state ? ` (${String(record.market_session_state)})` : "";
+  return `${formatTimestampInZone(utcValue, "UTC")} / ${formatTimestampInZone(newYorkValue, "America/New_York")}${session}`;
+}
+
+function formatProviderLabel(value: unknown, fallback = "Polygon/Massive"): string {
+  const text = String(value ?? "").trim();
+  if (!text || text === "not run" || text === "unknown") return fallback;
+  return text;
 }
 
 function freshnessRecord(result: DataParityResult): Record<string, unknown> {
@@ -147,6 +154,10 @@ function providerAsOf(result: DataParityResult, side: "current" | "candidate"): 
 
 function providerLagVsExpected(result: DataParityResult, side: "current" | "candidate"): string {
   return formatValue(providerFreshness(result, side).provider_lag_minutes_vs_expected_latest_market_bar);
+}
+
+function providerLagVsServer(result: DataParityResult, side: "current" | "candidate"): string {
+  return formatValue(providerFreshness(result, side).provider_lag_minutes_vs_server_run_time);
 }
 
 function providerClassification(result: DataParityResult, side: "current" | "candidate"): string {
@@ -408,6 +419,7 @@ function FreshnessDelaySection({ result }: { result: DataParityRunResponse | nul
   const currentCounts = countProviderClassifications(result, "current");
   const schwabCounts = countProviderClassifications(result, "candidate");
   const firstFreshness = result?.results[0] ? freshnessRecord(result.results[0]) : {};
+  const currentProviderName = formatProviderLabel(asRecord(result?.providers.current).provider);
   const staleOrDelayedRows = result?.results.filter((item) => {
     const currentClass = providerClassification(item, "current");
     const candidateClass = providerClassification(item, "candidate");
@@ -423,7 +435,7 @@ function FreshnessDelaySection({ result }: { result: DataParityRunResponse | nul
           <div className="dp-status-grid dp-freshness-grid">
             <div><span>server run time</span><strong>{formatTimestamp(result.asOf)}</strong></div>
             <div><span>market session</span><strong>{formatValue(firstFreshness.market_session_state)}</strong></div>
-            <div><span>current provider classes</span><strong>{formatClassificationCounts(currentCounts)}</strong></div>
+            <div><span>{currentProviderName} classes</span><strong>{formatClassificationCounts(currentCounts)}</strong></div>
             <div><span>Schwab classes</span><strong>{formatClassificationCounts(schwabCounts)}</strong></div>
             <div><span>delayed/stale/not comparable rows</span><strong>{staleOrDelayedRows}</strong></div>
             <div><span>basis</span><strong>{formatValue(firstFreshness.delay_measurement_basis)}</strong></div>
@@ -435,14 +447,17 @@ function FreshnessDelaySection({ result }: { result: DataParityRunResponse | nul
                   <th>Symbol</th>
                   <th>TF</th>
                   <th>Expected latest market bar</th>
-                  <th>Current provider asOf</th>
-                  <th>Current lag vs expected</th>
-                  <th>Current class</th>
+                  <th>{currentProviderName} asOf</th>
+                  <th>{currentProviderName} lag vs server</th>
+                  <th>{currentProviderName} lag vs expected</th>
+                  <th>{currentProviderName} class</th>
                   <th>Schwab asOf</th>
+                  <th>Schwab lag vs server</th>
                   <th>Schwab lag vs expected</th>
                   <th>Schwab class</th>
                   <th>Timestamp delta</th>
                   <th>Aligned latest</th>
+                  <th>Verdict reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -454,13 +469,16 @@ function FreshnessDelaySection({ result }: { result: DataParityRunResponse | nul
                       <td>{item.timeframe}</td>
                       <td>{formatTimestamp(asRecord(freshness.expected_latest_market_bar))}</td>
                       <td>{providerAsOf(item, "current")}</td>
+                      <td>{providerLagVsServer(item, "current")} min</td>
                       <td>{providerLagVsExpected(item, "current")} min</td>
                       <td><StatusBadge tone={verdictTone(providerClassification(item, "current"))}>{providerClassification(item, "current")}</StatusBadge></td>
                       <td>{providerAsOf(item, "candidate")}</td>
+                      <td>{providerLagVsServer(item, "candidate")} min</td>
                       <td>{providerLagVsExpected(item, "candidate")} min</td>
                       <td><StatusBadge tone={verdictTone(providerClassification(item, "candidate"))}>{providerClassification(item, "candidate")}</StatusBadge></td>
                       <td>{timestampDeltaMinutes(item)} min</td>
                       <td>{alignedLatestTimestamp(item)}</td>
+                      <td>{verdictReason(item)}</td>
                     </tr>
                   );
                 })}
@@ -586,6 +604,7 @@ export function DataParityLab() {
   const statusBadge = statusLoading ? "loading" : schwabConnected ? "Connected" : schwabStatus?.token_status ?? "unknown";
   const statusTone = statusLoading ? "neutral" : schwabConnected ? "good" : verdictTone(schwabStatus?.token_status ?? schwabStatus?.status);
   const currentProviderName = String(asRecord(result?.providers.current).provider ?? "not run");
+  const providerAName = formatProviderLabel(currentProviderName);
   const trueMismatchCount = countResults(result, (item) => TRUE_MISMATCH_VERDICTS.has(item.rootCause));
   const notComparableCount = countResults(result, (item) => NOT_COMPARABLE_VERDICTS.has(item.rootCause));
   const comparableCount = countResults(result, (item) => !NOT_COMPARABLE_VERDICTS.has(item.rootCause));
@@ -630,7 +649,7 @@ export function DataParityLab() {
       <div className="dp-summary-strip dp-cockpit-strip">
         {[
           ["Schwab status", statusBadge],
-          ["Current provider", currentProviderName],
+          ["Current provider", providerAName],
           ["Symbols", parseParitySymbols(symbolsText).join(", ") || "-"],
           ["Timeframes", selectedTfList.join(", ") || "-"],
           ["Comparable rows", comparableCount],
@@ -819,7 +838,7 @@ export function DataParityLab() {
                   <tr>
                     <th>Symbol</th>
                     <th>TF</th>
-                    <th>Current provider asOf</th>
+                    <th>{providerAName} asOf</th>
                     <th>Schwab asOf</th>
                     <th>Timestamp delta</th>
                     <th>Aligned latest</th>

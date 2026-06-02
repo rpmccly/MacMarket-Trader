@@ -1,6 +1,41 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
+
+## 2026-06-01 Update - Clerk Invite Approval Reconciliation Hardening
+
+Completed in the current Phase 1 auth/onboarding trust track:
+- Hardened backend identity sync so invite-created `invited::<email>` rows bind
+  to the real Clerk `sub` on first login, while preserving local
+  `approval_status` and `app_role` as the authorization source of truth.
+- Added split-identity merge/relink coverage so approved invite rows and pending
+  Clerk rows collapse into one canonical user before duplicate rows are retired.
+- Added fail-closed sparse-identity behavior: if Clerk JWT claims lack a stable
+  email and backend profile hydration fails, no broken local user is created and
+  the frontend shows an identity-sync warning instead of treating it as ordinary
+  pending approval.
+- Added Provider Health Clerk hydration diagnostics so admins can see missing
+  backend Clerk profile configuration without exposing secrets.
+
+No provider default, broker routing, live trading, recommendation, replay,
+Agent Mode, Daily Target Book, HACO/Momentum, schedule, or paper-lifecycle
+behavior changed.
+
+## 2026-06-01 Update - Data Parity Freshness Display Hardening
+
+Completed in the current Phase 1 provider-trust track:
+- Hardened Data Parity freshness/as-of diagnostics so provider bars are sorted
+  by canonical timestamp before latest-bar, lag, aligned timestamp, and stale
+  classification calculations.
+- Expanded the Freshness / Delay cockpit and CSV export to show full UTC and
+  `America/New_York` timestamps, market-session state, current-provider and
+  Schwab lag versus server run time, lag versus expected latest market bar,
+  timestamp delta, latest aligned timestamp, classification, and verdict
+  reason.
+
+No provider default, broker routing, live trading, recommendation, replay,
+Agent Mode, Daily Target Book, HACO/Momentum, schedule, or paper-lifecycle
+behavior changed.
 
 ## 2026-05-31 Update - Market Data Parity Lab UX/Verdict Hardening
 

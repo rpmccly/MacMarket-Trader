@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, Header, HTTPException
@@ -19,6 +20,14 @@ _clerk_profile_provider = ClerkProfileProvider(
     secret_key=settings.clerk_secret_key,
     api_base_url=settings.clerk_api_base_url,
 )
+IDENTITY_SYNC_ERROR_CODE = "identity_sync_failed"
+
+
+@dataclass(frozen=True)
+class ExtractedIdentity:
+    email: str
+    display_name: str
+    hydration_error_code: str | None = None
 
 
 def _parse_bearer_token(authorization: str | None) -> str:
@@ -47,11 +56,27 @@ def _sanitize_identity_field(value: str) -> str:
     return normalized
 
 
-def _extract_identity(claims: dict[str, Any]) -> tuple[str, str]:
+def _identity_sync_exception(reason: str | None = None) -> HTTPException:
+    safe_reason = str(reason or "missing_stable_email").strip() or "missing_stable_email"
+    return HTTPException(
+        status_code=424,
+        detail={
+            "code": IDENTITY_SYNC_ERROR_CODE,
+            "reason": safe_reason,
+            "message": (
+                "Unable to sync Clerk identity profile. Ask an admin to verify backend Clerk "
+                "profile hydration configuration and retry sign-in."
+            ),
+        },
+    )
+
+
+def _extract_identity(claims: dict[str, Any]) -> ExtractedIdentity:
     email = _sanitize_identity_field(_claim_string(claims, ["email", "email_address", "primary_email_address"]))
     display_name = _sanitize_identity_field(
         _claim_string(claims, ["name", "full_name", "display_name", "username", "given_name"])
     )
+    hydration_error_code: str | None = None
 
     # Clerk JWT claims are often sparse for email/name; backend fetch fills gaps.
     external_id = str(claims.get("sub", ""))
@@ -62,8 +87,22 @@ def _extract_identity(claims: dict[str, Any]) -> tuple[str, str]:
                 email = _sanitize_identity_field(hydrated.email)
             if not display_name:
                 display_name = _sanitize_identity_field(hydrated.display_name)
+        if not email:
+            hydration_error_code = _clerk_profile_provider.last_error_code or "profile_hydration_unavailable"
 
-    return email, display_name
+    return ExtractedIdentity(email=email, display_name=display_name, hydration_error_code=hydration_error_code)
+
+
+def auth_profile_hydration_status() -> dict[str, object]:
+    mode = settings.auth_provider.strip().lower() or "mock"
+    configured = bool(settings.clerk_secret_key.strip() and settings.clerk_api_base_url.strip())
+    return {
+        **_clerk_profile_provider.diagnostic_status(auth_provider=mode),
+        "configured": configured,
+        "secret_key_present": bool(settings.clerk_secret_key.strip()),
+        "api_base_url_present": bool(settings.clerk_api_base_url.strip()),
+        "auth_provider": mode,
+    }
 
 
 def current_user(authorization: str | None = Header(default=None)):
@@ -77,22 +116,24 @@ def current_user(authorization: str | None = Header(default=None)):
     if not external_id:
         raise HTTPException(status_code=401, detail="Token missing subject claim")
 
-    email, display_name = _extract_identity(claims)
+    identity = _extract_identity(claims)
 
     existing_user = _user_repo.get_by_external_id(external_id)
-    if existing_user is None and not email:
+    if existing_user is None and not identity.email:
         # Auth identity is valid but local app-user provisioning is blocked until
         # we have a stable email identifier (claims or Clerk backend hydration).
-        raise HTTPException(status_code=401, detail="Unable to provision local user without email")
+        raise _identity_sync_exception(identity.hydration_error_code)
 
     try:
         user = _user_repo.upsert_from_auth(
             external_auth_user_id=external_id,
-            email=email,
-            display_name=display_name,
+            email=identity.email,
+            display_name=identity.display_name,
             mfa_enabled=bool(claims.get("mfa", False)),
         )
     except ValueError as exc:
+        if "email required" in str(exc).lower():
+            raise _identity_sync_exception("missing_stable_email") from exc
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _user_repo.touch_last_seen(user.id)
 

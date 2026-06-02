@@ -19,6 +19,8 @@ Legacy/public signup can still exist as Clerk plumbing, but private-alpha invite
 - Admin endpoint: `POST /admin/invites` (admin + MFA required).
 - Invite sends a Clerk-compatible sign-up URL and creates/updates a local pending user row.
 - Invite-preprovisioned rows use an `invited::<email>` external ID placeholder, then bind to real Clerk `sub` at first successful login.
+- Invite updates do not replace an already-bound real Clerk user ID and do not
+  demote existing approved/admin local users.
 - `EMAIL_PROVIDER=console` logs invite destination, template, subject, and full body for local QA.
 
 ## Identity sync safeguards
@@ -41,6 +43,9 @@ Legacy/public signup can still exist as Clerk plumbing, but private-alpha invite
 - Existing local admin users remain admin across re-login sync.
 - Pending invited users remain pending until explicit admin approval.
 - New-user provisioning without stable email is blocked (prevents blank/fragile user rows).
+- When provisioning is blocked because Clerk profile hydration failed, the backend
+  returns HTTP `424` with `detail.code=identity_sync_failed` instead of creating
+  a broken local user.
 
 ## Source of truth and sync rules (hard policy)
 
@@ -59,6 +64,8 @@ Legacy/public signup can still exist as Clerk plumbing, but private-alpha invite
   - existing local user role/approval state remains unchanged,
   - existing email/display name are not wiped,
   - new-user provisioning is blocked rather than creating a broken auth row.
+- `/admin/provider-health` reports a degraded `auth` row when `AUTH_PROVIDER=clerk`
+  but Clerk JWT verification or backend profile hydration is not configured.
 
 ## Route policy
 
@@ -94,6 +101,9 @@ Fail-closed runtime guardrail:
 
 - `/sign-in` and `/sign-up` use Clerk hosted UI components.
 - Authenticated users with `pending` approval are redirected to `/pending-approval`.
+- Authenticated users whose Clerk session is valid but whose backend identity
+  cannot be hydrated are redirected to `/pending-approval?reason=identity-sync`;
+  this is distinct from true pending approval.
 - Authenticated users with rejected/suspended or insufficient-role access are redirected to `/access-denied`.
 - Frontend hosted paths no longer fall back to mock bearer tokens.
 
