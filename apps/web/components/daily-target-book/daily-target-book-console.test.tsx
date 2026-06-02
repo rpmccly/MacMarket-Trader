@@ -69,6 +69,9 @@ describe("DailyTargetBookConsole", () => {
     expect(source).toContain("Current Book only");
     expect(source).toContain("No target book yet");
     expect(source).toContain("Daily Target Book unavailable");
+    expect(source).toContain("Daily Target Book build running");
+    expect(source).toContain("Building Daily Target Book");
+    expect(source).toContain("The previous read-only target book remains visible while this runs.");
   });
 
   it("uses read-only action wording and no execution controls", () => {

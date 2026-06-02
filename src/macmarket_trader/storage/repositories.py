@@ -27,6 +27,7 @@ from macmarket_trader.domain.models import (
     MomentumHeatmapProfileModel,
     MomentumHeatmapSchedulePreferenceModel,
     MomentumHeatmapSnapshotModel,
+    NotificationAttemptModel,
     OrderModel,
     PaperOptionOrderLegModel,
     PaperOptionOrderModel,
@@ -98,7 +99,9 @@ def _ensure_starter_watchlist_for_user_in_session(
     row = WatchlistModel(
         app_user_id=app_user_id,
         name=STARTER_MARKET_WATCHLIST_NAME,
+        description="Editable starter universe for Recommendations, Agent Mode, and scheduled research reports.",
         symbols=starter_market_watchlist_symbols(),
+        is_default=True,
     )
     session.add(row)
     session.flush()
@@ -169,11 +172,27 @@ class AgentModeRepository:
             "universe_source": "manual",
             "manual_symbols": list(DEFAULT_AGENT_MODE_MANUAL_SYMBOLS),
             "watchlist_ids": [],
+            "default_watchlist_id": None,
             "max_positions": 5,
             "scan_depth": 12,
+            "max_dollars_per_trade": None,
+            "max_percent_of_paper_account_per_trade": None,
+            "max_new_trades_per_run": 5,
+            "max_new_trades_per_day": 5,
+            "max_open_agent_positions": 5,
+            "max_exposure_per_symbol": None,
+            "min_cash_reserve": 0.0,
             "allow_opens": True,
             "allow_closes": True,
             "allow_scale_resize": False,
+            "allow_scale_ins": False,
+            "allow_new_trade_when_symbol_already_open": False,
+            "require_confirmation_for_restricted": True,
+            "notification_preference": "none",
+            "notification_phone_number": None,
+            "sms_consent_confirmed": False,
+            "email_notifications_enabled": False,
+            "sms_notifications_enabled": False,
         }
 
     def get_or_create_settings(self, *, app_user_id: int) -> AgentModeSettingsModel:
@@ -199,11 +218,27 @@ class AgentModeRepository:
             "universe_source",
             "manual_symbols",
             "watchlist_ids",
+            "default_watchlist_id",
             "max_positions",
             "scan_depth",
+            "max_dollars_per_trade",
+            "max_percent_of_paper_account_per_trade",
+            "max_new_trades_per_run",
+            "max_new_trades_per_day",
+            "max_open_agent_positions",
+            "max_exposure_per_symbol",
+            "min_cash_reserve",
             "allow_opens",
             "allow_closes",
             "allow_scale_resize",
+            "allow_scale_ins",
+            "allow_new_trade_when_symbol_already_open",
+            "require_confirmation_for_restricted",
+            "notification_preference",
+            "notification_phone_number",
+            "sms_consent_confirmed",
+            "email_notifications_enabled",
+            "sms_notifications_enabled",
         }
         with self.session_factory() as session:
             row = session.execute(
@@ -2210,6 +2245,7 @@ class UserRepository:
             PaperPositionModel,
             PaperTradeModel,
             AgentModeRunModel,
+            NotificationAttemptModel,
             PaperOptionOrderModel,
             PaperOptionPositionModel,
             PaperOptionTradeModel,
@@ -2938,7 +2974,10 @@ class WatchlistRepository:
 
     def list_for_user(self, app_user_id: int) -> list[WatchlistModel]:
         with self.session_factory() as session:
-            stmt = select(WatchlistModel).where(WatchlistModel.app_user_id == app_user_id).order_by(WatchlistModel.created_at.desc())
+            stmt = select(WatchlistModel).where(WatchlistModel.app_user_id == app_user_id).order_by(
+                WatchlistModel.is_default.desc(),
+                WatchlistModel.created_at.desc(),
+            )
             return list(session.execute(stmt).scalars())
 
     def get_for_user(self, *, watchlist_id: int, app_user_id: int) -> WatchlistModel | None:
@@ -2950,21 +2989,56 @@ class WatchlistRepository:
                 )
             ).scalar_one_or_none()
 
-    def upsert(self, *, app_user_id: int, name: str, symbols: list[str]) -> WatchlistModel:
+    def upsert(
+        self,
+        *,
+        app_user_id: int,
+        name: str,
+        symbols: list[str],
+        description: str | None = None,
+        is_default: bool | None = None,
+    ) -> WatchlistModel:
         with self.session_factory() as session:
             row = session.execute(
                 select(WatchlistModel).where(WatchlistModel.app_user_id == app_user_id, WatchlistModel.name == name)
             ).scalar_one_or_none()
             if row is None:
-                row = WatchlistModel(app_user_id=app_user_id, name=name, symbols=symbols)
+                row = WatchlistModel(
+                    app_user_id=app_user_id,
+                    name=name,
+                    description=description,
+                    symbols=symbols,
+                    is_default=bool(is_default),
+                )
                 session.add(row)
             else:
                 row.symbols = symbols
+                if description is not None:
+                    row.description = description
+                if is_default is not None:
+                    row.is_default = bool(is_default)
+                row.updated_at = datetime.now(timezone.utc)
+            if bool(is_default):
+                session.flush()
+                session.query(WatchlistModel).filter(
+                    WatchlistModel.app_user_id == app_user_id,
+                    WatchlistModel.id != row.id,
+                ).update({WatchlistModel.is_default: False}, synchronize_session=False)
             session.commit()
             session.refresh(row)
             return row
 
-    def update(self, *, watchlist_id: int, app_user_id: int, name: str | None, symbols: list[str] | None) -> WatchlistModel | None:
+    def update(
+        self,
+        *,
+        watchlist_id: int,
+        app_user_id: int,
+        name: str | None,
+        symbols: list[str] | None,
+        description: str | None = None,
+        description_provided: bool = False,
+        is_default: bool | None = None,
+    ) -> WatchlistModel | None:
         with self.session_factory() as session:
             row = session.execute(
                 select(WatchlistModel).where(WatchlistModel.id == watchlist_id, WatchlistModel.app_user_id == app_user_id)
@@ -2973,8 +3047,18 @@ class WatchlistRepository:
                 return None
             if name is not None:
                 row.name = name
+            if description_provided:
+                row.description = description
             if symbols is not None:
                 row.symbols = symbols
+            if is_default is not None:
+                row.is_default = bool(is_default)
+                if row.is_default:
+                    session.query(WatchlistModel).filter(
+                        WatchlistModel.app_user_id == app_user_id,
+                        WatchlistModel.id != watchlist_id,
+                    ).update({WatchlistModel.is_default: False}, synchronize_session=False)
+            row.updated_at = datetime.now(timezone.utc)
             session.commit()
             session.refresh(row)
             return row
@@ -2989,6 +3073,86 @@ class WatchlistRepository:
             session.delete(row)
             session.commit()
             return True
+
+
+class NotificationAttemptRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def create(
+        self,
+        *,
+        app_user_id: int,
+        provider: str,
+        channel: str,
+        recipient_redacted: str,
+        event_type: str,
+        status: str,
+        run_id: str | None = None,
+        failure_reason: str | None = None,
+        payload_json: dict[str, object] | None = None,
+        sent_at: datetime | None = None,
+    ) -> NotificationAttemptModel:
+        with self.session_factory() as session:
+            row = NotificationAttemptModel(
+                app_user_id=app_user_id,
+                provider=provider,
+                channel=channel,
+                recipient_redacted=recipient_redacted,
+                event_type=event_type,
+                status=status,
+                run_id=run_id,
+                failure_reason=failure_reason,
+                payload_json=payload_json or {},
+                sent_at=sent_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def count_recent(
+        self,
+        *,
+        app_user_id: int,
+        channel: str,
+        since: datetime,
+        statuses: Sequence[str] | None = None,
+    ) -> int:
+        with self.session_factory() as session:
+            stmt = select(func.count()).select_from(NotificationAttemptModel).where(
+                NotificationAttemptModel.app_user_id == app_user_id,
+                NotificationAttemptModel.channel == channel,
+                NotificationAttemptModel.created_at >= since,
+            )
+            if statuses:
+                stmt = stmt.where(NotificationAttemptModel.status.in_(list(statuses)))
+            return int(session.scalar(stmt) or 0)
+
+    def count_for_run(
+        self,
+        *,
+        app_user_id: int,
+        channel: str,
+        run_id: str,
+    ) -> int:
+        with self.session_factory() as session:
+            stmt = select(func.count()).select_from(NotificationAttemptModel).where(
+                NotificationAttemptModel.app_user_id == app_user_id,
+                NotificationAttemptModel.channel == channel,
+                NotificationAttemptModel.run_id == run_id,
+            )
+            return int(session.scalar(stmt) or 0)
+
+    def list_recent_for_user(self, *, app_user_id: int, limit: int = 25) -> list[NotificationAttemptModel]:
+        with self.session_factory() as session:
+            stmt = (
+                select(NotificationAttemptModel)
+                .where(NotificationAttemptModel.app_user_id == app_user_id)
+                .order_by(NotificationAttemptModel.created_at.desc())
+                .limit(max(1, min(int(limit), 100)))
+            )
+            return list(session.execute(stmt).scalars())
 
 
 @dataclass(frozen=True)

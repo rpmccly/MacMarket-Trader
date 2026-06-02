@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from_email: str = "noreply@macmarket-trader.local"
     brand_from_name: str = "MacMarket Trader"
+    sms_provider: str = "twilio"
+    sms_notifications_enabled: bool = True
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = "+1XXXXXXXXXX"
+    twilio_messaging_service_sid: str = ""
+    twilio_request_timeout_seconds: int = 10
+    sms_max_messages_per_user_per_day: int = 20
+    sms_max_messages_per_run: int = 25
     # Self-hosted at /brand/<file> from the Next.js public dir, served by the
     # production tunnel. The base64 embed in email_templates.py is the deeper
     # fallback so emails render even if this URL fails to load.

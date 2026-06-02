@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,16 +10,21 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from macmarket_trader.api.routes import admin as workflow
+from macmarket_trader.config import settings
 from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
 from macmarket_trader.domain.models import AppUserModel
 from macmarket_trader.domain.schemas import PortfolioSnapshot, TradeRecommendation
 from macmarket_trader.domain.time import utc_now
+from macmarket_trader.email_templates import render_agent_mode_run_digest_html
+from macmarket_trader.notifications import NotificationService
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import (
     AgentModeRepository,
+    NotificationAttemptRepository,
     PaperPortfolioRepository,
     RecommendationRepository,
     SymbolUniverseRepository,
+    WatchlistRepository,
     display_id_or_fallback,
 )
 
@@ -45,11 +50,17 @@ class AgentModeService:
         paper_repo: PaperPortfolioRepository | None = None,
         recommendation_repo: RecommendationRepository | None = None,
         symbol_universe_repo: SymbolUniverseRepository | None = None,
+        watchlist_repo: WatchlistRepository | None = None,
+        notification_service: NotificationService | None = None,
     ) -> None:
         self.agent_repo = agent_repo or AgentModeRepository(SessionLocal)
         self.paper_repo = paper_repo or PaperPortfolioRepository(SessionLocal)
         self.recommendation_repo = recommendation_repo or RecommendationRepository(SessionLocal)
         self.symbol_universe_repo = symbol_universe_repo or SymbolUniverseRepository(SessionLocal)
+        self.watchlist_repo = watchlist_repo or WatchlistRepository(SessionLocal)
+        self.notification_service = notification_service or NotificationService(
+            repo=NotificationAttemptRepository(SessionLocal),
+        )
 
     @staticmethod
     def serialize_settings(row) -> dict[str, object]:
@@ -62,11 +73,28 @@ class AgentModeService:
             "universe_source": row.universe_source,
             "manual_symbols": list(row.manual_symbols or []),
             "watchlist_ids": list(row.watchlist_ids or []),
+            "default_watchlist_id": getattr(row, "default_watchlist_id", None),
             "max_positions": int(row.max_positions or 5),
             "scan_depth": int(row.scan_depth or 12),
+            "max_dollars_per_trade": AgentModeService._round_money(getattr(row, "max_dollars_per_trade", None)),
+            "max_percent_of_paper_account_per_trade": getattr(row, "max_percent_of_paper_account_per_trade", None),
+            "max_new_trades_per_run": 5 if getattr(row, "max_new_trades_per_run", None) is None else int(getattr(row, "max_new_trades_per_run")),
+            "max_new_trades_per_day": 5 if getattr(row, "max_new_trades_per_day", None) is None else int(getattr(row, "max_new_trades_per_day")),
+            "max_open_agent_positions": int(getattr(row, "max_open_agent_positions", row.max_positions or 5) or 5),
+            "max_exposure_per_symbol": AgentModeService._round_money(getattr(row, "max_exposure_per_symbol", None)),
+            "min_cash_reserve": AgentModeService._round_money(getattr(row, "min_cash_reserve", 0.0)) or 0.0,
             "allow_opens": bool(row.allow_opens),
             "allow_closes": bool(row.allow_closes),
             "allow_scale_resize": bool(row.allow_scale_resize),
+            "allow_scale_ins": bool(getattr(row, "allow_scale_ins", False)),
+            "allow_new_trade_when_symbol_already_open": bool(getattr(row, "allow_new_trade_when_symbol_already_open", False)),
+            "require_confirmation_for_restricted": bool(getattr(row, "require_confirmation_for_restricted", True)),
+            "notification_preference": str(getattr(row, "notification_preference", "none") or "none"),
+            "notification_phone_number": getattr(row, "notification_phone_number", None),
+            "sms_consent_confirmed": bool(getattr(row, "sms_consent_confirmed", False)),
+            "email_notifications_enabled": bool(getattr(row, "email_notifications_enabled", False)),
+            "sms_notifications_enabled": bool(getattr(row, "sms_notifications_enabled", False)),
+            "sms_provider_status": NotificationService.sms_readiness(),
             "paper_only": True,
             "execution_mode": "paper",
         }
@@ -110,9 +138,40 @@ class AgentModeService:
             parsed = default
         return max(minimum, min(maximum, parsed))
 
+    @staticmethod
+    def _coerce_optional_float(
+        value: object,
+        *,
+        minimum: float,
+        maximum: float,
+        field_name: str,
+    ) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"{field_name} must be numeric.") from exc
+        if not math.isfinite(parsed) or parsed < minimum or parsed > maximum:
+            raise HTTPException(status_code=400, detail=f"{field_name} must be between {minimum} and {maximum}.")
+        return parsed
+
     def normalize_settings_update(self, payload: dict[str, object]) -> dict[str, object]:
         updates: dict[str, object] = {}
-        for key in ("enabled", "paused", "kill_switch_enabled", "allow_opens", "allow_closes", "allow_scale_resize"):
+        for key in (
+            "enabled",
+            "paused",
+            "kill_switch_enabled",
+            "allow_opens",
+            "allow_closes",
+            "allow_scale_resize",
+            "allow_scale_ins",
+            "allow_new_trade_when_symbol_already_open",
+            "require_confirmation_for_restricted",
+            "sms_consent_confirmed",
+            "email_notifications_enabled",
+            "sms_notifications_enabled",
+        ):
             if key in payload:
                 updates[key] = self._coerce_bool(payload.get(key), default=False)
         if "daily_run_time" in payload:
@@ -138,40 +197,146 @@ class AgentModeService:
             if not isinstance(raw_ids, list):
                 raise HTTPException(status_code=400, detail="watchlist_ids must be a list.")
             updates["watchlist_ids"] = [int(item) for item in raw_ids if str(item).strip().isdigit()][:10]
+        if "default_watchlist_id" in payload:
+            raw_default = payload.get("default_watchlist_id")
+            updates["default_watchlist_id"] = int(raw_default) if str(raw_default or "").strip().isdigit() else None
         if "max_positions" in payload:
             # MVP fixed cap: never allow above 5 even if the payload asks.
             updates["max_positions"] = self._coerce_int(payload.get("max_positions"), default=5, minimum=1, maximum=5)
         if "scan_depth" in payload:
             updates["scan_depth"] = self._coerce_int(payload.get("scan_depth"), default=12, minimum=1, maximum=25)
+        for key in ("max_new_trades_per_run", "max_new_trades_per_day", "max_open_agent_positions"):
+            if key in payload:
+                updates[key] = self._coerce_int(payload.get(key), default=5, minimum=0, maximum=5)
+        for key, maximum in (
+            ("max_dollars_per_trade", 1_000_000.0),
+            ("max_exposure_per_symbol", 1_000_000.0),
+            ("min_cash_reserve", 1_000_000.0),
+        ):
+            if key in payload:
+                parsed = self._coerce_optional_float(
+                    payload.get(key),
+                    minimum=0.0,
+                    maximum=maximum,
+                    field_name=key,
+                )
+                updates[key] = 0.0 if key == "min_cash_reserve" and parsed is None else parsed
+        if "max_percent_of_paper_account_per_trade" in payload:
+            parsed = self._coerce_optional_float(
+                payload.get("max_percent_of_paper_account_per_trade"),
+                minimum=0.0,
+                maximum=100.0,
+                field_name="max_percent_of_paper_account_per_trade",
+            )
+            updates["max_percent_of_paper_account_per_trade"] = parsed
+        if "notification_preference" in payload:
+            preference = str(payload.get("notification_preference") or "none").strip().lower()
+            if preference not in {"none", "email", "sms", "both"}:
+                raise HTTPException(status_code=400, detail="unsupported_notification_preference")
+            updates["notification_preference"] = preference
+            updates["email_notifications_enabled"] = preference in {"email", "both"}
+            updates["sms_notifications_enabled"] = preference in {"sms", "both"}
+        if "notification_phone_number" in payload:
+            phone = str(payload.get("notification_phone_number") or "").strip()
+            updates["notification_phone_number"] = phone[:32] or None
         return updates
 
+    def update_settings(self, *, user, payload: dict[str, object]) -> dict[str, object]:
+        mode = str(payload.get("mode") or payload.get("execution_mode") or "paper").strip().lower()
+        if mode not in {"paper", "paper_only"}:
+            raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
+        updates = self.normalize_settings_update(payload)
+        default_watchlist_id = updates.get("default_watchlist_id")
+        if default_watchlist_id is not None:
+            row = self.watchlist_repo.get_for_user(watchlist_id=int(default_watchlist_id), app_user_id=user.id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="default_watchlist_id not found for user")
+        row = self.agent_repo.update_settings(app_user_id=user.id, updates=updates)
+        return self.serialize_settings(row)
+
     def resolve_universe(self, *, app_user_id: int, settings_payload: dict[str, object], overrides: dict[str, object]) -> dict[str, object]:
-        manual_symbols = overrides.get("symbols") or overrides.get("manual_symbols") or settings_payload.get("manual_symbols") or ["SPY", "QQQ", "MTUM"]
+        explicit_source = overrides.get("universe_source") or overrides.get("source")
+        source = str(explicit_source or settings_payload.get("universe_source") or "manual").strip().lower()
+        if source not in {"manual", "watchlist", "watchlist_plus_manual", "all_active"}:
+            source = "manual"
+        manual_override = source == "manual" or bool(overrides.get("manual_override"))
+        if "manual_symbols" in overrides:
+            manual_symbols = overrides.get("manual_symbols")
+        elif "symbols" in overrides and manual_override:
+            manual_symbols = overrides.get("symbols")
+        else:
+            manual_symbols = settings_payload.get("manual_symbols") or ["SPY", "QQQ", "MTUM"]
         manual_list = workflow.normalize_symbol_list(manual_symbols, max_items=25, field_name="symbols")
-        source = str(overrides.get("universe_source") or settings_payload.get("universe_source") or "manual").strip().lower()
-        watchlist_ids = overrides.get("watchlist_ids") or settings_payload.get("watchlist_ids") or []
+        watchlist_ids = overrides.get("watchlist_ids") if "watchlist_ids" in overrides else settings_payload.get("watchlist_ids") or []
         if not isinstance(watchlist_ids, list):
             watchlist_ids = []
+        default_watchlist_id = overrides.get("default_watchlist_id") if "default_watchlist_id" in overrides else settings_payload.get("default_watchlist_id")
+        if not watchlist_ids and default_watchlist_id and source in {"watchlist", "watchlist_plus_manual"}:
+            watchlist_ids = [default_watchlist_id]
+        cleaned_watchlist_ids: list[int] = []
+        for item in watchlist_ids:
+            if str(item).isdigit():
+                parsed = int(item)
+                if parsed not in cleaned_watchlist_ids:
+                    cleaned_watchlist_ids.append(parsed)
+        selected_watchlists = [
+            row
+            for watchlist_id in cleaned_watchlist_ids
+            for row in [self.watchlist_repo.get_for_user(watchlist_id=watchlist_id, app_user_id=app_user_id)]
+            if row is not None
+        ]
+        missing_watchlist_ids = [
+            watchlist_id
+            for watchlist_id in cleaned_watchlist_ids
+            if all(row.id != watchlist_id for row in selected_watchlists)
+        ]
+        watchlist_symbol_count = sum(len(row.symbols or []) for row in selected_watchlists)
+        source_status = "ok"
+        source_reason: str | None = None
+        if source in {"watchlist", "watchlist_plus_manual"}:
+            if not cleaned_watchlist_ids:
+                source_status = "missing"
+                source_reason = "watchlist_missing_or_empty"
+            elif missing_watchlist_ids and not selected_watchlists:
+                source_status = "missing"
+                source_reason = "watchlist_missing_or_unavailable"
+            elif watchlist_symbol_count == 0:
+                source_status = "empty"
+                source_reason = "watchlist_missing_or_empty"
         include_all_active = source == "all_active"
         if source == "manual":
-            watchlist_ids = []
+            cleaned_watchlist_ids = []
             include_all_active = False
         resolution = self.symbol_universe_repo.resolve_symbols(
             app_user_id=app_user_id,
             manual_symbols=manual_list if source in {"manual", "watchlist_plus_manual", "all_active"} else [],
-            watchlist_ids=[int(item) for item in watchlist_ids if str(item).isdigit()],
+            watchlist_ids=cleaned_watchlist_ids,
             include_all_active=include_all_active,
             include_inactive=False,
             exclusions=[],
             pinned_symbols=[],
         )
-        symbols = resolution.symbols or manual_list
+        symbols = resolution.symbols or ([] if source in {"watchlist", "watchlist_plus_manual"} else manual_list)
+        if source == "watchlist" and source_status != "ok":
+            symbols = []
         scan_depth = self._coerce_int(overrides.get("scan_depth") or settings_payload.get("scan_depth"), default=12, minimum=1, maximum=25)
+        resolved_symbols = symbols[:scan_depth]
+        watchlist_names = [row.name for row in selected_watchlists]
         return {
-            "symbols": symbols[:scan_depth],
+            "symbols": resolved_symbols,
             "source": source,
             "source_label": source.replace("_", " "),
             "scan_depth": scan_depth,
+            "watchlist_ids": cleaned_watchlist_ids,
+            "watchlist_id": cleaned_watchlist_ids[0] if cleaned_watchlist_ids else None,
+            "watchlist_name": ", ".join(watchlist_names) if watchlist_names else None,
+            "watchlist_names": watchlist_names,
+            "resolved_symbols_snapshot": resolved_symbols,
+            "manual_override": manual_override,
+            "manual_symbols": manual_list if source in {"manual", "watchlist_plus_manual", "all_active"} else [],
+            "source_status": source_status,
+            "reason": source_reason,
+            "missing_watchlist_ids": missing_watchlist_ids,
             "provenance": resolution.provenance,
         }
 
@@ -211,6 +376,84 @@ class AgentModeService:
         except (TypeError, ValueError):
             parsed = default
         return max(1, min(parsed, maximum))
+
+    @staticmethod
+    def _parse_run_time(value: object) -> tuple[int, int]:
+        parts = str(value or "15:45").split(":", 1)
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        except (TypeError, ValueError):
+            hour, minute = 15, 45
+        return max(0, min(23, hour)), max(0, min(59, minute))
+
+    def _next_run_at(
+        self,
+        *,
+        settings_payload: dict[str, object],
+        latest_row,
+        now: datetime,
+    ) -> datetime | None:
+        if not bool(settings_payload.get("enabled")) or bool(settings_payload.get("paused")) or bool(settings_payload.get("kill_switch_enabled")):
+            return None
+        zone = self._setting_zone(str(settings_payload.get("timezone") or "America/New_York"))
+        local_now = now.astimezone(zone)
+        hour, minute = self._parse_run_time(settings_payload.get("daily_run_time"))
+        candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        latest_local_date: date | None = None
+        if latest_row and latest_row.created_at:
+            latest_at = latest_row.created_at if latest_row.created_at.tzinfo else latest_row.created_at.replace(tzinfo=timezone.utc)
+            latest_local_date = latest_at.astimezone(zone).date()
+        if candidate <= local_now or latest_local_date == local_now.date():
+            candidate = candidate + timedelta(days=1)
+        return candidate.astimezone(timezone.utc)
+
+    def schedule_status(self, *, user) -> dict[str, object]:
+        row = self.agent_repo.get_or_create_settings(app_user_id=user.id)
+        settings_payload = self.serialize_settings(row)
+        latest = self.agent_repo.latest_run(app_user_id=user.id)
+        now = utc_now()
+        next_run = self._next_run_at(settings_payload=settings_payload, latest_row=latest, now=now)
+        latest_payload = self._run_response(latest) if latest else {}
+        summary = latest_payload.get("summary") if isinstance(latest_payload.get("summary"), dict) else {}
+        status = "never_run"
+        if not bool(settings_payload.get("enabled")):
+            status = "disabled"
+        if latest is not None:
+            status = "running" if latest.status == "running" else "failed" if latest.status in {"error", "failed"} else "success" if latest.status == "completed" else str(latest.status)
+        last_skip_reason = None
+        if bool(settings_payload.get("paused")):
+            last_skip_reason = "agent_paused"
+        elif bool(settings_payload.get("kill_switch_enabled")):
+            last_skip_reason = "kill_switch_enabled"
+        elif not bool(settings_payload.get("enabled")):
+            last_skip_reason = "agent_disabled"
+        elif isinstance(summary, dict):
+            last_skip_reason = summary.get("skipReason")
+        warnings = list(latest_payload.get("warnings") or []) if isinstance(latest_payload, dict) else []
+        return {
+            "agent_enabled": bool(settings_payload.get("enabled")) and not bool(settings_payload.get("paused")) and not bool(settings_payload.get("kill_switch_enabled")),
+            "configured_timezone": settings_payload.get("timezone"),
+            "configured_daily_run_time": settings_payload.get("daily_run_time"),
+            "current_server_time": now.isoformat(),
+            "current_server_timezone": "UTC",
+            "next_scheduled_run_at": next_run.isoformat() if next_run else None,
+            "seconds_until_next_run": int(max(0.0, (next_run - now).total_seconds())) if next_run else None,
+            "last_run_started_at": latest.created_at.isoformat() if latest and latest.created_at else None,
+            "last_run_completed_at": latest.completed_at.isoformat() if latest and latest.completed_at else None,
+            "last_run_status": status,
+            "last_skip_reason": last_skip_reason,
+            "last_error_summary": (warnings[0] if warnings else None) if status != "success" else None,
+            "last_run_id": latest.run_id if latest else None,
+            "last_run_trade_count": int(summary.get("totalExecutedActions", summary.get("executedOrderCount", 0)) or 0) if isinstance(summary, dict) else 0,
+            "last_run_position_review_count": len(latest_payload.get("positionReviews") or []) if isinstance(latest_payload, dict) else 0,
+            "last_run_blocked_count": int(summary.get("blockedActions", 0) or 0) if isinstance(summary, dict) else 0,
+            "in_progress": status == "running",
+            "lock_diagnostics": {"available": False, "reason": "scheduler_lock_not_persisted"},
+            "scheduler_source": "backend-owned",
+            "paperOnly": True,
+            "executionMode": "paper",
+        }
 
     @classmethod
     def _intent_execution_metrics(
@@ -283,6 +526,268 @@ class AgentModeService:
             total += parsed
             seen = True
         return cls._round_money(total) if seen else None
+
+    @classmethod
+    def _digest_item(cls, intent: dict[str, object]) -> dict[str, object]:
+        candidate = intent.get("candidate") if isinstance(intent.get("candidate"), dict) else {}
+        risk_calendar = candidate.get("risk_calendar") if isinstance(candidate.get("risk_calendar"), dict) else {}
+        risk_decision = risk_calendar.get("decision") if isinstance(risk_calendar.get("decision"), dict) else {}
+        risk_status = risk_decision.get("status") or risk_decision.get("risk_level") or risk_calendar.get("status")
+        qty = intent.get("shares") if intent.get("shares") is not None else intent.get("qty")
+        notional = (
+            intent.get("estimated_notional")
+            if intent.get("estimated_notional") is not None
+            else intent.get("notional")
+        )
+        return {
+            "symbol": intent.get("symbol"),
+            "action": cls._format_intent_label(str(intent.get("intent") or "")),
+            "side": intent.get("side"),
+            "strategy": candidate.get("strategy") or intent.get("strategy") or "Agent Mode",
+            "risk_status": risk_status or "-",
+            "quantity": cls._round_qty(qty),
+            "notional": cls._round_money(notional),
+            "reason": intent.get("reason") or intent.get("execution_error") or intent.get("summary"),
+            "summary": intent.get("summary"),
+            "status": intent.get("status"),
+        }
+
+    @staticmethod
+    def _format_intent_label(intent: str) -> str:
+        return {
+            "OPEN_PAPER": "paper open",
+            "CLOSE_PAPER": "paper close",
+            "REPLACE_PAPER": "replace paper position",
+            "SCALE_IN_PAPER": "scale-in paper review",
+            "REDUCE_PAPER": "reduce paper review",
+            "CASH_NO_TRADE": "cash/no trade",
+            "HOLD": "hold",
+        }.get(intent, intent.replace("_", " ").lower())
+
+    @staticmethod
+    def _digest_status(*, summary: dict[str, object], final_intents: list[dict[str, object]]) -> tuple[str, str]:
+        if summary.get("skipReason"):
+            return "agent_run_skipped", "skipped"
+        if summary.get("dryRun"):
+            return "agent_run_completed", "dry-run"
+        if any(intent.get("status") == "failed" for intent in final_intents):
+            return "agent_run_failed", "failed"
+        if int(summary.get("paperOpensExecuted") or 0) or int(summary.get("paperClosesExecuted") or 0):
+            return "agent_run_completed", "paper-created"
+        return "agent_run_completed", "completed"
+
+    def _build_run_notification_digest(
+        self,
+        *,
+        run_id: str,
+        response: dict[str, object],
+        final_intents: list[dict[str, object]],
+        candidates: list[dict[str, object]],
+        universe: dict[str, object],
+    ) -> dict[str, object]:
+        summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
+        event_type, status_label = self._digest_status(summary=summary, final_intents=final_intents)
+        opened = [self._digest_item(intent) for intent in final_intents if intent.get("intent") == "OPEN_PAPER"]
+        closed = [self._digest_item(intent) for intent in final_intents if intent.get("intent") == "CLOSE_PAPER"]
+        held = [
+            self._digest_item(intent)
+            for intent in final_intents
+            if intent.get("intent") in {"HOLD", "REPLACE_PAPER", "SCALE_IN_PAPER", "REDUCE_PAPER"}
+        ]
+        blocked = [
+            self._digest_item(intent)
+            for intent in final_intents
+            if intent.get("intent") == "CASH_NO_TRADE" or intent.get("status") in {"blocked", "skipped"}
+        ]
+        digest_summary = {
+            **summary,
+            "candidateCount": len(candidates),
+        }
+        link = f"{settings.app_base_url.rstrip('/')}/agent-mode?tab=Trades"
+        watchlist_name = str(universe.get("watchlist_name") or universe.get("source_label") or "manual symbols")
+        notable = [
+            str(item.get("symbol") or "").upper()
+            for item in opened + closed + blocked
+            if str(item.get("symbol") or "").strip()
+        ][:3]
+        sms = (
+            f"MacMarket Agent {status_label}: opened {summary.get('paperOpensExecuted', 0)}, "
+            f"closed {summary.get('paperClosesExecuted', 0)}, blocked {summary.get('blockedActions', 0)}."
+        )
+        if notable:
+            sms += f" Notable: {', '.join(notable)}."
+        sms += f" {link}"
+        if len(sms) > 320:
+            sms = sms[:282].rstrip() + " See Agent Mode for details."
+        text_lines = [
+            "MacMarket Trader - Agent Mode Run Summary",
+            f"Run: {run_id}",
+            f"Status: {status_label}",
+            f"Timestamp: {response.get('asOf')}",
+            f"Watchlist: {watchlist_name}",
+            f"Candidates reviewed: {len(candidates)}",
+            f"Positions reviewed: {summary.get('positionsBeforeCount', 0)}",
+            f"Opened: {summary.get('paperOpensExecuted', 0)}",
+            f"Closed: {summary.get('paperClosesExecuted', 0)}",
+            f"Held/reviewed: {summary.get('holds', 0)}",
+            f"Blocked/skipped: {summary.get('blockedActions', 0)}",
+            f"Open Agent Mode: {link}",
+            "",
+            "Paper only. No live trading. No broker routing.",
+        ]
+        html = render_agent_mode_run_digest_html(
+            status=status_label,
+            run_id=run_id,
+            ran_at=str(response.get("asOf") or utc_now().isoformat()),
+            watchlist_name=watchlist_name,
+            summary=digest_summary,
+            opened=opened,
+            closed=closed,
+            held=held,
+            blocked=blocked,
+            app_url=settings.app_base_url,
+        )
+        return {
+            "event_type": event_type,
+            "status": status_label,
+            "title": f"MacMarket Agent Mode {status_label} summary",
+            "text": "\n".join(text_lines),
+            "sms": sms,
+            "html": html,
+            "payload": {
+                "paperOnly": True,
+                "executionMode": "paper",
+                "digest": True,
+                "runId": run_id,
+                "status": status_label,
+                "watchlistId": universe.get("watchlist_id"),
+                "watchlistName": universe.get("watchlist_name"),
+                "resolvedSymbolsSnapshot": universe.get("resolved_symbols_snapshot") or universe.get("symbols"),
+                "counts": {
+                    "candidatesReviewed": len(candidates),
+                    "positionsReviewed": summary.get("positionsBeforeCount", 0),
+                    "opened": summary.get("paperOpensExecuted", 0),
+                    "closed": summary.get("paperClosesExecuted", 0),
+                    "held": summary.get("holds", 0),
+                    "blocked": summary.get("blockedActions", 0),
+                    "cashNoTrade": summary.get("cashNoTrade", 0),
+                },
+            },
+        }
+
+    @staticmethod
+    def _effective_paper_account_basis(*, user, settings_payload: dict[str, object]) -> float | None:
+        try:
+            max_notional = workflow._effective_paper_max_order_notional(user)
+        except Exception:  # noqa: BLE001 - missing paper cap is handled as sizing-unavailable.
+            return None
+        max_positions = AgentModeService._coerce_int(
+            settings_payload.get("max_open_agent_positions") or settings_payload.get("max_positions"),
+            default=5,
+            minimum=1,
+            maximum=5,
+        )
+        basis = float(max_notional) * max_positions
+        return basis if math.isfinite(basis) and basis > 0 else None
+
+    @classmethod
+    def _current_open_notional(cls, rows: list[object]) -> float:
+        total = 0.0
+        for row in rows:
+            parsed = cls._safe_float(getattr(row, "open_notional", None))
+            if parsed is not None:
+                total += parsed
+        return total
+
+    @classmethod
+    def _normalized_percent(cls, value: object) -> float | None:
+        parsed = cls._safe_float(value)
+        if parsed is None or parsed <= 0:
+            return None
+        return parsed / 100.0 if parsed > 1 else parsed
+
+    def _apply_agent_sizing_caps(
+        self,
+        *,
+        sizing_plan: dict[str, object],
+        settings_payload: dict[str, object],
+        user,
+        open_positions: list[object],
+    ) -> dict[str, object]:
+        final_shares = int(sizing_plan.get("final_order_shares") or 0)
+        estimated_notional = self._safe_float(sizing_plan.get("estimated_notional"))
+        if final_shares <= 0 or estimated_notional is None or estimated_notional <= 0:
+            return {
+                **sizing_plan,
+                "agent_sizing_status": "blocked",
+                "agent_sizing_block_reason": "sizing_unavailable",
+                "final_order_shares": 0,
+            }
+        limit_price = estimated_notional / final_shares
+        caps: list[tuple[str, float]] = [("paper_max_order_notional", estimated_notional)]
+        dollars_cap = self._safe_float(settings_payload.get("max_dollars_per_trade"))
+        if dollars_cap is not None and dollars_cap > 0:
+            caps.append(("max_dollars_per_trade", dollars_cap))
+        exposure_cap = self._safe_float(settings_payload.get("max_exposure_per_symbol"))
+        if exposure_cap is not None and exposure_cap > 0:
+            caps.append(("max_exposure_per_symbol", exposure_cap))
+        percent = self._normalized_percent(settings_payload.get("max_percent_of_paper_account_per_trade"))
+        basis = self._effective_paper_account_basis(user=user, settings_payload=settings_payload)
+        if percent is not None:
+            if basis is None:
+                return {
+                    **sizing_plan,
+                    "agent_sizing_status": "blocked",
+                    "agent_sizing_block_reason": "paper_account_basis_unavailable",
+                    "final_order_shares": 0,
+                }
+            caps.append(("max_percent_of_paper_account_per_trade", basis * percent))
+        min_reserve = self._safe_float(settings_payload.get("min_cash_reserve")) or 0.0
+        if min_reserve > 0:
+            if basis is None:
+                return {
+                    **sizing_plan,
+                    "agent_sizing_status": "blocked",
+                    "agent_sizing_block_reason": "paper_account_basis_unavailable",
+                    "final_order_shares": 0,
+                }
+            available_after_reserve = basis - min_reserve - self._current_open_notional(open_positions)
+            caps.append(("min_cash_reserve", max(0.0, available_after_reserve)))
+        reason, effective_cap = min(caps, key=lambda item: item[1])
+        capped_shares = max(0, math.floor(effective_cap / limit_price))
+        if capped_shares <= 0:
+            return {
+                **sizing_plan,
+                "agent_sizing_status": "blocked",
+                "agent_sizing_block_reason": reason,
+                "agent_effective_notional_cap": self._round_money(effective_cap),
+                "final_order_shares": 0,
+            }
+        final = min(final_shares, capped_shares)
+        return {
+            **sizing_plan,
+            "agent_sizing_status": "ok",
+            "agent_sizing_block_reason": None,
+            "agent_effective_notional_cap": self._round_money(effective_cap),
+            "agent_effective_cap_reason": reason,
+            "agent_paper_account_basis": self._round_money(basis),
+            "agent_sizing_reduced": final < final_shares,
+            "final_order_shares": final,
+            "estimated_notional": self._round_money(final * limit_price),
+        }
+
+    def _paper_opens_today(self, *, app_user_id: int, timezone_name: str, now: datetime) -> int:
+        zone = self._setting_zone(timezone_name)
+        local_today = now.astimezone(zone).date()
+        count = 0
+        for row in self.agent_repo.list_runs(app_user_id=app_user_id, limit=100, dry_run=False):
+            created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
+            if created.astimezone(zone).date() != local_today:
+                continue
+            payload = self._run_response(row)
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            count += int(summary.get("paperOpensExecuted", 0) or 0)
+        return count
 
     def _position_intent(self, review: dict[str, object], *, settings_payload: dict[str, object], dry_run: bool) -> dict[str, object]:
         action = str(review.get("action_classification") or "review_unavailable")
@@ -374,7 +879,17 @@ class AgentModeService:
             "realized_pnl": round(net_pnl, 2),
         }
 
-    def _execute_open(self, *, intent: dict[str, object], candidate: dict[str, object], user, bars_by_symbol: dict[str, tuple[list[Any], str, bool]], timeframe: str) -> dict[str, object]:
+    def _execute_open(
+        self,
+        *,
+        intent: dict[str, object],
+        candidate: dict[str, object],
+        user,
+        bars_by_symbol: dict[str, tuple[list[Any], str, bool]],
+        timeframe: str,
+        settings_payload: dict[str, object],
+        open_positions: list[object],
+    ) -> dict[str, object]:
         symbol = str(candidate.get("symbol") or "").upper()
         bars_tuple = bars_by_symbol.get(symbol)
         if not bars_tuple:
@@ -405,7 +920,19 @@ class AgentModeService:
             source_strategy=str(candidate.get("strategy") or "Agent Mode"),
             session_metadata=workflow._workflow_session_metadata(bars, timeframe=timeframe),
         )
-        sizing_plan = workflow._paper_order_sizing_plan(rec, user=user)
+        sizing_plan = self._apply_agent_sizing_caps(
+            sizing_plan=workflow._paper_order_sizing_plan(rec, user=user),
+            settings_payload=settings_payload,
+            user=user,
+            open_positions=open_positions,
+        )
+        if int(sizing_plan.get("final_order_shares") or 0) <= 0:
+            return {
+                **intent,
+                "status": "blocked",
+                "execution_error": sizing_plan.get("agent_sizing_block_reason") or "agent_sizing_blocked",
+                **sizing_plan,
+            }
         order_intent = workflow.recommendation_service.to_order_intent(rec).model_copy(
             update={"shares": int(sizing_plan["final_order_shares"])}
         )
@@ -491,11 +1018,19 @@ class AgentModeService:
             opened_aware = opened_at if opened_at.tzinfo is not None else opened_at.replace(tzinfo=timezone.utc)
             current = now or utc_now()
             days_held = max(0, (current - opened_aware).days)
+        qty = self._safe_float(payload.get("remaining_qty"))
+        avg_entry_price = self._safe_float(payload.get("avg_entry_price"))
+        mark_price = self._safe_float(mark)
+        cost_basis = self._round_money(qty * avg_entry_price) if qty is not None and avg_entry_price is not None else None
+        current_market_value = self._round_money(qty * mark_price) if qty is not None and mark_price is not None else None
         return {
             **payload,
-            "qty": self._round_qty(payload.get("remaining_qty")),
+            "qty": self._round_qty(qty),
             "avg_entry_price": self._round_price(payload.get("avg_entry_price")),
             "open_notional": self._round_money(payload.get("open_notional")),
+            "invested_amount": cost_basis,
+            "cost_basis": cost_basis,
+            "current_market_value": current_market_value,
             "current_mark_price": self._round_price(mark),
             "mark": self._round_price(mark),
             "unrealized_pnl": self._round_money(unrealized_pnl if unrealized_pnl is not None else getattr(row, "unrealized_pnl", None)),
@@ -603,6 +1138,13 @@ class AgentModeService:
         close_reason = str(payload.get("close_reason") or "")
         return {
             **payload,
+            "created_at": cls._iso(getattr(row, "opened_at", None)),
+            "submitted_at": cls._iso(getattr(row, "opened_at", None)),
+            "filled_at": cls._iso(getattr(row, "opened_at", None)),
+            "executed_at": cls._iso(getattr(row, "opened_at", None)),
+            "closed_at": cls._iso(getattr(row, "closed_at", None)),
+            "status": "closed" if getattr(row, "closed_at", None) is not None else "open",
+            "source": "agent_mode",
             "entry_price": cls._round_price(payload.get("entry_price")),
             "exit_price": cls._round_price(payload.get("exit_price")),
             "qty": cls._round_qty(payload.get("qty")),
@@ -629,18 +1171,105 @@ class AgentModeService:
         order_id = str(getattr(row, "order_id", "") or "")
         return bool(order_id and order_id in links["orders"])
 
-    def list_runs(self, *, user, limit: int = 50, status: str | None = None, dry_run: bool | None = None) -> dict[str, object]:
+    @staticmethod
+    def _is_agent_position(row, *, links: dict[str, dict[object, dict[str, object]]]) -> bool:
+        if getattr(row, "id", None) in links["positions"]:
+            return True
+        order_id = str(getattr(row, "order_id", "") or "")
+        return bool(order_id and order_id in links["orders"])
+
+    @staticmethod
+    def _range_for_timeframe(timeframe: str | None, *, now: datetime) -> tuple[datetime | None, datetime | None, str]:
+        key = str(timeframe or "all_time").strip().lower().replace("-", "_")
+        local = now.astimezone(ZoneInfo("America/New_York"))
+        start_local: datetime | None = None
+        end_local: datetime | None = None
+        if key in {"today", "1d"}:
+            start_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_local = start_local + timedelta(days=1)
+            key = "today"
+        elif key == "yesterday":
+            end_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_local = end_local - timedelta(days=1)
+        elif key in {"last_7_days", "7d"}:
+            start_local = local - timedelta(days=7)
+            end_local = local
+            key = "last_7_days"
+        elif key in {"last_30_days", "30d"}:
+            start_local = local - timedelta(days=30)
+            end_local = local
+            key = "last_30_days"
+        elif key in {"month_to_date", "mtd"}:
+            start_local = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_local = local
+            key = "month_to_date"
+        elif key == "previous_month":
+            this_month = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            previous_end = this_month
+            previous_start_month = previous_end.month - 1 or 12
+            previous_start_year = previous_end.year - 1 if previous_end.month == 1 else previous_end.year
+            start_local = previous_end.replace(year=previous_start_year, month=previous_start_month)
+            end_local = previous_end
+        else:
+            key = "all_time"
+        start = start_local.astimezone(timezone.utc) if start_local else None
+        end = end_local.astimezone(timezone.utc) if end_local else None
+        return start, end, key
+
+    @staticmethod
+    def _in_range(value: datetime | None, *, start: datetime | None, end: datetime | None) -> bool:
+        if start is None and end is None:
+            return True
+        if value is None:
+            return False
+        aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if start is not None and aware < start:
+            return False
+        if end is not None and aware >= end:
+            return False
+        return True
+
+    def list_runs(
+        self,
+        *,
+        user,
+        limit: int = 50,
+        status: str | None = None,
+        dry_run: bool | None = None,
+        timeframe: str | None = None,
+    ) -> dict[str, object]:
         limit = self._coerce_limit(limit, default=50, maximum=100)
-        rows = self.agent_repo.list_runs(app_user_id=user.id, limit=limit, status=status, dry_run=dry_run)
+        now = utc_now()
+        start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
+        rows = [
+            row
+            for row in self.agent_repo.list_runs(app_user_id=user.id, limit=100, status=status, dry_run=dry_run)
+            if self._in_range(row.created_at, start=start, end=end)
+        ][:limit]
         return {
             "items": [self._serialize_run_history_row(row) for row in rows],
             "limit": limit,
+            "timeframe": timeframe_key,
             "paperOnly": True,
             "executionMode": "paper",
         }
 
-    def list_trades(self, *, user, limit: int = 100) -> dict[str, object]:
+    def list_trades(
+        self,
+        *,
+        user,
+        limit: int = 100,
+        timeframe: str | None = None,
+        symbol: str | None = None,
+        status: str | None = None,
+        run_id: str | None = None,
+        source: str | None = "agent_mode",
+    ) -> dict[str, object]:
         limit = self._coerce_limit(limit, default=100, maximum=250)
+        if source and source != "agent_mode":
+            return {"items": [], "limit": limit, "timeframe": timeframe or "all_time", "source": source, "paperOnly": True, "executionMode": "paper"}
+        now = utc_now()
+        start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
         run_rows = self.agent_repo.list_runs(app_user_id=user.id, limit=100)
         links = self._agent_links_from_runs(run_rows)
         rows = self.paper_repo.list_trades(app_user_id=user.id, limit=limit)
@@ -648,26 +1277,48 @@ class AgentModeService:
             self._serialize_agent_trade(row, links=links)
             for row in rows
             if self._is_agent_trade(row, links=links)
+            and self._in_range(row.closed_at or row.opened_at, start=start, end=end)
+            and (not symbol or str(row.symbol).upper() == symbol.upper())
         ]
+        if status:
+            items = [item for item in items if str(item.get("status") or "").lower() == status.lower()]
+        if run_id:
+            items = [item for item in items if str(item.get("linked_run_id") or "") == run_id]
         return {
             "items": items,
             "limit": limit,
+            "timeframe": timeframe_key,
+            "source": "agent_mode",
             "paperOnly": True,
             "executionMode": "paper",
         }
 
-    def performance(self, *, user) -> dict[str, object]:
+    def performance(self, *, user, timeframe: str | None = None, source: str | None = "agent_mode") -> dict[str, object]:
         settings_payload = self.serialize_settings(self.agent_repo.get_or_create_settings(app_user_id=user.id))
-        run_rows = self.agent_repo.list_runs(app_user_id=user.id, limit=100)
+        now = utc_now()
+        start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
+        if source and source != "agent_mode":
+            run_rows: list[object] = []
+        else:
+            run_rows = [
+                row
+                for row in self.agent_repo.list_runs(app_user_id=user.id, limit=100)
+                if self._in_range(row.created_at, start=start, end=end)
+            ]
         links = self._agent_links_from_runs(run_rows)
         trade_rows = [
             row
             for row in self.paper_repo.list_trades(app_user_id=user.id, limit=500)
             if self._is_agent_trade(row, links=links)
+            and self._in_range(row.closed_at or row.opened_at, start=start, end=end)
         ]
         trade_items = [self._serialize_agent_trade(row, links=links) for row in trade_rows]
-        open_positions = self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
-        now = utc_now()
+        all_open_positions = self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
+        open_positions = [
+            row
+            for row in all_open_positions
+            if (source or "agent_mode") == "agent_mode" and self._is_agent_position(row, links=links)
+        ]
         recent_rows = self.recommendation_repo.list_recent(limit=100, app_user_id=user.id)
         reviews: list[dict[str, object]] = []
         for position in open_positions:
@@ -708,10 +1359,19 @@ class AgentModeService:
             max_drawdown = max(max_drawdown, peak - cumulative)
         latest = run_rows[0] if run_rows else None
         summary = self._serialize_run_history_row(latest) if latest else None
+        run_items = [self._serialize_run_history_row(row) for row in run_rows]
+        blocked_reasons = [
+            str(intent.get("reason") or "blocked")
+            for row in run_rows
+            for intent in list(self._run_response(row).get("intents") or [])
+            if isinstance(intent, dict) and intent.get("status") in {"blocked", "skipped", "review_only"}
+        ]
         return {
             "paperOnly": True,
             "executionMode": "paper",
             "asOf": now.isoformat(),
+            "timeframe": timeframe_key,
+            "source": source or "agent_mode",
             "settings": settings_payload,
             "latestRun": summary,
             "openPositions": open_items,
@@ -729,6 +1389,75 @@ class AgentModeService:
             "profitFactor": round(sum(wins) / abs(sum(losses)), 4) if losses else None,
             "maxDrawdown": self._round_money(max_drawdown) if realized_values else None,
             "runsTracked": len(run_rows),
+            "runMetrics": {
+                "runsCompleted": sum(1 for row in run_items if row.get("status") == "completed"),
+                "runsFailed": sum(1 for row in run_items if row.get("status") in {"error", "failed"}),
+                "runsSkipped": sum(1 for row in run_items if row.get("status") == "skipped"),
+                "averageCandidatesReviewed": round(
+                    sum(len((self._run_response(row).get("candidateQueue") or [])) for row in run_rows) / len(run_rows),
+                    2,
+                ) if run_rows else 0,
+                "tradesCreated": sum(int(row.get("paperOpensExecuted") or 0) for row in run_items),
+                "tradesBlocked": sum(int(row.get("blockedActions") or 0) for row in run_items),
+                "positionsReviewed": sum(int(row.get("positionsBeforeCount") or 0) for row in run_items),
+            },
+            "tradeMetrics": {
+                "tradesCreated": len(trade_items),
+                "openTrades": len(open_items),
+                "closedTrades": len(trade_items),
+                "realizedPnl": self._round_money(realized_total),
+                "unrealizedPnl": self._round_money(unrealized_after),
+                "averageReturn": round(
+                    sum(self._safe_float(item.get("return_pct")) or 0.0 for item in trade_items) / len(trade_items),
+                    2,
+                ) if trade_items else None,
+                "averageHoldDays": round(
+                    sum(self._safe_float(item.get("holding_days")) or 0.0 for item in trade_items) / len(trade_items),
+                    2,
+                ) if trade_items else None,
+            },
+            "positionMetrics": {
+                "openPositions": len(open_items),
+                "openExposure": self._sum_money(open_items, "open_notional"),
+                "currentUnrealizedPnl": self._round_money(unrealized_after),
+                "currentMarketValue": self._sum_money(open_items, "open_notional"),
+                "cashReserve": settings_payload.get("min_cash_reserve"),
+                "percentOfPaperAccountExposed": None,
+            },
+            "riskBlockMetrics": {
+                "volatilityBlocks": sum(1 for reason in blocked_reasons if "vol" in reason),
+                "staleDataBlocks": sum(1 for reason in blocked_reasons if "stale" in reason or "market_data" in reason),
+                "sizingBlocks": sum(1 for reason in blocked_reasons if "sizing" in reason or "cap" in reason or "max_" in reason),
+                "duplicateOpenSymbolBlocks": sum(1 for reason in blocked_reasons if "already_open" in reason or "duplicate" in reason),
+                "noWatchlistSkips": sum(1 for reason in blocked_reasons if "watchlist" in reason),
+                "disabledAgentSkips": sum(1 for reason in blocked_reasons if "disabled" in reason),
+            },
+        }
+
+    def send_test_notification(self, *, user, channel: str | None = None) -> dict[str, object]:
+        settings_payload = self.serialize_settings(self.agent_repo.get_or_create_settings(app_user_id=user.id))
+        requested = str(channel or settings_payload.get("notification_preference") or "none").strip().lower()
+        if requested in {"email", "sms", "both", "none"}:
+            settings_payload = {**settings_payload, "notification_preference": requested}
+            settings_payload["email_notifications_enabled"] = requested in {"email", "both"}
+            settings_payload["sms_notifications_enabled"] = requested in {"sms", "both"}
+        attempts = self.notification_service.send_event(
+            user=user,
+            settings_payload=settings_payload,
+            event_type="agent_test_notification",
+            title="MacMarket Agent Mode test notification",
+            body=(
+                "Test notification from MacMarket Agent Mode. "
+                "This is paper-only operational messaging and does not enable live trading or broker routing."
+            ),
+            payload={"paperOnly": True, "test": True},
+        )
+        return {
+            "paperOnly": True,
+            "executionMode": "paper",
+            "preference": settings_payload.get("notification_preference"),
+            "smsProvider": NotificationService.sms_readiness(),
+            "attempts": attempts,
         }
 
     def run(self, *, user, request: dict[str, object] | None = None) -> dict[str, object]:
@@ -741,14 +1470,22 @@ class AgentModeService:
         settings_row = self.agent_repo.get_or_create_settings(app_user_id=user.id)
         settings_payload = self.serialize_settings(settings_row)
         dry_run = self._coerce_bool(request.get("dry_run"), default=not bool(settings_payload["enabled"]))
+        run_guard_reason: str | None = None
         if not bool(settings_payload["enabled"]):
             dry_run = True
+            run_guard_reason = "agent_disabled"
         enabled_for_execution = bool(settings_payload["enabled"]) and not dry_run
         if settings_payload["paused"] or settings_payload["kill_switch_enabled"]:
             enabled_for_execution = False
             dry_run = True
+            run_guard_reason = "kill_switch_enabled" if settings_payload["kill_switch_enabled"] else "agent_paused"
 
-        max_positions = self._coerce_int(settings_payload.get("max_positions"), default=5, minimum=1, maximum=5)
+        max_positions = min(
+            self._coerce_int(settings_payload.get("max_positions"), default=5, minimum=1, maximum=5),
+            self._coerce_int(settings_payload.get("max_open_agent_positions"), default=5, minimum=1, maximum=5),
+        )
+        max_new_trades_per_run = self._coerce_int(settings_payload.get("max_new_trades_per_run"), default=5, minimum=0, maximum=5)
+        max_new_trades_per_day = self._coerce_int(settings_payload.get("max_new_trades_per_day"), default=5, minimum=0, maximum=5)
         timeframe = str(request.get("timeframe") or "1D").upper()
         universe = self.resolve_universe(app_user_id=user.id, settings_payload=settings_payload, overrides=request)
         open_positions = self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
@@ -773,10 +1510,29 @@ class AgentModeService:
             for position in open_positions
             if str(position.symbol or "").upper() not in closing_symbols
         }
+        allow_existing_symbol_open = bool(settings_payload.get("allow_new_trade_when_symbol_already_open")) and bool(settings_payload.get("allow_scale_ins"))
         bars_by_symbol: dict[str, tuple[list[Any], str, bool]] = {}
         data_quality: list[dict[str, object]] = []
+        if not universe["symbols"]:
+            reason = (
+                str(universe.get("reason") or "watchlist_missing_or_empty")
+                if universe.get("source") in {"watchlist", "watchlist_plus_manual"}
+                else "empty_universe"
+            )
+            data_quality.append(
+                {
+                    "symbol": None,
+                    "status": "error",
+                    "reason": reason,
+                    "universe_source": universe.get("source"),
+                    "source_status": universe.get("source_status"),
+                    "watchlist_id": universe.get("watchlist_id"),
+                    "watchlist_name": universe.get("watchlist_name"),
+                }
+            )
+            intents.append(self._cash_intent(symbol=None, reason=reason, summary="cash/no trade because Agent Mode had no valid symbols to scan."))
         for symbol in universe["symbols"]:
-            if symbol in held_symbols:
+            if symbol in held_symbols and not allow_existing_symbol_open:
                 data_quality.append({"symbol": symbol, "status": "skipped", "reason": "already_open"})
                 continue
             try:
@@ -806,6 +1562,7 @@ class AgentModeService:
         candidates = list(ranking.get("queue") or [])
         planned_open_symbols: set[str] = set()
         index_context = workflow._current_index_context_for_risk()
+        paper_opens_today = self._paper_opens_today(app_user_id=user.id, timezone_name=str(settings_payload.get("timezone") or "America/New_York"), now=now)
         for candidate in candidates:
             symbol = str(candidate.get("symbol") or "").upper()
             bars_tuple = bars_by_symbol.get(symbol)
@@ -827,9 +1584,13 @@ class AgentModeService:
                     "source_timeframe": session_metadata.get("source_timeframe"),
                     "output_timeframe": session_metadata.get("output_timeframe"),
                 }
-            if symbol in held_symbols:
+            if symbol in held_symbols and not allow_existing_symbol_open:
                 candidate["already_open"] = True
                 intents.append(self._cash_intent(symbol=symbol, reason="already_open", summary="cash/no trade because the symbol is already open.", candidate=candidate))
+                continue
+            if symbol in held_symbols and not bool(settings_payload.get("allow_scale_ins")):
+                candidate["already_open"] = True
+                intents.append(self._cash_intent(symbol=symbol, reason="scale_ins_disabled", summary="cash/no trade because scale-ins are disabled for Agent Mode.", candidate=candidate))
                 continue
             if symbol in planned_open_symbols:
                 intents.append(self._cash_intent(symbol=symbol, reason="duplicate_ranked_symbol", summary="cash/no trade because a higher-ranked candidate already uses this symbol.", candidate=candidate))
@@ -847,6 +1608,12 @@ class AgentModeService:
                 continue
             if not bool(settings_payload.get("allow_opens", True)):
                 intents.append(self._cash_intent(symbol=symbol, reason="opens_disabled", summary="cash/no trade because paper opens are disabled.", candidate=candidate))
+                continue
+            if len([i for i in intents if i.get("intent") == "OPEN_PAPER"]) >= max_new_trades_per_run:
+                intents.append(self._cash_intent(symbol=symbol, reason="max_new_trades_per_run_reached", summary="cash/no trade because the Agent Mode per-run new-trade cap is reached.", candidate=candidate))
+                continue
+            if paper_opens_today + len([i for i in intents if i.get("intent") == "OPEN_PAPER"]) >= max_new_trades_per_day:
+                intents.append(self._cash_intent(symbol=symbol, reason="max_new_trades_per_day_reached", summary="cash/no trade because the Agent Mode daily new-trade cap is reached.", candidate=candidate))
                 continue
             planned_open_symbols.add(symbol)
             intents.append(
@@ -881,6 +1648,8 @@ class AgentModeService:
                     user=user,
                     bars_by_symbol=bars_by_symbol,
                     timeframe=timeframe,
+                    settings_payload=settings_payload,
+                    open_positions=open_positions,
                 )
                 if executed.get("status") == "executed":
                     executed_order_count += 1
@@ -934,7 +1703,12 @@ class AgentModeService:
             "enabled": bool(settings_payload["enabled"]),
             "paused": bool(settings_payload["paused"]),
             "killSwitchEnabled": bool(settings_payload["kill_switch_enabled"]),
+            "skipReason": run_guard_reason,
             "maxPositions": max_positions,
+            "maxOpenAgentPositions": max_positions,
+            "maxNewTradesPerRun": max_new_trades_per_run,
+            "maxNewTradesPerDay": max_new_trades_per_day,
+            "paperOpensTodayBeforeRun": paper_opens_today,
             "openPositionsBefore": len(open_positions),
             "targetPositionsMax": max_positions,
             "intentCounts": {name: sum(1 for item in final_intents if item.get("intent") == name) for name in AGENT_MODE_INTENTS},
@@ -978,6 +1752,28 @@ class AgentModeService:
                 for warning in ([str(row.get("reason"))] if row.get("status") == "error" else [])
             ],
         }
+        notification_attempts: list[dict[str, object]] = []
+        digest = self._build_run_notification_digest(
+            run_id=run_id,
+            response=response,
+            final_intents=final_intents,
+            candidates=candidates,
+            universe=universe,
+        )
+        notification_attempts.extend(
+            self.notification_service.send_event(
+                user=user,
+                settings_payload=settings_payload,
+                event_type=str(digest["event_type"]),
+                title=str(digest["title"]),
+                body=str(digest["text"]),
+                email_html=str(digest["html"]),
+                sms_body=str(digest["sms"]),
+                run_id=run_id,
+                payload=digest["payload"] if isinstance(digest.get("payload"), dict) else None,
+            )
+        )
+        response["notificationAttempts"] = notification_attempts
         self.agent_repo.create_run(
             app_user_id=user.id,
             run_id=run_id,

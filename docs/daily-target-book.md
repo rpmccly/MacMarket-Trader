@@ -75,6 +75,8 @@ close, schedule, live broker, or provider default selection paths.
 Open `/daily-target-book`, choose a universe source, adjust symbols/scan depth,
 and click `Build target book`. The page shows:
 
+- a prominent running banner during builds while the previous successful
+  read-only result remains visible
 - Overview counts
 - Target Book
 - Current Paper Book

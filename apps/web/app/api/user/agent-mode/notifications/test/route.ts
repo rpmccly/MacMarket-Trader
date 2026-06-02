@@ -1,13 +1,9 @@
 import { proxyWorkflowRequest } from "@/app/api/_utils/workflow-proxy";
 
-export async function GET(request: Request) {
-  return proxyWorkflowRequest({ request, backendPath: "/user/watchlists" });
-}
-
 export async function POST(request: Request) {
   return proxyWorkflowRequest({
     request,
-    backendPath: "/user/watchlists",
+    backendPath: "/user/agent-mode/notifications/test",
     bodyText: await request.text(),
   });
 }

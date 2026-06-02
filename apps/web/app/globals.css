@@ -234,7 +234,123 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   padding: 10px;
   line-height: 1.45;
 }
+.agent-running-banner {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.agent-running-banner span {
+  color: var(--muted);
+}
+.agent-performance-hero {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.agent-settings-section {
+  border-top: 1px solid var(--table-border);
+  padding-top: 12px;
+}
+.agent-settings-section h3 {
+  font-size: 14px;
+  margin: 0 0 10px;
+  color: var(--text);
+}
+.agent-setting-help {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.agent-resolved-symbols {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.op-link-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  text-align: left;
+}
+.is-selected-row {
+  background: rgba(125, 211, 252, .08);
+}
 .agent-performance-table { min-width: 520px; }
+.watchlist-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, .85fr) minmax(0, 1.6fr);
+  gap: 14px;
+  align-items: start;
+}
+.watchlist-master-list {
+  display: grid;
+  gap: 10px;
+}
+.watchlist-card-button {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, .025);
+}
+.watchlist-card-button.is-selected {
+  border-color: #4b6b8c;
+  background: rgba(125, 211, 252, .08);
+}
+.watchlist-card-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.watchlist-card-title span,
+.watchlist-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.watchlist-card-badges,
+.watchlist-chip-preview,
+.watchlist-summary-strip,
+.watchlist-symbol-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.watchlist-symbol-editor {
+  min-height: 132px;
+}
+.watchlist-symbol-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .04);
+  font-size: 12px;
+  font-weight: 700;
+}
+.watchlist-symbol-chip button {
+  width: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+}
 .dtb-readonly-banner {
   border: 1px solid #53616f;
   border-radius: 8px;
@@ -648,6 +764,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 
 @media (max-width: 1200px) {
   .op-grid-2, .op-grid-3, .op-grid-4 { grid-template-columns: 1fr; }
+  .watchlist-layout { grid-template-columns: 1fr; }
   .dp-control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dp-reference-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dp-notes-field { grid-column: span 2; }
@@ -720,6 +837,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   .hm-filter-toolbar { grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr); }
   .hm-filter-check, .hm-filter-toggle { justify-self: start; }
   .hm-panel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-performance-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dp-detail-grid { grid-template-columns: 1fr; }
   .dp-reference-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dtb-control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -747,6 +865,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   }
   .hm-command-actions > button, .hm-command-actions > .op-btn { flex: 1 1 100%; }
   .hm-panel-grid, .hm-filter-toolbar { grid-template-columns: 1fr; }
+  .agent-performance-hero { grid-template-columns: 1fr; }
   .dp-control-grid, .dp-reference-grid, .dp-checkbox-grid { grid-template-columns: 1fr; }
   .dtb-control-grid { grid-template-columns: 1fr; }
   .dp-notes-field { grid-column: auto; }

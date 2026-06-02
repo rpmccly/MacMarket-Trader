@@ -115,6 +115,7 @@ type Schedule = {
   latest_run_at?: string;
   next_run_at?: string;
   payload?: { symbols?: string[]; enabled_strategies?: string[]; top_n?: number; email_delivery_target?: string; market_mode?: string };
+  watchlist_reference?: { id?: number | null; name?: string | null; exists: boolean; warning?: string | null } | null;
   config_summary?: { market_mode: string; symbols_count: number; strategy_count: number; top_n: number; delivery_target: string };
   latest_payload_summary?: { top_candidate_count: number; watchlist_count: number; no_trade_count: number } | null;
   history?: Array<{ id: number; status: string; delivered_to: string; created_at: string; email_provider?: string; summary?: { top_candidate_count?: number; watchlist_count?: number; no_trade_count?: number } }>;
@@ -758,7 +759,10 @@ export default function SchedulesPage() {
         Schedule times are stored in the selected timezone. The &ldquo;your time&rdquo; column shows conversion to your browser&rsquo;s local time.
       </div>
 
-      <Card title={editingWlId ? `Edit watchlist: ${wlName}` : "Watchlists"}>
+      <Card title={editingWlId ? `Legacy schedule watchlist edit: ${wlName}` : "Watchlist reference"}>
+        <div className="agent-paper-warning" style={{ marginBottom: 10 }}>
+          Use the dedicated <Link href="/watchlists">Watchlists page</Link> for create, edit, delete, default-list, and starter-list management. Scheduled Reports select saved watchlists for schedule configuration.
+        </div>
         <div className="op-row" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
           <input value={wlName} onChange={(e) => setWlName(e.target.value)} placeholder="Watchlist name" />
           <label style={{ display: "grid", gap: 4, minWidth: 300, flex: "1 1 320px" }}>

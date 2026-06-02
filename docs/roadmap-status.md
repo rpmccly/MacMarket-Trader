@@ -2,6 +2,52 @@
 
 Last updated: 2026-06-02
 
+## 2026-06-02 Update - Agent Mode Post-Deploy Hardening
+
+Completed in the current Phase 1 operator-control hardening track:
+- Clarified Windows database migration behavior: the live SQLite deploy path
+  uses the app schema updater, Alembic now reads the app-configured
+  `DATABASE_URL`, and a redacted DB diagnostic CLI command reports dialect/path
+  without secrets.
+- Collapsed Agent Mode user-facing notifications to one run digest per channel
+  while keeping server-side notification attempt audit records.
+- Made selected watchlist usage explicit for Agent Mode runs and recorded
+  watchlist id/name plus resolved symbol snapshots in run audit payloads.
+- Cleaned console navigation order, moving Watchlists under Workflow and
+  keeping HACO and Momentum research links adjacent.
+- Polished Agent Mode settings explanations, position cost-basis display,
+  performance summary hierarchy, and the dedicated Watchlists master/detail UI.
+
+No recommendation scoring, strategy math, provider defaults, risk-calendar
+decisions, volatility thresholds, HACO/Momentum math, Replay behavior, broker
+routing, live trading, Daily Target Book behavior, or non-Agent paper lifecycle
+behavior changed.
+
+## 2026-06-02 Update - Agent Mode Operational Controls and Watchlists
+
+Completed in the current Phase 1 operator-control track:
+- Added backend-owned Agent Mode schedule status diagnostics for each approved
+  user, including configured timezone/run time, current server time, next run,
+  countdown basis, last run status, skip/error reason, trade/review/block
+  counts, and scheduler-source metadata.
+- Extended Agent Mode settings with user-scoped default watchlist, Agent-owned
+  sizing caps, per-run/per-day trade caps, duplicate-symbol/scale-in controls,
+  and email/SMS notification preferences while keeping paper-only execution.
+- Added backend notification attempt persistence plus a Twilio SMS provider
+  boundary with server-only credentials, redacted recipients, disabled/skipped
+  diagnostics, and SMS per-user/per-run rate caps.
+- Added a dedicated `/watchlists` compatibility page using the existing
+  `watchlists.symbols` JSON path for create/edit/delete/default/starter-list
+  management, with Scheduled Reports demoted to selecting saved watchlists.
+- Expanded Agent Mode run/trade/performance reporting with timeframe filters,
+  Agent-only source attribution, clearer trade timestamps, and prominent
+  running-state feedback for Agent Mode and Daily Target Book operations.
+
+No recommendation scoring, strategy math, risk-calendar decisions, provider
+defaults, broker routing, live trading, volatility thresholds, HACO/Momentum,
+Data Parity behavior, Replay, schedule execution semantics, or paper lifecycle
+outside Agent Mode changed.
+
 ## 2026-06-02 Update - Data Parity Interval Alignment Diagnostics
 
 Completed in the current Phase 1 provider-trust track:

@@ -96,3 +96,25 @@ wrapper instead of a restart-only script:
 
 Use `restart-macmarket-trader.bat` only after the live runtime already has the
 current code, dependencies, frontend build, and schema updates.
+
+## Database migration sanity
+
+The Windows private-alpha runtime at `C:\Dashboard\MacMarket-Trader` uses the
+same `DATABASE_URL` as the backend app. In the current deployment profile that
+is normally SQLite, and `scripts/deploy_windows.bat` applies the additive
+schema step through `macmarket_trader.storage.db.apply_schema_updates()`.
+
+Do not run a manual Alembic command unless you have first confirmed the
+database target from the live runtime:
+
+```powershell
+cd C:\Dashboard\MacMarket-Trader
+.\.venv\Scripts\python.exe -m macmarket_trader.cli db-diagnostics
+```
+
+The diagnostic prints the database dialect and redacted URL only. It does not
+print database passwords, provider secrets, Twilio secrets, or API keys.
+
+`python -m alembic upgrade head` is not required for the normal Windows deploy
+flow. If an operator intentionally runs Alembic, `alembic/env.py` now reads the
+app-configured `DATABASE_URL` instead of the old local Postgres fallback.

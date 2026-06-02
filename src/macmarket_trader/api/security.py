@@ -44,6 +44,7 @@ HIGH_COST_ROUTE_LIMITS: dict[str, RateLimit] = {
     "/admin/provider-health": RateLimit(limit=30, window_seconds=60),
     "/charts/haco": RateLimit(limit=240, window_seconds=60),
     "/user/agent-mode/run": RateLimit(limit=20, window_seconds=60),
+    "/user/agent-mode/notifications/test": RateLimit(limit=10, window_seconds=60),
     "/recommendations/generate": RateLimit(limit=120, window_seconds=60),
     "/replay/run": RateLimit(limit=120, window_seconds=60),
     "/user/recommendations/opportunity-intelligence": RateLimit(limit=30, window_seconds=60),

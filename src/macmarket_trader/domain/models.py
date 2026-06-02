@@ -322,8 +322,11 @@ class WatchlistModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbols: Mapped[list[str]] = mapped_column(JSON, default=list)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
 
 
 class UserSymbolUniverseModel(Base):
@@ -609,11 +612,27 @@ class AgentModeSettingsModel(Base):
     universe_source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
     manual_symbols: Mapped[list[str]] = mapped_column(JSON, default=list)
     watchlist_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    default_watchlist_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     max_positions: Mapped[int] = mapped_column(Integer, default=5)
     scan_depth: Mapped[int] = mapped_column(Integer, default=12)
+    max_dollars_per_trade: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_percent_of_paper_account_per_trade: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_new_trades_per_run: Mapped[int] = mapped_column(Integer, default=5)
+    max_new_trades_per_day: Mapped[int] = mapped_column(Integer, default=5)
+    max_open_agent_positions: Mapped[int] = mapped_column(Integer, default=5)
+    max_exposure_per_symbol: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_cash_reserve: Mapped[float] = mapped_column(Float, default=0.0)
     allow_opens: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_closes: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_scale_resize: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_scale_ins: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_new_trade_when_symbol_already_open: Mapped[bool] = mapped_column(Boolean, default=False)
+    require_confirmation_for_restricted: Mapped[bool] = mapped_column(Boolean, default=True)
+    notification_preference: Mapped[str] = mapped_column(String(16), default="none")
+    notification_phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sms_consent_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    sms_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
 
@@ -636,6 +655,26 @@ class AgentModeRunModel(Base):
     response_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class NotificationAttemptModel(Base):
+    __tablename__ = "notification_attempts"
+    __table_args__ = (
+        Index("ix_notification_attempts_user_created", "app_user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    channel: Mapped[str] = mapped_column(String(16), index=True)
+    recipient_redacted: Mapped[str] = mapped_column(String(80))
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class PaperOptionOrderModel(Base):

@@ -631,6 +631,110 @@ def _footer(ran_at: str) -> str:
     )
 
 
+def _agent_digest_row(item: dict, idx: int) -> str:
+    bg = _BG_CARD if idx % 2 == 0 else _BG_CARD_ALT
+    symbol = str(item.get("symbol") or "Run")
+    action = str(item.get("action") or "-")
+    strategy = str(item.get("strategy") or "Agent Mode")
+    risk_status = str(item.get("risk_status") or "-")
+    qty = str(item.get("quantity") or "-")
+    notional = str(item.get("notional") or "-")
+    reason = str(item.get("reason") or item.get("summary") or "-")
+    return (
+        f'<tr><td style="background-color:{bg};padding:12px 28px;border-bottom:1px solid {_BORDER};">'
+        f'<p style="margin:0 0 6px 0;font-family:Arial,sans-serif;">'
+        f'<span style="font-size:17px;font-weight:700;color:{_TEXT_PRIMARY};">{_e(symbol)}</span>'
+        f'&nbsp;&nbsp;<span style="font-size:11px;color:{_TEXT_SECONDARY};text-transform:uppercase;">{_e(action)}</span>'
+        f'</p>'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:11px;color:{_TEXT_SECONDARY};line-height:1.5;">'
+        f'Strategy: <strong style="color:{_TEXT_PRIMARY};">{_e(strategy)}</strong>'
+        f' &nbsp; Risk: {_e(risk_status)} &nbsp; Qty: {_e(qty)} &nbsp; Notional: {_e(notional)}'
+        f'</p>'
+        f'<p style="margin:6px 0 0 0;font-family:Arial,sans-serif;font-size:11px;color:{_TEXT_MUTED};line-height:1.5;">'
+        f'{_e(reason)}</p>'
+        f'</td></tr>'
+    )
+
+
+def _agent_digest_section(label: str, items: list[dict]) -> str:
+    if not items:
+        return ""
+    return _section_label(label) + "".join(
+        _agent_digest_row(item, idx) for idx, item in enumerate(items[:8])
+    )
+
+
+def render_agent_mode_run_digest_html(
+    *,
+    status: str,
+    run_id: str,
+    ran_at: str,
+    watchlist_name: str,
+    summary: dict,
+    opened: list[dict],
+    closed: list[dict],
+    held: list[dict],
+    blocked: list[dict],
+    app_url: str,
+) -> str:
+    """Return a branded, concise HTML digest for one Agent Mode run."""
+    link = f"{app_url.rstrip('/')}/agent-mode?tab=Trades"
+    status_label = status.replace("_", " ").title()
+    body_rows = (
+        f'<tr><td style="background-color:{_BG_CARD};padding:28px 28px 22px 28px;">'
+        f'<div style="margin:0 0 12px 0;">{_logo_img(190)}</div>'
+        f'<p style="margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:10px;'
+        f'font-weight:600;letter-spacing:2px;color:{_TEXT_SECONDARY};text-transform:uppercase;">'
+        f'Agent Mode Run Summary</p>'
+        f'<h1 style="margin:0 0 12px 0;font-family:Arial,sans-serif;font-size:23px;'
+        f'font-weight:700;color:{_TEXT_PRIMARY};line-height:1.2;">{_e(status_label)}</h1>'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:12px;color:{_TEXT_SECONDARY};">'
+        f'{_fmt_dt(ran_at)} &nbsp;&nbsp; Run {_e(run_id)}'
+        f'</p></td></tr>'
+        + _accent_line()
+        + f'<tr><td style="background-color:{_BG_DARK};padding:4px 28px 4px 28px;">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'<td align="center" style="padding:12px 8px;"><p style="margin:0;font-family:Arial,sans-serif;font-size:25px;font-weight:700;color:{_GREEN};">{_e(summary.get("paperOpensExecuted", 0))}</p><p style="margin:4px 0 0;font-family:Arial,sans-serif;font-size:9px;font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;letter-spacing:1px;">Opened</p></td>'
+        f'<td align="center" style="border-left:1px solid {_BORDER};padding:12px 8px;"><p style="margin:0;font-family:Arial,sans-serif;font-size:25px;font-weight:700;color:{_YELLOW};">{_e(summary.get("paperClosesExecuted", 0))}</p><p style="margin:4px 0 0;font-family:Arial,sans-serif;font-size:9px;font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;letter-spacing:1px;">Closed</p></td>'
+        f'<td align="center" style="border-left:1px solid {_BORDER};padding:12px 8px;"><p style="margin:0;font-family:Arial,sans-serif;font-size:25px;font-weight:700;color:{_TEXT_PRIMARY};">{_e(summary.get("holds", 0))}</p><p style="margin:4px 0 0;font-family:Arial,sans-serif;font-size:9px;font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;letter-spacing:1px;">Held</p></td>'
+        f'<td align="center" style="border-left:1px solid {_BORDER};padding:12px 8px;"><p style="margin:0;font-family:Arial,sans-serif;font-size:25px;font-weight:700;color:{_RED};">{_e(summary.get("blockedActions", 0))}</p><p style="margin:4px 0 0;font-family:Arial,sans-serif;font-size:9px;font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;letter-spacing:1px;">Blocked</p></td>'
+        f'</tr></table></td></tr>'
+        f'<tr><td style="background-color:{_BG_CARD};padding:20px 28px;">'
+        f'<p style="margin:0 0 8px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_SECONDARY};line-height:1.6;">'
+        f'Watchlist: <strong style="color:{_TEXT_PRIMARY};">{_e(watchlist_name or "-")}</strong>'
+        f' &nbsp; Candidates reviewed: {_e(summary.get("candidateCount", 0))}'
+        f' &nbsp; Positions reviewed: {_e(summary.get("positionsBeforeCount", 0))}'
+        f'</p>'
+        f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:10px 0 0;">'
+        f'<tr><td style="background-color:{_GREEN};border-radius:4px;text-align:center;">'
+        f'<a href="{_e(link)}" style="display:inline-block;font-family:Arial,sans-serif;font-size:13px;font-weight:700;color:#000000;text-decoration:none;padding:10px 20px;border-radius:4px;">Open Agent Mode</a>'
+        f'</td></tr></table>'
+        f'</td></tr>'
+        + _agent_digest_section("Opened", opened)
+        + _agent_digest_section("Closed", closed)
+        + _agent_digest_section("Held / Reviewed", held)
+        + _agent_digest_section("Blocked / Skipped", blocked)
+        + _footer(ran_at)
+    )
+    return (
+        "<!DOCTYPE html>"
+        '<html lang="en">'
+        "<head>"
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        "<title>MacMarket Trader - Agent Mode Run Summary</title>"
+        "</head>"
+        f'<body style="margin:0;padding:0;background-color:{_BG_PAGE};">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background-color:{_BG_PAGE};">'
+        f'<tr><td align="center" style="padding:20px 12px;">'
+        f'<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" '
+        f'style="max-width:600px;width:100%;border:1px solid {_BORDER};border-radius:6px;overflow:hidden;">'
+        + body_rows
+        + "</table></td></tr></table></body></html>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

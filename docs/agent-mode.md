@@ -23,11 +23,13 @@ through the existing paper order and paper position lifecycle.
 
 - `GET /user/agent-mode/settings`
 - `POST /user/agent-mode/settings`
+- `GET /user/agent-mode/status`
 - `POST /user/agent-mode/run`
 - `GET /user/agent-mode/latest`
 - `GET /user/agent-mode/runs`
 - `GET /user/agent-mode/trades`
 - `GET /user/agent-mode/performance`
+- `POST /user/agent-mode/notifications/test`
 
 All endpoints require an approved authenticated user. The run endpoint is
 rate-limited with other high-cost workflow routes.
@@ -40,11 +42,23 @@ Defaults:
 - `daily_run_time=15:45`
 - `universe_source=manual`
 - `manual_symbols=["SPY","QQQ","MTUM"]`
+- `default_watchlist_id=null`
 - `max_positions=5`
+- `max_open_agent_positions=5`
+- `max_new_trades_per_run=5`
+- `max_new_trades_per_day=5`
+- `max_dollars_per_trade=null`
+- `max_percent_of_paper_account_per_trade=null`
+- `max_exposure_per_symbol=null`
+- `min_cash_reserve=0`
 - `scan_depth=12`
 - `allow_opens=true`
 - `allow_closes=true`
 - `allow_scale_resize=false`
+- `allow_scale_ins=false`
+- `allow_new_trade_when_symbol_already_open=false`
+- `require_confirmation_for_restricted=true`
+- `notification_preference=none`
 - `paused=false`
 - `kill_switch_enabled=false`
 
@@ -55,6 +69,67 @@ paper-only closes through the existing repositories and paper broker adapter.
 Scale/resize remains review-only in the MVP even when the setting is enabled;
 Agent Mode will not execute scale-in, reduce, or replace intents until those
 paper lifecycle paths are explicitly implemented.
+
+Agent Mode stores its own user-scoped settings. Existing account defaults can
+seed the first row, but later runs snapshot the Agent Mode settings used for
+that run so sizing and skip decisions are auditable. When Agent Mode creates a
+paper order, it applies the most conservative available cap across existing
+paper sizing, max dollars per trade, max percent of paper account basis, max
+exposure per symbol, minimum cash reserve, max trades per run/day, and max open
+Agent positions. If sizing cannot be computed or a cap leaves zero shares, the
+trade is skipped or blocked with a deterministic reason instead of routing an
+order.
+
+When `universe_source=watchlist`, scheduled runs and manual runs use the
+selected/default watchlist as the primary symbol source. Manual symbols are
+only used when the source is explicit manual override or watchlist-plus-manual.
+Each run records `watchlist_id`, `watchlist_name`, and the resolved symbol
+snapshot used for audit. Missing, deleted, or empty watchlists produce a clear
+skip/block reason instead of silently falling back to the manual text box.
+
+## Schedule Status
+
+`GET /user/agent-mode/status` is the backend-owned schedule observability
+contract. It returns the Agent enablement state, configured timezone and daily
+run time, current server time in UTC, next scheduled run timestamp, seconds
+until the next run, last started/completed timestamps, last run status,
+skip/error summaries, trade/review/block counts, and a paper-only scheduler
+source marker. The frontend may animate a countdown from these values, but it
+does not calculate schedule truth independently.
+
+If the browser timezone differs from the Agent Mode timezone, the UI warns the
+operator that Agent runs use the configured Agent timezone.
+
+## Notifications
+
+Agent Mode notification preferences are user-scoped and support `none`,
+`email`, `sms`, and `both`. User-facing run notifications are digested per run:
+at most one branded email summary and one short SMS summary are sent for a
+single Agent run. The digest includes status, watchlist/source, reviewed
+candidate/position counts, opened/closed/held/blocked counts, notable symbols,
+and an Agent Mode link. It does not send one user-facing message per symbol.
+
+Email continues to use the existing backend email provider boundary and the
+MacMarket branded email style. Notification attempt records remain available
+for audit with safe payloads and redacted recipients.
+
+SMS uses a backend provider abstraction with Twilio as the first provider:
+
+- `SMS_PROVIDER=twilio`
+- `SMS_NOTIFICATIONS_ENABLED`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_FROM_NUMBER`
+- `TWILIO_MESSAGING_SERVICE_SID`
+- `TWILIO_REQUEST_TIMEOUT_SECONDS`
+- `SMS_MAX_MESSAGES_PER_USER_PER_DAY`
+- `SMS_MAX_MESSAGES_PER_RUN`
+
+Twilio SID/auth token values are server-only and must not use `NEXT_PUBLIC`
+names. If SMS is disabled or Twilio config is incomplete, SMS preferences can
+still be saved, but send attempts are recorded as `disabled` or `skipped` with
+safe diagnostic codes. Phone numbers are redacted in persisted attempt records
+and UI responses. SMS requires both a phone number and confirmed consent.
 
 ## Daily Runner
 
@@ -76,6 +151,7 @@ Agent Mode records every run with:
 
 - settings snapshot
 - resolved universe
+- selected watchlist id/name and resolved symbol snapshot when applicable
 - current paper book
 - position reviews
 - proposed/executed intents
@@ -101,13 +177,17 @@ The `/agent-mode` page is organized as a paper-only cockpit:
   counts for paper opens, paper closes, holds, blocked actions, cash/no trade,
   and total executed actions.
 - Trades: closed Agent Mode paper trades with symbol, side, quantity, entry,
-  exit, realized P&L, return, holding days, reasons, and linked run ID where
-  the run audit provides one.
-- Positions: current open paper positions with entry, mark, unrealized P&L,
-  return, days held, and current Agent Mode review/action context.
+  exit, realized P&L, return, holding days, created/submitted/filled/closed
+  timestamps, reasons, status, and linked run ID where the run audit provides
+  one.
+- Positions: current open paper positions with entry, cost basis/invested
+  amount, mark, current market value when available, unrealized P&L, return,
+  days held, and current Agent Mode review/action context.
 - Performance: cumulative realized P&L, unrealized P&L, total paper P&L,
   win/loss count, win rate, average win/loss, profit factor when computable,
-  and max drawdown when closed-trade history is available.
+  max drawdown when closed-trade history is available, and timeframe-filtered
+  run/trade/position/risk-block metrics for today, yesterday, last 7 days, last
+  30 days, month to date, previous month, and all time.
 - Settings: enable/pause/kill switch controls plus run buttons. Dry-run is the
   safe primary action. Enabled paper mode uses a destructive control and
   requires explicit confirmation because it may create paper orders or close

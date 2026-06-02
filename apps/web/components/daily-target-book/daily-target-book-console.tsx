@@ -114,6 +114,7 @@ export function DailyTargetBookConsole() {
   const [includeReplacementReviews, setIncludeReplacementReviews] = useState(true);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [feedback, setFeedback] = useState<{ state: "idle" | "loading" | "success" | "error"; message?: string }>({ state: "idle" });
+  const [buildStartedAt, setBuildStartedAt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoadState("loading");
@@ -156,6 +157,7 @@ export function DailyTargetBookConsole() {
   const targetOnly = useMemo(() => Array.from(targetSymbols).filter((symbol) => !currentSymbols.has(symbol)), [currentSymbols, targetSymbols]);
 
   async function buildBook() {
+    setBuildStartedAt(new Date().toISOString());
     setFeedback({ state: "loading", message: "Building read-only target book." });
     const response = await buildDailyTargetBook({
       universeSource,
@@ -172,10 +174,12 @@ export function DailyTargetBookConsole() {
           "Target book build failed. Refresh after the latest deployment if this route was just released.",
         ),
       });
+      setBuildStartedAt(null);
       return;
     }
     setResult(response.data);
     setFeedback({ state: "success", message: "Target book built. No paper orders were created and no positions were changed." });
+    setBuildStartedAt(null);
   }
 
   if (loadState === "error") {
@@ -202,6 +206,16 @@ export function DailyTargetBookConsole() {
       />
 
       <InlineFeedback state={feedback.state} message={feedback.message} />
+
+      {feedback.state === "loading" ? (
+        <Card title="Daily Target Book build running">
+          <div className="agent-running-banner">
+            <strong>Building Daily Target Book…</strong>
+            <span>Started at {buildStartedAt ? new Date(buildStartedAt).toLocaleString() : "-"}.</span>
+            <span>Stage: analyzing watchlist, recommendations, positions, and risk gates. The previous read-only target book remains visible while this runs.</span>
+          </div>
+        </Card>
+      ) : null}
 
       <Card title="Build controls">
         <div className="dtb-readonly-banner">

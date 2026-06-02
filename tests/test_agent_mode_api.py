@@ -9,10 +9,11 @@ from sqlalchemy import select
 
 from macmarket_trader.agent_mode.service import AgentModeService
 from macmarket_trader.api.main import app
+from macmarket_trader.api.routes import agent_mode as agent_mode_routes
 from macmarket_trader.api.routes import admin as admin_routes
 from macmarket_trader.config import settings
 from macmarket_trader.data.providers.market_data import DeterministicFallbackMarketDataProvider, MarketSnapshot
-from macmarket_trader.domain.models import AppUserModel, OrderModel, PaperPositionModel, PaperTradeModel
+from macmarket_trader.domain.models import AppUserModel, NotificationAttemptModel, OrderModel, PaperPositionModel, PaperTradeModel, WatchlistModel
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import AgentModeRepository, PaperPortfolioRepository
 
@@ -125,6 +126,106 @@ def test_agent_mode_settings_reject_non_paper_mode() -> None:
     assert "paper mode" in response.json()["detail"]
 
 
+def test_agent_mode_schedule_status_disabled_never_run() -> None:
+    _approve_user()
+
+    response = client.get("/user/agent-mode/status", headers=USER_AUTH)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["agent_enabled"] is False
+    assert payload["last_run_status"] == "disabled"
+    assert payload["last_skip_reason"] == "agent_disabled"
+    assert payload["next_scheduled_run_at"] is None
+    assert payload["scheduler_source"] == "backend-owned"
+    assert payload["paperOnly"] is True
+
+
+def test_agent_mode_schedule_status_enabled_has_next_run_and_last_success(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "daily_run_time": "15:45", "timezone": "America/New_York"},
+    )
+
+    run_response = client.post(
+        "/user/agent-mode/run",
+        headers=USER_AUTH,
+        json={"dry_run": True, "symbols": ["SPY"], "scan_depth": 1},
+    )
+    assert run_response.status_code == 200, run_response.text
+    response = client.get("/user/agent-mode/status", headers=USER_AUTH)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["agent_enabled"] is True
+    assert payload["configured_timezone"] == "America/New_York"
+    assert payload["configured_daily_run_time"] == "15:45"
+    assert payload["next_scheduled_run_at"] is not None
+    assert payload["seconds_until_next_run"] is not None
+    assert payload["last_run_status"] == "success"
+    assert payload["last_run_id"] == run_response.json()["runId"]
+    assert payload["last_run_position_review_count"] >= 0
+
+
+def test_agent_mode_advanced_settings_update_and_user_scope() -> None:
+    user_id = _approve_user()
+    other_user_id = _approve_user(headers=ADMIN_AUTH, external_auth_user_id="clerk_admin")
+    with SessionLocal() as session:
+        watchlist = WatchlistModel(app_user_id=user_id, name="Agent picks", symbols=["SPY", "QQQ"])
+        other_watchlist = WatchlistModel(app_user_id=other_user_id, name="Other picks", symbols=["NVDA"])
+        session.add_all([watchlist, other_watchlist])
+        session.commit()
+        watchlist_id = watchlist.id
+        other_watchlist_id = other_watchlist.id
+
+    response = client.post(
+        "/user/agent-mode/settings",
+        headers=USER_AUTH,
+        json={
+            "mode": "paper",
+            "enabled": True,
+            "default_watchlist_id": watchlist_id,
+            "universe_source": "watchlist",
+            "max_dollars_per_trade": 750,
+            "max_percent_of_paper_account_per_trade": 5,
+            "max_new_trades_per_run": 2,
+            "max_new_trades_per_day": 3,
+            "max_open_agent_positions": 4,
+            "max_exposure_per_symbol": 1000,
+            "min_cash_reserve": 250,
+            "allow_scale_ins": True,
+            "allow_new_trade_when_symbol_already_open": True,
+            "notification_preference": "sms",
+            "notification_phone_number": "+15551234567",
+            "sms_consent_confirmed": True,
+        },
+    )
+    forbidden = client.post(
+        "/user/agent-mode/settings",
+        headers=USER_AUTH,
+        json={"mode": "paper", "default_watchlist_id": other_watchlist_id},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["default_watchlist_id"] == watchlist_id
+    assert payload["max_dollars_per_trade"] == 750
+    assert payload["max_percent_of_paper_account_per_trade"] == 5
+    assert payload["max_new_trades_per_run"] == 2
+    assert payload["max_new_trades_per_day"] == 3
+    assert payload["max_open_agent_positions"] == 4
+    assert payload["max_exposure_per_symbol"] == 1000
+    assert payload["min_cash_reserve"] == 250
+    assert payload["allow_scale_ins"] is True
+    assert payload["allow_new_trade_when_symbol_already_open"] is True
+    assert payload["notification_preference"] == "sms"
+    assert payload["sms_notifications_enabled"] is True
+    assert payload["email_notifications_enabled"] is False
+    assert forbidden.status_code == 404
+
+
 def test_agent_mode_dry_run_creates_no_orders(monkeypatch) -> None:
     _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
@@ -217,6 +318,136 @@ def test_agent_mode_enabled_run_creates_only_paper_orders(monkeypatch) -> None:
     assert all(intent["no_live_routing"] is True for intent in payload["intents"])
     executed_open = [intent for intent in payload["intents"] if intent["intent"] == "OPEN_PAPER" and intent["status"] == "executed"]
     assert executed_open and executed_open[0]["position_id"]
+
+
+def test_agent_mode_per_run_trade_cap_blocks_new_opens(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "max_new_trades_per_run": 0},
+    )
+
+    response = client.post(
+        "/user/agent-mode/run",
+        headers=USER_AUTH,
+        json={"dry_run": False, "symbols": ["SPY"], "scan_depth": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["summary"]["dryRun"] is False
+    assert payload["summary"]["paperOpensExecuted"] == 0
+    assert payload["summary"]["maxNewTradesPerRun"] == 0
+    assert any(intent["reason"] == "max_new_trades_per_run_reached" for intent in payload["intents"])
+    assert _order_count() == 0
+    assert _position_count() == 0
+
+
+def test_agent_mode_agent_sizing_cap_blocks_when_too_small(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=105.0))
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "max_dollars_per_trade": 25.0},
+    )
+
+    response = client.post(
+        "/user/agent-mode/run",
+        headers=USER_AUTH,
+        json={"dry_run": False, "symbols": ["SPY"], "scan_depth": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    opens = [intent for intent in payload["intents"] if intent["intent"] == "OPEN_PAPER"]
+    assert opens and opens[0]["status"] == "blocked"
+    assert opens[0]["agent_sizing_status"] == "blocked"
+    assert opens[0]["execution_error"] == "max_dollars_per_trade"
+    assert payload["summary"]["paperOpensExecuted"] == 0
+    assert _order_count() == 0
+
+
+def test_agent_mode_watchlist_mode_missing_watchlist_skips_run(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    with SessionLocal() as session:
+        session.query(WatchlistModel).filter(WatchlistModel.app_user_id == user_id).delete()
+        session.commit()
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "universe_source": "watchlist", "watchlist_ids": [], "default_watchlist_id": None},
+    )
+
+    response = client.post(
+        "/user/agent-mode/run",
+        headers=USER_AUTH,
+        json={"dry_run": False, "scan_depth": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["summary"]["paperOpensExecuted"] == 0
+    assert payload["universe"]["symbols"] == []
+    assert any(item.get("reason") == "watchlist_missing_or_empty" for item in payload["dataQuality"])
+    assert any(intent["reason"] == "watchlist_missing_or_empty" for intent in payload["intents"])
+
+
+def test_agent_mode_run_uses_selected_watchlist_and_records_snapshot(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    with SessionLocal() as session:
+        watchlist = WatchlistModel(app_user_id=user_id, name="Selected Agent List", symbols=["QQQ", "XLK"])
+        session.add(watchlist)
+        session.commit()
+        watchlist_id = watchlist.id
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={
+            "enabled": True,
+            "universe_source": "watchlist",
+            "default_watchlist_id": watchlist_id,
+            "watchlist_ids": [watchlist_id],
+        },
+    )
+
+    payload = AgentModeService().run(
+        user=_get_user(),
+        request={"dry_run": True, "symbols": ["SPY"], "scan_depth": 2},
+    )
+
+    universe = payload["universe"]
+    assert universe["source"] == "watchlist"
+    assert universe["watchlist_id"] == watchlist_id
+    assert universe["watchlist_name"] == "Selected Agent List"
+    assert universe["symbols"] == ["QQQ", "XLK"]
+    assert universe["resolved_symbols_snapshot"] == ["QQQ", "XLK"]
+    assert universe["manual_override"] is False
+
+
+def test_agent_mode_manual_override_records_manual_source(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    with SessionLocal() as session:
+        watchlist = WatchlistModel(app_user_id=user_id, name="Selected Agent List", symbols=["QQQ"])
+        session.add(watchlist)
+        session.commit()
+        watchlist_id = watchlist.id
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "universe_source": "watchlist", "default_watchlist_id": watchlist_id},
+    )
+
+    payload = AgentModeService().run(
+        user=_get_user(),
+        request={"dry_run": True, "universe_source": "manual", "manual_symbols": ["SPY"], "scan_depth": 1},
+    )
+
+    universe = payload["universe"]
+    assert universe["source"] == "manual"
+    assert universe["symbols"] == ["SPY"]
+    assert universe["manual_override"] is True
+    assert universe["watchlist_id"] is None
 
 
 def test_agent_mode_run_history_exposes_count_consistency(monkeypatch) -> None:
@@ -338,6 +569,113 @@ def test_agent_mode_labels_fallback_data(monkeypatch) -> None:
     quality = response.json()["dataQuality"]
     assert quality[0]["fallback_mode"] is True
     assert quality[0]["source"] == "fallback"
+
+
+def test_agent_mode_test_sms_disabled_records_safe_attempt(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(settings, "sms_notifications_enabled", False)
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={
+            "notification_preference": "sms",
+            "sms_notifications_enabled": True,
+            "notification_phone_number": "+15551234567",
+            "sms_consent_confirmed": True,
+        },
+    )
+
+    response = client.post("/user/agent-mode/notifications/test", headers=USER_AUTH, json={"channel": "sms"})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["attempts"][0]["status"] == "disabled"
+    assert payload["attempts"][0]["failureReason"] == "sms_disabled"
+    assert payload["attempts"][0]["recipientRedacted"].endswith("4567")
+    with SessionLocal() as session:
+        attempts = list(session.execute(select(NotificationAttemptModel).where(NotificationAttemptModel.app_user_id == user_id)).scalars())
+    assert len(attempts) == 1
+    assert attempts[0].status == "disabled"
+    assert attempts[0].recipient_redacted != "+15551234567"
+
+
+def test_agent_mode_notification_none_sends_nothing() -> None:
+    user_id = _approve_user()
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"notification_preference": "none"},
+    )
+
+    response = client.post("/user/agent-mode/notifications/test", headers=USER_AUTH, json={"channel": "none"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["attempts"] == []
+    with SessionLocal() as session:
+        attempts = list(session.execute(select(NotificationAttemptModel).where(NotificationAttemptModel.app_user_id == user_id)).scalars())
+    assert attempts == []
+
+
+def test_agent_mode_run_notification_none_sends_no_digest(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "notification_preference": "none"},
+    )
+
+    response = AgentModeService().run(
+        user=_get_user(),
+        request={"dry_run": False, "symbols": ["SPY", "QQQ"], "scan_depth": 2},
+    )
+
+    assert response["notificationAttempts"] == []
+    with SessionLocal() as session:
+        attempts = list(session.execute(select(NotificationAttemptModel).where(NotificationAttemptModel.app_user_id == user_id)).scalars())
+    assert attempts == []
+
+
+def test_agent_mode_run_sends_one_digest_per_channel(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    monkeypatch.setattr(settings, "sms_notifications_enabled", True)
+    monkeypatch.setattr(settings, "twilio_account_sid", "test-account-sid")
+    monkeypatch.setattr(settings, "twilio_auth_token", "test-auth-token")
+    monkeypatch.setattr(settings, "twilio_from_number", "+15550001111")
+    sent_sms: list[dict[str, object]] = []
+
+    def fake_sms_send(*, to_number: str, body: str) -> str:
+        sent_sms.append({"to": to_number, "body": body})
+        return "SM-test"
+
+    monkeypatch.setattr(agent_mode_routes.agent_service.notification_service.sms_client, "send", fake_sms_send)
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={
+            "enabled": True,
+            "notification_preference": "both",
+            "email_notifications_enabled": True,
+            "sms_notifications_enabled": True,
+            "notification_phone_number": "+15551234567",
+            "sms_consent_confirmed": True,
+        },
+    )
+
+    response = agent_mode_routes.agent_service.run(
+        user=_get_user(),
+        request={"dry_run": False, "symbols": ["SPY", "QQQ", "MTUM"], "scan_depth": 3},
+    )
+
+    attempts = response["notificationAttempts"]
+    assert len(attempts) == 2
+    assert {attempt["channel"] for attempt in attempts} == {"email", "sms"}
+    assert {attempt["eventType"] for attempt in attempts} == {"agent_run_completed"}
+    assert len(sent_sms) == 1
+    assert "MacMarket Agent" in str(sent_sms[0]["body"])
+    with SessionLocal() as session:
+        rows = list(session.execute(select(NotificationAttemptModel).where(NotificationAttemptModel.app_user_id == user_id)).scalars())
+    assert len(rows) == 2
+    assert {row.channel for row in rows} == {"email", "sms"}
+    assert {row.event_type for row in rows} == {"agent_run_completed"}
+    assert all((row.payload_json or {}).get("digest") is True for row in rows)
 
 
 def test_agent_mode_close_uses_paper_lifecycle(monkeypatch) -> None:

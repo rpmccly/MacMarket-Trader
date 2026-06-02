@@ -93,6 +93,7 @@ from macmarket_trader.service import RecommendationService
 from macmarket_trader.email_templates import render_approval_html, render_invite_html, render_rejection_html
 from macmarket_trader.strategy_reports import StrategyReportService
 from macmarket_trader.strategy_registry import get_strategy_by_display_name, list_strategies
+from macmarket_trader.symbols.starter_watchlists import STARTER_MARKET_WATCHLIST_NAME
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import DashboardRepository, EmailLogRepository, InviteRepository, OptionPaperRepository, OrderRepository, PaperPortfolioRepository, ProviderOAuthRepository, RecommendationRepository, ReplayRepository, StrategyReportRepository, SymbolUniverseRepository, UserRepository, WatchlistRepository, commission_paid_for_trade, display_id_or_fallback, gross_pnl_or_fallback, net_pnl_or_fallback
 from macmarket_trader.domain.models import AuditLogModel
@@ -5726,28 +5727,52 @@ def preview_symbol_universe(req: dict[str, object], user=Depends(require_approve
     }
 
 
+def _serialize_watchlist(row) -> dict[str, object]:
+    is_starter = row.name == STARTER_MARKET_WATCHLIST_NAME
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": getattr(row, "description", None),
+        "symbols": row.symbols,
+        "is_default": bool(getattr(row, "is_default", False)),
+        "is_starter": is_starter,
+        "starter": is_starter,
+        "usage_hints": ["Agent Mode", "Scheduled Reports", "Recommendations", "Daily Target Book"],
+        "created_at": row.created_at,
+        "updated_at": getattr(row, "updated_at", None),
+    }
+
+
 @user_router.get("/watchlists")
 def list_watchlists(user=Depends(require_approved_user)):
     rows = watchlist_repo.list_for_user(user.id)
-    return [{"id": row.id, "name": row.name, "symbols": row.symbols, "created_at": row.created_at} for row in rows]
+    return [_serialize_watchlist(row) for row in rows]
 
 
 @user_router.post("/watchlists")
 def create_or_update_watchlist(req: dict[str, object], user=Depends(require_approved_user)):
     name = capped_text(req.get("name") or "Core watchlist", field_name="name", max_length=80)
+    description = capped_text(req.get("description") or "", field_name="description", max_length=500) if "description" in req else None
     symbols = normalize_symbol_list(
         req.get("symbols") or [],
         max_items=MAX_WATCHLIST_SYMBOLS,
         field_name="watchlist symbols",
     )
-    row = watchlist_repo.upsert(app_user_id=user.id, name=name, symbols=symbols)
-    return {"id": row.id, "name": row.name, "symbols": row.symbols}
+    row = watchlist_repo.upsert(
+        app_user_id=user.id,
+        name=name,
+        description=description,
+        symbols=symbols,
+        is_default=bool(req.get("is_default")) if "is_default" in req else None,
+    )
+    return _serialize_watchlist(row)
 
 
 @user_router.put("/watchlists/{watchlist_id}")
 def update_watchlist(watchlist_id: int, req: dict[str, object], user=Depends(require_approved_user)):
     name_raw = req.get("name")
     name = capped_text(name_raw, field_name="name", max_length=80) if name_raw is not None else None
+    description = capped_text(req.get("description") or "", field_name="description", max_length=500) if "description" in req else None
     symbols_raw = req.get("symbols")
     symbols: list[str] | None = None
     if symbols_raw is not None:
@@ -5756,10 +5781,18 @@ def update_watchlist(watchlist_id: int, req: dict[str, object], user=Depends(req
             max_items=MAX_WATCHLIST_SYMBOLS,
             field_name="watchlist symbols",
         )
-    row = watchlist_repo.update(watchlist_id=watchlist_id, app_user_id=user.id, name=name, symbols=symbols)
+    row = watchlist_repo.update(
+        watchlist_id=watchlist_id,
+        app_user_id=user.id,
+        name=name,
+        description=description,
+        description_provided="description" in req,
+        symbols=symbols,
+        is_default=bool(req.get("is_default")) if "is_default" in req else None,
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="watchlist not found")
-    return {"id": row.id, "name": row.name, "symbols": row.symbols}
+    return _serialize_watchlist(row)
 
 
 @user_router.delete("/watchlists/{watchlist_id}")
@@ -5789,6 +5822,19 @@ def list_strategy_schedules(user=Depends(require_approved_user)):
                 "watchlist_count": summary.get("watchlist_count", 0),
                 "no_trade_count": summary.get("no_trade_count", 0),
             }
+        payload = row.payload or {}
+        watchlist_reference = None
+        raw_watchlist_id = payload.get("watchlist_id")
+        if raw_watchlist_id is not None:
+            watchlist = None
+            if str(raw_watchlist_id).strip().isdigit():
+                watchlist = watchlist_repo.get_for_user(watchlist_id=int(raw_watchlist_id), app_user_id=user.id)
+            watchlist_reference = {
+                "id": int(raw_watchlist_id) if str(raw_watchlist_id).strip().isdigit() else None,
+                "name": payload.get("watchlist_name") or (watchlist.name if watchlist else None),
+                "exists": watchlist is not None,
+                "warning": None if watchlist is not None else "selected_watchlist_deleted",
+            }
         output.append(
             {
                 "id": row.id,
@@ -5801,13 +5847,14 @@ def list_strategy_schedules(user=Depends(require_approved_user)):
                 "latest_status": row.latest_status,
                 "latest_run_at": row.latest_run_at,
                 "next_run_at": row.next_run_at,
-                "payload": row.payload,
+                "payload": payload,
+                "watchlist_reference": watchlist_reference,
                 "config_summary": {
-                    "market_mode": (row.payload or {}).get("market_mode", "equities"),
-                    "symbols_count": len((row.payload or {}).get("symbols") or []),
-                    "strategy_count": len((row.payload or {}).get("enabled_strategies") or []),
-                    "top_n": (row.payload or {}).get("top_n", 5),
-                    "delivery_target": (row.payload or {}).get("email_delivery_target") or row.email_target,
+                    "market_mode": payload.get("market_mode", "equities"),
+                    "symbols_count": len(payload.get("symbols") or []),
+                    "strategy_count": len(payload.get("enabled_strategies") or []),
+                    "top_n": payload.get("top_n", 5),
+                    "delivery_target": payload.get("email_delivery_target") or row.email_target,
                 },
                 "latest_payload_summary": latest_payload_summary,
                 "history": [
@@ -5835,11 +5882,17 @@ def create_strategy_schedule(req: dict[str, object], user=Depends(require_approv
     next_run = strategy_report_service._next_run_at(now=now, frequency=frequency, run_time=run_time, timezone_name=timezone_name)
     market_mode = MarketMode(str(req.get("market_mode") or MarketMode.EQUITIES.value))
     default_strategies = [entry.display_name for entry in list_strategies(market_mode)[:3]]
-    symbols = normalize_symbol_list(
-        req.get("symbols") or ["SPY", "MSFT", "NVDA"],
-        max_items=MAX_BULK_SYMBOLS,
-        field_name="symbols",
-    )
+    watchlist_id = int(req["watchlist_id"]) if str(req.get("watchlist_id") or "").strip().isdigit() else None
+    watchlist_name: str | None = None
+    if watchlist_id is not None:
+        watchlist = watchlist_repo.get_for_user(watchlist_id=watchlist_id, app_user_id=user.id)
+        if watchlist is None:
+            raise HTTPException(status_code=404, detail="watchlist not found")
+        watchlist_name = watchlist.name
+        raw_symbols = req.get("symbols") or watchlist.symbols
+    else:
+        raw_symbols = req.get("symbols") or ["SPY", "MSFT", "NVDA"]
+    symbols = normalize_symbol_list(raw_symbols, max_items=MAX_BULK_SYMBOLS, field_name="symbols")
     top_n = capped_int(req.get("top_n"), default=5, minimum=1, maximum=MAX_QUEUE_TOP_N, field_name="top_n")
     payload = {
         "market_mode": market_mode.value,
@@ -5849,6 +5902,10 @@ def create_strategy_schedule(req: dict[str, object], user=Depends(require_approv
         "top_n": top_n,
         "email_delivery_target": str(req.get("email_delivery_target") or user.email),
     }
+    if watchlist_id is not None:
+        payload["watchlist_id"] = watchlist_id
+        payload["watchlist_name"] = watchlist_name or ""
+        payload["watchlist_static_snapshot"] = True
     row = strategy_report_repo.create_schedule(
         app_user_id=user.id,
         name=str(req.get("name") or "Morning strategy scan"),

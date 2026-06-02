@@ -42,15 +42,18 @@ Current symbol entry is intentionally simple:
   existing create/update action is used.
 - Watchlists:
   the backend has a user-scoped `watchlists` table with `app_user_id`, `name`,
-  `symbols` JSON, and `created_at`. The current repository supports list,
-  upsert, update, and delete by current user.
+  `description`, `symbols` JSON, `is_default`, `created_at`, and `updated_at`.
+  The current repository supports list, upsert, update, default switching, and
+  delete by current user.
+- Dedicated Watchlists page:
+  `/watchlists` is now the primary current-compatibility management surface.
+  It lists user-scoped watchlists, creates/renames/deletes lists, edits
+  descriptions, preserves symbol-array order, marks the editable/deletable
+  starter list, sets one default list, and shows duplicate/unsupported symbol
+  feedback before saving through the existing JSON `symbols` path.
 - Schedules page:
-  shows a Watchlists card where users enter a watchlist name plus a manual
-  symbol list, review the same parsed preview, search/sort saved lists, inspect
-  normalized symbol chips/counts, filter symbols inside a list, remove an
-  individual chip through the existing update route, choose replace versus
-  add-to-existing behavior when editing, review a merged preview with duplicate
-  feedback, then apply the saved list back into the schedule symbol field.
+  selects existing watchlists and may copy a resolved symbol snapshot into the
+  schedule form, but watchlist management has moved to `/watchlists`.
 - Scheduled runs:
   `StrategyReportService.run_schedule()` reads `symbols` from the schedule
   payload, fetches bars per symbol, and passes a `bars_by_symbol` map into
@@ -77,13 +80,12 @@ Current scoping:
 - `WatchlistRepository` lists by `app_user_id`, upserts by
   `(app_user_id, name)`, updates by `(id, app_user_id)`, and deletes by
   `(id, app_user_id)`.
-- Watchlist API responses currently expose `id`, `name`, `symbols`, and
-  `created_at`; they do not expose per-symbol metadata, active state, tags, or
+- Watchlist API responses currently expose `id`, `name`, `description`,
+  `symbols`, `is_default`, starter metadata, usage hints, `created_at`, and
+  `updated_at`; they do not expose per-symbol metadata, active state, tags, or
   notes.
-- The current frontend Watchlists card edits one name plus one manual symbol
-  field, then saves the parsed `symbols` array, can apply a saved list back into
-  the schedule form, and now has a small management table around the same
-  compatibility data plus client-side merge/replace handling for pasted symbols.
+- The current frontend `/watchlists` page edits one list at a time and still
+  saves the parsed `symbols` array through existing compatibility routes.
 - Schedule payload symbols are copied into each schedule payload rather than
   linked to a watchlist row.
 - `strategy_report_schedules.payload.symbols` is the execution-time symbol
@@ -119,7 +121,8 @@ Current limitations:
 
 ## Starter Watchlist Compatibility Seed
 
-Status: complete for the current backend lifecycle-seed scope.
+Status: complete for the current backend lifecycle-seed and compatibility UI
+scope.
 
 New local app users receive one editable/deletable `Starter Market Watchlist`
 through the existing user-scoped `watchlists.symbols` JSON/list compatibility
@@ -136,6 +139,9 @@ Lifecycle behavior:
   starter list
 - `/user/watchlists` does not reseed on GET, so a user who intentionally
   deletes every watchlist stays empty until they create a new one
+- `/watchlists` is the dedicated management surface for this compatibility
+  path; Scheduled Reports select saved lists rather than owning watchlist
+  management
 
 Backfill behavior:
 

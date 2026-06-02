@@ -16,38 +16,48 @@ import {
   fetchAgentModePerformance,
   fetchAgentModeRuns,
   fetchAgentModeSettings,
+  fetchAgentModeStatus,
   fetchAgentModeTrades,
   fetchLatestAgentModeRun,
   runAgentMode,
   saveAgentModeSettings,
+  testAgentModeNotification,
 } from "@/lib/agent-mode-api";
 
 describe("agent-mode-api", () => {
   it("uses paper-only same-origin endpoints", async () => {
     await fetchAgentModeSettings();
+    await fetchAgentModeStatus();
     await fetchLatestAgentModeRun();
     await fetchAgentModeRuns({ limit: 25, dryRun: true });
-    await fetchAgentModeTrades(75);
-    await fetchAgentModePerformance();
+    await fetchAgentModeTrades({ limit: 75, timeframe: "today", symbol: "SPY", source: "agent_mode" });
+    await fetchAgentModePerformance({ timeframe: "last_30_days", source: "agent_mode" });
     await saveAgentModeSettings({ enabled: true });
     await runAgentMode({ dry_run: true, symbols: ["SPY"] });
+    await testAgentModeNotification("sms");
 
     expect(fetchWorkflowApi).toHaveBeenNthCalledWith(1, "/api/user/agent-mode/settings");
-    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(2, "/api/user/agent-mode/latest");
-    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(3, "/api/user/agent-mode/runs?limit=25&dry_run=true");
-    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(4, "/api/user/agent-mode/trades?limit=75");
-    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(5, "/api/user/agent-mode/performance");
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(2, "/api/user/agent-mode/status");
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(3, "/api/user/agent-mode/latest");
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(4, "/api/user/agent-mode/runs?limit=25&dry_run=true");
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(5, "/api/user/agent-mode/trades?limit=75&timeframe=today&symbol=SPY&source=agent_mode");
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(6, "/api/user/agent-mode/performance?timeframe=last_30_days&source=agent_mode");
     expect(fetchWorkflowApi).toHaveBeenNthCalledWith(
-      6,
+      7,
       "/api/user/agent-mode/settings",
       expect.objectContaining({ method: "POST" }),
     );
     expect(fetchWorkflowApi).toHaveBeenNthCalledWith(
-      7,
+      8,
       "/api/user/agent-mode/run",
       expect.objectContaining({ method: "POST" }),
     );
-    const runBody = JSON.parse(String((vi.mocked(fetchWorkflowApi).mock.calls[6][1] as RequestInit).body));
+    expect(fetchWorkflowApi).toHaveBeenNthCalledWith(
+      9,
+      "/api/user/agent-mode/notifications/test",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const runBody = JSON.parse(String((vi.mocked(fetchWorkflowApi).mock.calls[7][1] as RequestInit).body));
     expect(runBody.mode).toBe("paper");
     expect(runBody.dry_run).toBe(true);
   });

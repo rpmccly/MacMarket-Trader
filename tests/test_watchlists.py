@@ -75,6 +75,9 @@ def test_get_watchlists_returns_seeded_list_for_newly_approved_user() -> None:
     assert len(payload) == 1
     assert payload[0]["name"] == STARTER_MARKET_WATCHLIST_NAME
     assert payload[0]["symbols"] == starter_market_watchlist_symbols()
+    assert payload[0]["is_starter"] is True
+    assert payload[0]["is_default"] is True
+    assert "Agent Mode" in payload[0]["usage_hints"]
 
 
 def test_get_watchlists_does_not_reseed_after_user_deletes_all_watchlists() -> None:
@@ -151,6 +154,35 @@ def test_watchlist_create_and_list() -> None:
     assert list_resp.status_code == 200
     items = list_resp.json()
     assert any(item["id"] == wl_id for item in items)
+
+
+def test_watchlist_description_default_and_duplicate_normalization() -> None:
+    _seed_and_approve_user()
+    first = client.post(
+        "/user/watchlists",
+        headers={"Authorization": "Bearer user-token"},
+        json={
+            "name": "Focused tech",
+            "description": "Agent Mode shortlist",
+            "symbols": ["aapl", "MSFT", "AAPL", "NVDA"],
+            "is_default": True,
+        },
+    )
+    second = client.post(
+        "/user/watchlists",
+        headers={"Authorization": "Bearer user-token"},
+        json={"name": "Energy", "symbols": ["XLE", "CVX"], "is_default": True},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["symbols"] == ["AAPL", "MSFT", "NVDA"]
+    assert first.json()["description"] == "Agent Mode shortlist"
+    list_resp = client.get("/user/watchlists", headers={"Authorization": "Bearer user-token"})
+    assert list_resp.status_code == 200
+    defaults = [item for item in list_resp.json() if item["is_default"]]
+    assert len(defaults) == 1
+    assert defaults[0]["name"] == "Energy"
 
 
 def test_watchlist_update() -> None:

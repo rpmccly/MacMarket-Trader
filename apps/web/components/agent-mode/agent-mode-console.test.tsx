@@ -31,10 +31,16 @@ vi.mock("@/lib/agent-mode-api", () => ({
   fetchAgentModePerformance: vi.fn(async () => ({ ok: true, data: null })),
   fetchAgentModeRuns: vi.fn(async () => ({ ok: true, data: { items: [] } })),
   fetchAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
+  fetchAgentModeStatus: vi.fn(async () => ({ ok: true, data: null })),
   fetchAgentModeTrades: vi.fn(async () => ({ ok: true, data: { items: [] } })),
   fetchLatestAgentModeRun: vi.fn(async () => ({ ok: true, data: null })),
   runAgentMode: vi.fn(async () => ({ ok: true, data: null })),
   saveAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
+  testAgentModeNotification: vi.fn(async () => ({ ok: true, data: { attempts: [] } })),
+}));
+
+vi.mock("@/lib/watchlists-api", () => ({
+  fetchWatchlists: vi.fn(async () => ({ ok: true, data: [] })),
 }));
 
 import { AgentModeConsole } from "@/components/agent-mode/agent-mode-console";
@@ -71,9 +77,12 @@ describe("AgentModeConsole", () => {
     expect(source).toContain("saveAgentModeSettings");
     expect(source).toContain("runAgentMode");
     expect(source).toContain("fetchLatestAgentModeRun");
+    expect(source).toContain("fetchAgentModeStatus");
     expect(source).toContain("fetchAgentModeRuns");
     expect(source).toContain("fetchAgentModeTrades");
     expect(source).toContain("fetchAgentModePerformance");
+    expect(source).toContain("fetchWatchlists");
+    expect(source).toContain("testAgentModeNotification");
     expect(source).toContain("Agent Mode unavailable");
     expect(source).toContain("window.confirm");
     expect(source).toContain("Enabled paper run completed through Agent Mode paper lifecycle only.");
@@ -83,6 +92,9 @@ describe("AgentModeConsole", () => {
   });
 
   it("contains performance cockpit tables and count consistency fields", () => {
+    expect(source).toContain("Schedule status");
+    expect(source).toContain("Time until next run");
+    expect(source).toContain("Your browser timezone differs from the Agent Mode timezone");
     expect(source).toContain("paper opens");
     expect(source).toContain("paper closes");
     expect(source).toContain("cash/no trade");
@@ -95,6 +107,31 @@ describe("AgentModeConsole", () => {
     expect(source).toContain("paperOpensExecuted");
     expect(source).toContain("paperClosesExecuted");
     expect(source).toContain("totalExecutedActions");
+  });
+
+  it("contains operational-control settings and notification fields", () => {
+    expect(source).toContain("Selected watchlist");
+    expect(source).toContain("Manual override symbols");
+    expect(source).toContain("Resolved run universe");
+    expect(source).toContain("This run will analyze:");
+    expect(source).toContain("Max dollars/trade");
+    expect(source).toContain("Max new trades/run");
+    expect(source).toContain("Sizing preview");
+    expect(source).toContain("Notification preferences");
+    expect(source).toContain("single Agent Mode run digest");
+    expect(source).toContain("Allows Agent Mode to review existing open positions");
+    expect(source).toContain("Allows more than one open Agent position");
+    expect(source).toContain("Test SMS");
+    expect(source).toContain("Twilio secrets stay server-only");
+    expect(source).toContain("last_30_days");
+  });
+
+  it("contains performance and positions polish fields", () => {
+    expect(source).toContain("Cost basis");
+    expect(source).toContain("Market value");
+    expect(source).toContain("agent-performance-hero");
+    expect(source).toContain("Percent return");
+    expect(source).toContain("No Agent Mode performance yet");
   });
 
   it("uses paper-safe language only", () => {

@@ -5,6 +5,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from macmarket_trader.config import settings
 from macmarket_trader.domain.models import Base
 
 config = context.config
@@ -12,10 +13,27 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+_ALEMBIC_DEFAULT_URLS = {
+    "sqlite:///./macmarket_trader.db",
+    "postgresql+psycopg://macmarket:macmarket@localhost:5432/macmarket_trader",
+}
+
+
+def _configured_database_url() -> str:
+    """Use the same configured database URL as the running app.
+
+    Windows private-alpha deployments run the app's SQLite schema updater.
+    Alembic remains useful for intentional migration runs, but it must not
+    silently fall back to a stale Postgres localhost URL from alembic.ini.
+    """
+    configured = str(config.get_main_option("sqlalchemy.url") or "").strip()
+    if configured and configured not in _ALEMBIC_DEFAULT_URLS:
+        return configured
+    return str(settings.database_url or configured)
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = _configured_database_url()
     context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
 
     with context.begin_transaction():
@@ -23,6 +41,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    config.set_main_option("sqlalchemy.url", _configured_database_url())
     connectable = engine_from_config(
         config.get_section(config.config_ini_section) or {},
         prefix="sqlalchemy.",

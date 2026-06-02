@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from datetime import date, timedelta
 
+from sqlalchemy.engine import make_url
+
+from macmarket_trader.config import settings
 from macmarket_trader.agent_mode.service import AgentModeService
 from macmarket_trader.dev.seed_demo import seed_demo_data
 from macmarket_trader.domain.schemas import Bar, PortfolioSnapshot, ReplayRunRequest
@@ -34,10 +38,32 @@ def _sample_bars() -> list[Bar]:
     ]
 
 
+def _database_diagnostics() -> dict[str, object]:
+    url = make_url(settings.database_url)
+    dialect = url.get_backend_name()
+    database = url.database
+    sqlite_path = None
+    if dialect == "sqlite" and database and database != ":memory:":
+        sqlite_path = str(Path(database).expanduser().resolve())
+    return {
+        "status": "ok",
+        "database": {
+            "dialect": dialect,
+            "driver": url.drivername,
+            "url_redacted": url.render_as_string(hide_password=True),
+            "sqlite_path": sqlite_path,
+            "sqlite_path_exists": Path(sqlite_path).exists() if sqlite_path else None,
+        },
+        "working_directory": str(Path.cwd()),
+        "secrets_redacted": True,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="macmarket-trader")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("health")
+    sub.add_parser("db-diagnostics")
     sub.add_parser("generate-sample-recommendation")
     sub.add_parser("run-sample-replay")
     sub.add_parser("init-db")
@@ -56,6 +82,8 @@ def main() -> None:
 
     if args.command == "health":
         payload = {"status": "ok", "service": "macmarket-trader"}
+    elif args.command == "db-diagnostics":
+        payload = _database_diagnostics()
     elif args.command == "generate-sample-recommendation":
         rec = service.generate(
             symbol="AAPL",

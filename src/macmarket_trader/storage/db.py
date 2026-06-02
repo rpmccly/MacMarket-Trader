@@ -39,6 +39,32 @@ def apply_schema_updates(target_engine: Engine | None = None) -> list[str]:
     """
     from sqlalchemy import inspect, text  # local to avoid circular import at module level
 
+    def _has_column(conn, table_name: str, column_name: str) -> bool:
+        columns = inspect(conn).get_columns(table_name)
+        return any(column["name"] == column_name for column in columns)
+
+    def _backfill_watchlist_update_columns(conn) -> None:
+        if _has_column(conn, "watchlists", "is_default"):
+            conn.execute(text("UPDATE watchlists SET is_default = 0 WHERE is_default IS NULL"))
+        if not _has_column(conn, "watchlists", "updated_at"):
+            return
+        if _has_column(conn, "watchlists", "created_at"):
+            conn.execute(
+                text(
+                    "UPDATE watchlists "
+                    "SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
+                    "WHERE updated_at IS NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "UPDATE watchlists "
+                    "SET updated_at = CURRENT_TIMESTAMP "
+                    "WHERE updated_at IS NULL"
+                )
+            )
+
     e = target_engine or engine
     inspector = inspect(e)
     applied: list[str] = []
@@ -56,7 +82,6 @@ def apply_schema_updates(target_engine: Engine | None = None) -> list[str]:
                     continue
                 # Compile the column type for the target dialect.
                 col_type_str = col.type.compile(e.dialect)
-                null_clause = "NULL" if col.nullable else "NOT NULL"
                 default_clause = ""
                 if col.default is not None and col.default.is_scalar:
                     raw = col.default.arg
@@ -66,13 +91,20 @@ def apply_schema_updates(target_engine: Engine | None = None) -> list[str]:
                         default_clause = f" DEFAULT {int(raw)}"
                     elif isinstance(raw, (int, float)):
                         default_clause = f" DEFAULT {raw}"
+                sqlite_requires_nullable_add = (
+                    e.dialect.name == "sqlite"
+                    and not col.nullable
+                    and not default_clause
+                )
+                null_clause = "NULL" if col.nullable or sqlite_requires_nullable_add else "NOT NULL"
                 ddl = (
                     f"ALTER TABLE {table_name} ADD COLUMN "
                     f"{col.name} {col_type_str} {null_clause}{default_clause}"
                 )
                 conn.execute(text(ddl))
                 applied.append(f"{table_name}.{col.name}")
-        if applied:
-            conn.commit()
+        if inspector.has_table("watchlists"):
+            _backfill_watchlist_update_columns(conn)
+        conn.commit()
 
     return applied

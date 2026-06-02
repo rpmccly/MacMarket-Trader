@@ -21,6 +21,7 @@ This root `README.md` is the **canonical architecture charter** for the reposito
 - `docs/agent-mode.md` covers the paper-only autonomous Agent Mode operator loop.
 - `docs/daily-target-book.md` covers the read-only Daily Target Book manual-review cockpit.
 - `docs/data-parity-lab.md` covers the admin-only Schwab-vs-current-provider market-data parity diagnostic lab.
+- `docs/symbol-watchlist-design.md` covers the compatibility watchlist path and dedicated `/watchlists` management surface.
 - `docs/` must not replace or materially shrink the root architecture definition.
 - Do not auto-condense this README into a status page.
 - The root README must remain the main source of truth for mandate, pipeline, constraints, and subsystem design.
@@ -696,6 +697,14 @@ New approved operators also receive an editable, deletable **Starter Market
 Watchlist** seeded through the existing user-scoped `watchlists.symbols` JSON
 path so Recommendations and Schedules have a useful first-run universe without
 provider-backed symbol lookup or normalized watchlist migration.
+The dedicated `/watchlists` operator page is now the primary UI for creating,
+renaming, deleting, defaulting, and ordering those compatibility watchlists;
+Scheduled Reports select existing lists and keep their saved static symbol
+snapshots for schedule execution.
+Agent Mode also uses its selected/default watchlist as the primary run universe
+unless the operator explicitly chooses manual override, and run audit payloads
+record the selected watchlist plus resolved symbol snapshot. Agent Mode
+notifications are summarized per run rather than per symbol/event.
 Current manual entry now shows clearer separator guidance, parsed uppercase
 previews, duplicate feedback, and ETF/index substitute copy, but remains a
 temporary manual universe until richer watchlist management is implemented.
