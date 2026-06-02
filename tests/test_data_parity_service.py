@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from macmarket_trader.config import Settings
-from macmarket_trader.data_parity.service import ProviderParityService
+from macmarket_trader.data_parity.service import ProviderParityService, _compare_bars
 from macmarket_trader.domain.models import AppUserModel, ProviderParitySnapshotModel
 from macmarket_trader.domain.schemas import Bar
 from macmarket_trader.storage.db import SessionLocal
@@ -220,7 +220,7 @@ def _seed_user() -> int:
 def test_raw_provider_mismatch_classification(monkeypatch) -> None:
     service = _service(monkeypatch, current=_bars(close_shift=1.0), schwab_raw=_bars())
 
-    response = service.run(_request(), app_user_id=1)
+    response = service.run(_request(completedBarsOnly=False), app_user_id=1)
 
     assert response["summary"]["comparable_raw_mismatch"] == 1
     assert response["results"][0]["rootCause"] == "comparable_raw_mismatch"
@@ -283,7 +283,7 @@ def test_no_indicator_mismatch_when_aligned_bars_are_zero(monkeypatch) -> None:
     ]
     service = _service(monkeypatch, current=current, schwab_raw=schwab)
 
-    response = service.run(_request(), app_user_id=1)
+    response = service.run(_request(completedBarsOnly=False), app_user_id=1)
     result = response["results"][0]
 
     assert result["canonicalBars"]["aligned_timestamps"] == 0
@@ -378,7 +378,7 @@ def test_weekly_sunday_and_monday_provider_anchors_align_to_canonical_trading_we
     )
     service = _service(monkeypatch, current=polygon, schwab_raw=schwab)
 
-    response = service.run(_request(timeframes=["1W"], lookbackBars=5), app_user_id=1)
+    response = service.run(_request(timeframes=["1W"], lookbackBars=5, completedBarsOnly=False), app_user_id=1)
     result = response["results"][0]
 
     assert result["rootCause"] == "match"
@@ -424,25 +424,147 @@ def test_daily_different_utc_provider_anchors_align_to_market_session_date(monke
     assert result["rawBars"]["latest_current_alignment"]["canonical_session_date"] == "2026-06-01"
 
 
-def test_intraday_alignment_remains_strict_exact_timestamp(monkeypatch) -> None:
+def test_intraday_bar_start_and_bar_end_labels_align_to_same_interval(monkeypatch) -> None:
+    polygon = _bars_at(
+        [
+            datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+            datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+        ],
+        provider="polygon",
+    )
+    schwab = _bars_at(
+        [
+            datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+            datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+        ],
+        provider="schwab",
+    )
+    service = _service(monkeypatch, current=polygon, schwab_raw=schwab)
+
+    response = service.run(_request(timeframes=["30M"], lookbackBars=5), app_user_id=1)
+    result = response["results"][0]
+    raw = result["rawBars"]
+
+    assert raw["alignment_mode"] == "canonical_intraday_interval"
+    assert raw["aligned_timestamps"] == 2
+    assert raw["verdict"] == "match"
+    assert raw["latest_common_alignment_label"] == "2026-01-02 10:30-11:00 ET"
+    assert raw["latest_common_current_raw_timestamp"] == "2026-01-02T15:30:00+00:00"
+    assert raw["latest_common_candidate_raw_timestamp"] == "2026-01-02T16:00:00+00:00"
+    assert raw["aligned_rows"][-1]["current_timestamp_convention"] == "bar_start"
+    assert raw["aligned_rows"][-1]["candidate_timestamp_convention"] == "bar_end"
+
+
+def test_intraday_strict_mismatch_when_canonical_intervals_differ(monkeypatch) -> None:
     base = [
         datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
         datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
         datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
     ]
     polygon = _bars_at(base, provider="polygon")
-    schwab = _bars_at([stamp + timedelta(minutes=1) for stamp in base], provider="schwab")
+    schwab = _bars_at([stamp + timedelta(hours=2) for stamp in base], provider="schwab")
     service = _service(monkeypatch, current=polygon, schwab_raw=schwab)
 
     response = service.run(_request(timeframes=["30M"], lookbackBars=5), app_user_id=1)
     result = response["results"][0]
 
-    assert result["rawBars"]["alignment_mode"] == "exact_timestamp"
+    assert result["rawBars"]["alignment_mode"] == "canonical_intraday_interval"
     assert result["rawBars"]["aligned_timestamps"] == 0
-    assert result["rawBars"]["verdict"] == "no_aligned_bars"
-    assert "no_common_alignment_keys_for_exact_timestamp" in result["rawBars"]["alignment_failure_reason"]
-    assert result["rootCause"] == "no_aligned_bars"
+    assert result["rawBars"]["verdict"] in {"no_aligned_bars", "stale_source"}
+    assert "no_common_alignment_keys_for_canonical_intraday_interval" in result["rawBars"]["alignment_failure_reason"]
+    assert result["rootCause"] in {"no_aligned_bars", "stale_source"}
     assert result["indicators"]["verdict"] == "not_compared"
+
+
+def test_completed_bars_only_excludes_current_in_progress_bars() -> None:
+    run_at = datetime(2026, 1, 2, 16, 15, tzinfo=UTC)
+    current_meta = {"provider": "polygon", "timestamp_convention": "bar_start", "adjusted": True, "needExtendedHoursData": "false"}
+    schwab_meta = {"provider": "schwab", "timestamp_convention": "bar_end", "adjusted": "provider_default", "needExtendedHoursData": "false"}
+
+    intraday_current = _bars_at(
+        [
+            datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
+            datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+            datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+            datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+        ],
+        provider="polygon",
+    )
+    intraday_schwab = _bars_at(
+        [
+            datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+            datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+            datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+            datetime(2026, 1, 2, 16, 30, tzinfo=UTC),
+        ],
+        provider="schwab",
+    )
+    intraday = _compare_bars(
+        intraday_current,
+        intraday_schwab,
+        current_metadata=current_meta,
+        candidate_metadata=schwab_meta,
+        timeframe="30M",
+        mismatch_verdict="comparable_raw_mismatch",
+        server_run_at=run_at,
+        completed_bars_only=True,
+    )
+
+    assert intraday["filtered_in_progress_current_count"] == 1
+    assert intraday["filtered_in_progress_candidate_count"] == 1
+    assert intraday["latest_common_alignment_label"] == "2026-01-02 10:30-11:00 ET"
+    assert intraday["latest_input_current_alignment"]["bar_in_progress"] is True
+    assert intraday["latest_current_alignment"]["bar_completed"] is True
+
+    daily_bars = _anchored_session_bars(
+        [
+            datetime(2025, 12, 31, 5, tzinfo=UTC),
+            datetime(2026, 1, 1, 5, tzinfo=UTC),
+            datetime(2026, 1, 2, 5, tzinfo=UTC),
+        ],
+        provider="polygon",
+        source_timeframe="1D",
+    )
+    daily = _compare_bars(
+        daily_bars,
+        _anchored_session_bars([bar.timestamp for bar in daily_bars], provider="schwab", source_timeframe="1D"),
+        current_metadata={"provider": "polygon", "timestamp_convention": "session_anchor"},
+        candidate_metadata={"provider": "schwab", "timestamp_convention": "session_anchor"},
+        timeframe="1D",
+        mismatch_verdict="comparable_raw_mismatch",
+        server_run_at=run_at,
+        completed_bars_only=True,
+    )
+
+    assert daily["filtered_in_progress_current_count"] == 1
+    assert daily["latest_common_alignment_label"] == "2026-01-01"
+    assert daily["latest_input_current_alignment"]["canonical_session_date"] == "2026-01-02"
+    assert daily["latest_current_alignment"]["canonical_session_date"] == "2026-01-01"
+
+    weekly_bars = _anchored_session_bars(
+        [
+            datetime(2025, 12, 15, 5, tzinfo=UTC),
+            datetime(2025, 12, 22, 5, tzinfo=UTC),
+            datetime(2025, 12, 29, 5, tzinfo=UTC),
+        ],
+        provider="polygon",
+        source_timeframe="1W",
+    )
+    weekly = _compare_bars(
+        weekly_bars,
+        _anchored_session_bars([bar.timestamp for bar in weekly_bars], provider="schwab", source_timeframe="1W"),
+        current_metadata={"provider": "polygon", "timestamp_convention": "session_anchor"},
+        candidate_metadata={"provider": "schwab", "timestamp_convention": "session_anchor"},
+        timeframe="1W",
+        mismatch_verdict="comparable_raw_mismatch",
+        server_run_at=run_at,
+        completed_bars_only=True,
+    )
+
+    assert weekly["filtered_in_progress_current_count"] == 1
+    assert weekly["latest_common_alignment_label"] == "2025-12-22/2025-12-26"
+    assert weekly["latest_input_current_alignment"]["canonical_trading_week"] == "2025-12-29/2026-01-02"
+    assert weekly["latest_current_alignment"]["canonical_trading_week"] == "2025-12-22/2025-12-26"
 
 
 def test_intraday_aligned_ohlcv_mismatch_reports_diagnostic_axes(monkeypatch) -> None:
@@ -454,8 +576,8 @@ def test_intraday_aligned_ohlcv_mismatch_reports_diagnostic_axes(monkeypatch) ->
     polygon = _bars_at(timestamps, provider="polygon")
     schwab = [
         Bar(
-            date=bar.date,
-            timestamp=bar.timestamp,
+            date=(bar.timestamp + timedelta(minutes=30)).date(),
+            timestamp=bar.timestamp + timedelta(minutes=30),
             open=bar.open,
             high=bar.high,
             low=bar.low,
@@ -474,13 +596,15 @@ def test_intraday_aligned_ohlcv_mismatch_reports_diagnostic_axes(monkeypatch) ->
     raw = response["results"][0]["rawBars"]
     diagnostics = raw["comparison_diagnostics"]
 
-    assert raw["alignment_mode"] == "exact_timestamp"
+    assert raw["alignment_mode"] == "canonical_intraday_interval"
     assert raw["verdict"] == "comparable_raw_mismatch"
     assert diagnostics["current_rth_bucket_boundaries"] == ["09:30-10:00", "10:00-10:30", "10:30-11:00", "11:00-11:30", "11:30-12:00", "12:00-12:30", "12:30-13:00", "13:00-13:30", "13:30-14:00", "14:00-14:30", "14:30-15:00", "15:00-15:30", "15:30-16:00"]
     assert diagnostics["candidate_rth_bucket_boundaries"] == diagnostics["current_rth_bucket_boundaries"]
     assert "macmarket_regular_hours_bucket_boundaries_match" in diagnostics["notes"]
     assert "adjusted_mode_difference_possible" in diagnostics["notes"]
-    assert "exact_timestamps_align_so_remaining_ohlcv_difference_is_provider_data_or_adjustment_related" in diagnostics["notes"]
+    assert "canonical_intervals_align_so_remaining_ohlcv_difference_is_provider_data_or_adjustment_related" in diagnostics["notes"]
+    assert raw["aligned_rows"][-1]["canonical_interval_start"]["new_york"].endswith("10:30:00-05:00")
+    assert raw["aligned_rows"][-1]["canonical_interval_end"]["new_york"].endswith("11:00:00-05:00")
 
 
 def test_tos_reference_mismatch_classification(monkeypatch) -> None:

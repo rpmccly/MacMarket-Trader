@@ -70,6 +70,35 @@ def _utc_now() -> datetime:
     return datetime.now(tz=UTC)
 
 
+def _shift_schwab_intraday_bar_end_to_start(bars: list[Bar], *, source_timeframe: str) -> list[Bar]:
+    if source_timeframe.upper() != RTH_SOURCE_TIMEFRAME:
+        return bars
+    shifted: list[Bar] = []
+    for bar in bars:
+        timestamp = bar.timestamp
+        if timestamp is None:
+            shifted.append(bar)
+            continue
+        interval_start = timestamp.astimezone(UTC) - timedelta(minutes=30)
+        shifted.append(
+            Bar(
+                date=interval_start.astimezone(US_EQUITY_TIMEZONE).date(),
+                timestamp=interval_start,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                rel_volume=bar.rel_volume,
+                session_policy=bar.session_policy,
+                source_session_policy=bar.source_session_policy,
+                source_timeframe=bar.source_timeframe,
+                provider=bar.provider,
+            )
+        )
+    return shifted
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -527,6 +556,9 @@ class SchwabMarketDataProvider(MarketDataProvider):
                 "request_period_type": query.get("periodType"),
                 "request_frequency_type": query.get("frequencyType"),
                 "request_frequency": query.get("frequency"),
+                "timestamp_convention": "bar_end" if source_timeframe == RTH_SOURCE_TIMEFRAME else "session_anchor",
+                "aggregation_multiplier": query.get("frequency"),
+                "aggregation_timespan": query.get("frequencyType"),
                 "candles_returned": 0,
             }
         selection_limit = (
@@ -551,6 +583,9 @@ class SchwabMarketDataProvider(MarketDataProvider):
             "request_period_type": query.get("periodType"),
             "request_frequency_type": query.get("frequencyType"),
             "request_frequency": query.get("frequency"),
+            "timestamp_convention": "bar_end" if source_timeframe == RTH_SOURCE_TIMEFRAME else "session_anchor",
+            "aggregation_multiplier": query.get("frequency"),
+            "aggregation_timespan": query.get("frequencyType"),
             "candles_returned": len(candles),
             "raw_selection_limit": selection_limit,
             "first_bar_timestamp": selected[0].timestamp.isoformat() if selected[0].timestamp else None,
@@ -561,8 +596,9 @@ class SchwabMarketDataProvider(MarketDataProvider):
     def normalize_bars(self, bars: list[Bar], *, timeframe: str, limit: int) -> tuple[list[Bar], dict[str, object]]:
         tf = validate_chart_timeframe(timeframe)
         if tf in RTH_BUCKETS_BY_TIMEFRAME:
+            aggregation_input = _shift_schwab_intraday_bar_end_to_start(bars, source_timeframe=RTH_SOURCE_TIMEFRAME)
             selected, metadata = _aggregate_regular_hours_intraday_bars(
-                bars,
+                aggregation_input,
                 output_timeframe=tf,
                 limit=limit,
                 provider=self.name,
@@ -572,6 +608,11 @@ class SchwabMarketDataProvider(MarketDataProvider):
             metadata["fallback_mode"] = False
             metadata["adjusted"] = "provider_default"
             metadata["needExtendedHoursData"] = "false"
+            metadata["source_timestamp_convention"] = "bar_end"
+            metadata["timestamp_convention"] = "bar_start"
+            metadata["timestamp_convention_adjustment"] = "schwab_intraday_bar_end_shifted_to_interval_start_for_rth_aggregation"
+            metadata["aggregation_multiplier"] = 30
+            metadata["aggregation_timespan"] = "minute"
             return selected, metadata
         selected = sorted(bars, key=lambda bar: bar.timestamp or datetime.combine(bar.date, datetime.min.time(), tzinfo=UTC))[-limit:]
         for bar in selected:
@@ -592,6 +633,9 @@ class SchwabMarketDataProvider(MarketDataProvider):
             "fallback_mode": False,
             "adjusted": "provider_default",
             "needExtendedHoursData": "false",
+            "timestamp_convention": "session_anchor",
+            "aggregation_multiplier": 1,
+            "aggregation_timespan": "week" if tf == "1W" else "day",
             "first_bar_timestamp": first.timestamp.isoformat() if first and first.timestamp else None,
             "last_bar_timestamp": last.timestamp.isoformat() if last and last.timestamp else None,
         }

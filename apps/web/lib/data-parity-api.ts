@@ -23,6 +23,7 @@ export type DataParityRunRequest = {
   lookbackBars: number;
   sessionPolicy: "regular_hours" | string;
   includeExtendedHours: boolean;
+  completedBarsOnly?: boolean;
   saveSnapshot: boolean;
   tosReferences: TosReferenceInput[];
 };
@@ -186,9 +187,16 @@ export function buildDataParityCsv(response: DataParityRunResponse): string {
     result.tosReference?.verdict ?? "",
     result.rootCause,
     valueAt(["alignment_mode"], result.canonicalBars),
+    valueAt(["comparison_scope"], result.canonicalBars),
     valueAt(["latest_common_alignment_label"], result.canonicalBars),
+    valueAt(["latest_current_alignment", "timestamp_convention"], result.canonicalBars),
+    valueAt(["latest_candidate_alignment", "timestamp_convention"], result.canonicalBars),
+    valueAt(["latest_current_alignment", "canonical_interval_start", "utc"], result.canonicalBars),
+    valueAt(["latest_current_alignment", "canonical_interval_end", "utc"], result.canonicalBars),
     valueAt(["latest_common_current_raw_timestamp"], result.canonicalBars),
     valueAt(["latest_common_candidate_raw_timestamp"], result.canonicalBars),
+    valueAt(["latest_input_current_raw_timestamp"], result.canonicalBars),
+    valueAt(["latest_input_candidate_raw_timestamp"], result.canonicalBars),
     valueAt(["latest_alignment_key_match"], result.canonicalBars),
     valueAt(["freshness", "current", "latest_bar_timestamp", "utc"], result),
     valueAt(["freshness", "current", "latest_bar_timestamp", "new_york"], result),
@@ -227,9 +235,16 @@ export function buildDataParityCsv(response: DataParityRunResponse): string {
       "tos_reference",
       "root_cause",
       "canonical_alignment_mode",
+      "canonical_comparison_scope",
       "canonical_latest_alignment_label",
+      "canonical_current_timestamp_convention",
+      "canonical_schwab_timestamp_convention",
+      "canonical_interval_start_utc",
+      "canonical_interval_end_utc",
       "canonical_current_common_raw_timestamp",
       "canonical_schwab_common_raw_timestamp",
+      "canonical_current_latest_returned_raw_timestamp",
+      "canonical_schwab_latest_returned_raw_timestamp",
       "canonical_latest_alignment_key_match",
       "current_provider_as_of_utc",
       "current_provider_as_of_new_york",

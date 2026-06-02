@@ -59,9 +59,10 @@ DATA_PARITY_SAVE_SNAPSHOTS=true
 ```
 
 The first-pass UI exposes symbols, timeframes, lookback bars, regular-hours
-session policy, snapshot saving, and optional TOS manual references. Tolerances
-are kept in the backend defaults: price absolute tolerance `0.01`, price
-relative tolerance `0.0005`, and volume relative tolerance `1%`.
+session policy, completed-bars-only comparison mode, snapshot saving, and
+optional TOS manual references. Tolerances are kept in the backend defaults:
+price absolute tolerance `0.01`, price relative tolerance `0.0005`, and volume
+relative tolerance `1%`.
 
 ## Callback URL
 
@@ -99,6 +100,10 @@ intraday resampling:
 - source timeframe metadata
 - weekly-provider anchoring metadata for `1W`
 - regular-hours bucket boundaries for intraday `30M`, `1H`, and `4H`
+- timestamp convention diagnostics: `bar_start`, `bar_end`, `session_anchor`,
+  or `unknown`
+- canonical interval start/end and whether each latest bar is completed or
+  still in progress at server run time
 
 Intraday comparisons use MacMarket's regular-hours buckets in
 `America/New_York`: `30M` buckets run from `09:30-16:00`, `1H` buckets run
@@ -122,15 +127,27 @@ OHLCV and indicator bundles:
 - `1W` bars align by canonical trading week (`Monday` through `Friday`), so a
   Polygon Sunday boundary and Schwab/TOS Monday boundary for the same covered
   week compare under one week label.
-- Intraday `30M`, `1H`, and `4H` bars still align by exact timestamp after
-  MacMarket regular-hours normalization/resampling.
+- Intraday `30M`, `1H`, and `4H` bars align by canonical covered interval
+  when the provider timestamp convention shows equivalent bar-start/bar-end
+  labels. For example, a Polygon/Massive `10:30` bar-start label and a Schwab
+  `11:00` bar-end label can align to the same `10:30-11:00 ET` interval.
+  Truly different intraday intervals remain not comparable.
 
 The response preserves raw provider timestamps, the canonical session date or
-week label, the alignment mode used, and an alignment failure reason when bars
-remain not comparable. Indicator comparison uses aligned canonical copies for
-`1D` and `1W` so date-anchor differences alone do not create false indicator
-mismatches. This is Data Parity Lab-only diagnostic behavior and does not alter
-production recommendation inputs or math.
+week/interval label, the alignment mode used, inferred timestamp convention,
+canonical interval start/end, completed/in-progress status, and an alignment
+failure reason when bars remain not comparable. Indicator comparison uses
+aligned canonical copies for `1D`, `1W`, and intraday interval labels so
+timestamp-anchor differences alone do not create false indicator mismatches.
+This is Data Parity Lab-only diagnostic behavior and does not alter production
+recommendation inputs or math.
+
+During regular market hours, the lab defaults to completed bars only. Current
+in-progress intraday, daily, and weekly bars remain visible in the expanded
+diagnostics as the latest provider-returned bars, but they are excluded from the
+default verdict comparison until the operator opts into all returned bars. This
+prevents partial current bars from being labeled as real provider or indicator
+mismatches.
 
 Layer 3 compares derived MacMarket indicator bundles using existing repo
 functions only:
@@ -159,6 +176,9 @@ Each row exposes:
 - latest current-provider bar timestamp
 - latest Schwab bar timestamp
 - latest common aligned timestamp used for canonical/indicator comparison
+- latest returned provider timestamp versus latest compared completed timestamp
+- canonical interval start/end for the latest compared row
+- inferred provider timestamp convention
 - provider lag in minutes versus the server run time
 - provider lag in minutes versus the expected latest market bar
 - timestamp delta between current-provider and Schwab latest bars
@@ -198,9 +218,10 @@ entered TOS value.
 ## Root-Cause Verdicts
 
 The lab separates "not comparable yet" from true mismatch states. Indicator
-bundles are compared only after canonical bars match on aligned timestamps. If
-providers are not aligned to the same canonical timestamp, indicator comparison
-is skipped rather than labeled as an indicator mismatch.
+bundles are compared only after canonical bars match on aligned timestamps,
+session dates, trading weeks, or intraday interval keys. If providers are not
+aligned to the same canonical comparison key, indicator comparison is skipped
+rather than labeled as an indicator mismatch.
 
 - `provider_unavailable`: a provider, entitlement, parsing, or validation error
   prevented comparison.
@@ -211,7 +232,7 @@ is skipped rather than labeled as an indicator mismatch.
   safely.
 - `stale_source`: provider latest timestamps differ beyond timeframe tolerance.
 - `no_aligned_bars`: both sides returned bars, but there are no common
-  timestamps.
+  timestamp/session/week/interval alignment keys.
 - `comparable_raw_mismatch`: aligned raw provider bars differ materially.
 - `comparable_normalized_mismatch`: raw bars are usable, but canonical
   MacMarket bars differ after normalization/resampling.

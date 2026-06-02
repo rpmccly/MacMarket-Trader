@@ -115,6 +115,8 @@ def _bar_alignment_mode(timeframe: str) -> str:
         return "normalized_session_date"
     if tf == "1W":
         return "normalized_trading_week"
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return "canonical_intraday_interval"
     return "exact_timestamp"
 
 
@@ -125,6 +127,8 @@ def _bar_alignment_key(bar: Bar, *, timeframe: str) -> str:
     if tf == "1W":
         week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
         return f"week:{week_start.isoformat()}/{week_end.isoformat()}"
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return _bar_interval_key(bar, timeframe=tf, metadata={})
     return _bar_time_key(bar)
 
 
@@ -135,15 +139,33 @@ def _bar_alignment_label(bar: Bar, *, timeframe: str) -> str:
     if tf == "1W":
         week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
         return f"{week_start.isoformat()}/{week_end.isoformat()}"
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return _bar_interval_label(bar, timeframe=tf, metadata={})
     return _bar_time_key(bar)
 
 
-def _bar_alignment_diagnostics(bar: Bar | None, *, timeframe: str) -> dict[str, object]:
+def _bar_alignment_diagnostics(
+    bar: Bar | None,
+    *,
+    timeframe: str,
+    metadata: dict[str, object] | None = None,
+    server_run_at: datetime | None = None,
+) -> dict[str, object]:
+    provider_metadata = metadata or {}
     if bar is None:
         return {
             "raw_provider_timestamp": None,
             "canonical_session_date": None,
             "canonical_trading_week": None,
+            "timestamp_convention": None,
+            "canonical_interval_start": None,
+            "canonical_interval_end": None,
+            "bar_completed": None,
+            "bar_in_progress": None,
+            "adjusted": None,
+            "extended_hours": None,
+            "aggregation_multiplier": None,
+            "aggregation_timespan": None,
             "alignment_key": None,
             "alignment_label": None,
         }
@@ -153,12 +175,23 @@ def _bar_alignment_diagnostics(bar: Bar | None, *, timeframe: str) -> dict[str, 
     if tf == "1W":
         week_start, week_end = _canonical_week_bounds(session_date)
         week_label = f"{week_start.isoformat()}/{week_end.isoformat()}"
+    interval_start, interval_end, convention = _bar_interval_bounds(bar, timeframe=tf, metadata=provider_metadata)
+    completed = _bar_is_completed(bar, timeframe=tf, metadata=provider_metadata, server_run_at=server_run_at)
     return {
         "raw_provider_timestamp": _bar_time_key(bar),
         "canonical_session_date": session_date.isoformat() if tf == "1D" else None,
         "canonical_trading_week": week_label,
-        "alignment_key": _bar_alignment_key(bar, timeframe=tf),
-        "alignment_label": _bar_alignment_label(bar, timeframe=tf),
+        "timestamp_convention": convention,
+        "canonical_interval_start": _timestamp_payload(interval_start),
+        "canonical_interval_end": _timestamp_payload(interval_end),
+        "bar_completed": completed,
+        "bar_in_progress": None if completed is None else not completed,
+        "adjusted": _metadata_value(provider_metadata, "adjusted", "not_reported"),
+        "extended_hours": _metadata_value(provider_metadata, "needExtendedHoursData", "not_reported"),
+        "aggregation_multiplier": _aggregation_multiplier(provider_metadata, timeframe=tf),
+        "aggregation_timespan": _aggregation_timespan(provider_metadata, timeframe=tf),
+        "alignment_key": _bar_comparison_key(bar, timeframe=tf, metadata=provider_metadata),
+        "alignment_label": _bar_comparison_label(bar, timeframe=tf, metadata=provider_metadata),
     }
 
 
@@ -215,6 +248,232 @@ def _session_timestamp(session_day: date, minute_of_day: int) -> datetime:
         tzinfo=US_EQUITY_TIMEZONE,
     )
     return local.astimezone(UTC)
+
+
+def _provider_name_from_metadata(metadata: dict[str, object], bar: Bar | None = None) -> str:
+    provider = str(metadata.get("provider") or "").strip().lower()
+    if provider:
+        return provider
+    if bar is not None:
+        return str(bar.provider or "").strip().lower()
+    return ""
+
+
+def _inferred_timestamp_convention(bar: Bar | None, *, timeframe: str, metadata: dict[str, object]) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    explicit = str(metadata.get("timestamp_convention") or "").strip().lower()
+    if explicit in {"bar_start", "bar_end", "session_anchor", "unknown"}:
+        return explicit
+    if tf in {"1D", "1W"}:
+        return "session_anchor"
+    provider = _provider_name_from_metadata(metadata, bar)
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        if "schwab" in provider:
+            return "bar_end"
+        if "polygon" in provider or "massive" in provider:
+            return "bar_start"
+    return "unknown"
+
+
+def _bucket_bounds_for_timestamp(
+    timestamp: datetime,
+    *,
+    timeframe: str,
+    convention_hint: str,
+) -> tuple[date, int, int, str] | None:
+    tf = validate_chart_timeframe(timeframe)
+    buckets = RTH_BUCKETS_BY_TIMEFRAME.get(tf)
+    if not buckets:
+        return None
+    local = timestamp.astimezone(US_EQUITY_TIMEZONE)
+    minute = local.hour * 60 + local.minute
+    start_matches = [(start, end) for start, end in buckets if minute == start]
+    end_matches = [(start, end) for start, end in buckets if minute == end]
+    interior_matches = [(start, end) for start, end in buckets if start < minute < end]
+
+    if convention_hint == "bar_end" and end_matches:
+        start, end = end_matches[0]
+        return local.date(), start, end, "bar_end"
+    if convention_hint == "bar_start" and start_matches:
+        start, end = start_matches[-1]
+        return local.date(), start, end, "bar_start"
+    if start_matches and not end_matches:
+        start, end = start_matches[-1]
+        return local.date(), start, end, "bar_start"
+    if end_matches and not start_matches:
+        start, end = end_matches[0]
+        return local.date(), start, end, "bar_end"
+    if convention_hint == "bar_end" and interior_matches:
+        start, end = interior_matches[0]
+        return local.date(), start, end, "unknown"
+    if interior_matches:
+        start, end = interior_matches[0]
+        return local.date(), start, end, "unknown"
+    if start_matches:
+        start, end = start_matches[-1]
+        return local.date(), start, end, "bar_start"
+    if end_matches:
+        start, end = end_matches[0]
+        return local.date(), start, end, "bar_end"
+    return None
+
+
+def _nominal_intraday_minutes(timeframe: str) -> int:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "30M":
+        return 30
+    if tf == "1H":
+        return 60
+    if tf == "4H":
+        return 240
+    return 0
+
+
+def _bar_interval_bounds(
+    bar: Bar,
+    *,
+    timeframe: str,
+    metadata: dict[str, object],
+) -> tuple[datetime | None, datetime | None, str]:
+    tf = validate_chart_timeframe(timeframe)
+    timestamp = _bar_datetime(bar)
+    convention = _inferred_timestamp_convention(bar, timeframe=tf, metadata=metadata)
+    if tf == "1D":
+        session_day = _bar_session_date(bar)
+        return _session_timestamp(session_day, REGULAR_OPEN_MINUTE), _session_timestamp(session_day, REGULAR_CLOSE_MINUTE), "session_anchor"
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
+        return _session_timestamp(week_start, REGULAR_OPEN_MINUTE), _session_timestamp(week_end, REGULAR_CLOSE_MINUTE), "session_anchor"
+    if timestamp is None:
+        return None, None, convention
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        bucket = _bucket_bounds_for_timestamp(timestamp, timeframe=tf, convention_hint=convention)
+        if bucket is not None:
+            session_day, start_minute, end_minute, inferred = bucket
+            return _session_timestamp(session_day, start_minute), _session_timestamp(session_day, end_minute), inferred
+        duration = _nominal_intraday_minutes(tf)
+        if duration > 0 and convention == "bar_end":
+            return timestamp - timedelta(minutes=duration), timestamp, convention
+        if duration > 0:
+            return timestamp, timestamp + timedelta(minutes=duration), convention
+    return timestamp, timestamp, convention
+
+
+def _bar_interval_key(bar: Bar, *, timeframe: str, metadata: dict[str, object]) -> str:
+    start, end, _convention = _bar_interval_bounds(bar, timeframe=timeframe, metadata=metadata)
+    if start is None or end is None:
+        return _bar_time_key(bar)
+    return f"interval:{start.astimezone(UTC).isoformat()}/{end.astimezone(UTC).isoformat()}"
+
+
+def _bar_interval_label(bar: Bar, *, timeframe: str, metadata: dict[str, object]) -> str:
+    start, end, _convention = _bar_interval_bounds(bar, timeframe=timeframe, metadata=metadata)
+    if start is None or end is None:
+        return _bar_time_key(bar)
+    start_local = start.astimezone(US_EQUITY_TIMEZONE)
+    end_local = end.astimezone(US_EQUITY_TIMEZONE)
+    if start_local.date() == end_local.date():
+        return (
+            f"{start_local.date().isoformat()} "
+            f"{start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')} ET"
+        )
+    return f"{start_local.isoformat()}/{end_local.isoformat()}"
+
+
+def _bar_comparison_key(bar: Bar, *, timeframe: str, metadata: dict[str, object]) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "1D":
+        return f"session:{_bar_session_date(bar).isoformat()}"
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
+        return f"week:{week_start.isoformat()}/{week_end.isoformat()}"
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return _bar_interval_key(bar, timeframe=tf, metadata=metadata)
+    return _bar_time_key(bar)
+
+
+def _bar_comparison_label(bar: Bar, *, timeframe: str, metadata: dict[str, object]) -> str:
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "1D":
+        return _bar_session_date(bar).isoformat()
+    if tf == "1W":
+        week_start, week_end = _canonical_week_bounds(_bar_session_date(bar))
+        return f"{week_start.isoformat()}/{week_end.isoformat()}"
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return _bar_interval_label(bar, timeframe=tf, metadata=metadata)
+    return _bar_time_key(bar)
+
+
+def _bar_is_completed(
+    bar: Bar | None,
+    *,
+    timeframe: str,
+    metadata: dict[str, object],
+    server_run_at: datetime | None,
+) -> bool | None:
+    if bar is None:
+        return None
+    if server_run_at is None:
+        return None
+    _start, end, _convention = _bar_interval_bounds(bar, timeframe=timeframe, metadata=metadata)
+    if end is None:
+        return None
+    return end.astimezone(UTC) <= server_run_at.astimezone(UTC)
+
+
+def _filter_completed_bars(
+    bars: list[Bar],
+    *,
+    timeframe: str,
+    metadata: dict[str, object],
+    server_run_at: datetime,
+    completed_bars_only: bool,
+) -> tuple[list[Bar], int]:
+    if not completed_bars_only:
+        return bars, 0
+    completed: list[Bar] = []
+    filtered = 0
+    for bar in bars:
+        is_completed = _bar_is_completed(bar, timeframe=timeframe, metadata=metadata, server_run_at=server_run_at)
+        if is_completed is False:
+            filtered += 1
+            continue
+        completed.append(bar)
+    return completed, filtered
+
+
+def _aggregation_multiplier(metadata: dict[str, object], *, timeframe: str) -> object:
+    multiplier = _metadata_value(metadata, "request_multiplier")
+    if multiplier is not None:
+        return multiplier
+    frequency = _metadata_value(metadata, "request_frequency")
+    if frequency is not None:
+        return frequency
+    tf = validate_chart_timeframe(timeframe)
+    if tf == "30M":
+        return 30
+    if tf == "1H":
+        return 1
+    if tf == "4H":
+        return 4
+    return 1
+
+
+def _aggregation_timespan(metadata: dict[str, object], *, timeframe: str) -> object:
+    timespan = _metadata_value(metadata, "request_timespan")
+    if timespan is not None:
+        return timespan
+    frequency_type = _metadata_value(metadata, "request_frequency_type")
+    if frequency_type is not None:
+        return frequency_type
+    tf = validate_chart_timeframe(timeframe)
+    if tf in RTH_BUCKETS_BY_TIMEFRAME:
+        return "minute"
+    if tf == "1D":
+        return "day"
+    if tf == "1W":
+        return "week"
+    return "unknown"
 
 
 def _expected_latest_market_bar_timestamp(timeframe: str, run_time: datetime) -> datetime | None:
@@ -333,6 +592,8 @@ def _verdict_reason(
             return "providers_returned_bars_but_no_session_dates_overlap"
         if alignment_mode == "normalized_trading_week":
             return "providers_returned_bars_but_no_canonical_trading_weeks_overlap"
+        if alignment_mode == "canonical_intraday_interval":
+            return "providers_returned_bars_but_no_canonical_intraday_intervals_overlap"
         return "providers_returned_bars_but_no_timestamps_overlap"
     if verdict == "stale_source":
         delta_minutes = latest_timestamp_delta_seconds / 60.0 if latest_timestamp_delta_seconds is not None else None
@@ -447,6 +708,9 @@ def _metadata_from_bars(bars: list[Bar], *, provider: str, timeframe: str, fallb
         "regular_hours_timezone": "America/New_York" if timeframe.upper() in RTH_BUCKETS_BY_TIMEFRAME else None,
         "weekly_anchor": "provider_weekly_frequency" if timeframe.upper() == "1W" else None,
         "rth_bucket_boundaries": _format_rth_bucket_boundaries(timeframe) if timeframe.upper() in RTH_BUCKETS_BY_TIMEFRAME else [],
+        "timestamp_convention": "bar_start" if timeframe.upper() in RTH_BUCKETS_BY_TIMEFRAME else "session_anchor",
+        "aggregation_multiplier": _aggregation_multiplier({"provider": provider}, timeframe=timeframe),
+        "aggregation_timespan": _aggregation_timespan({"provider": provider}, timeframe=timeframe),
         "first_bar_timestamp": first.timestamp.astimezone(UTC).isoformat() if first and first.timestamp else None,
         "last_bar_timestamp": last.timestamp.astimezone(UTC).isoformat() if last and last.timestamp else None,
     }
@@ -516,6 +780,9 @@ def _bar_delta_payload(
     timeframe: str,
     alignment_key: str,
     alignment_mode: str,
+    current_metadata: dict[str, object],
+    candidate_metadata: dict[str, object],
+    server_run_at: datetime,
 ) -> dict[str, object]:
     deltas = {
         "open": round(abs(float(current.open) - float(candidate.open)), 6),
@@ -524,26 +791,77 @@ def _bar_delta_payload(
         "close": round(abs(float(current.close) - float(candidate.close)), 6),
         "volume": round(abs(float(current.volume) - float(candidate.volume)), 6),
     }
+    current_interval_start, current_interval_end, current_convention = _bar_interval_bounds(
+        current,
+        timeframe=timeframe,
+        metadata=current_metadata,
+    )
+    candidate_interval_start, candidate_interval_end, candidate_convention = _bar_interval_bounds(
+        candidate,
+        timeframe=timeframe,
+        metadata=candidate_metadata,
+    )
     return {
         "timestamp": _bar_time_key(current),
         "alignment_key": alignment_key,
-        "alignment_label": _bar_alignment_label(current, timeframe=timeframe),
+        "alignment_label": _bar_comparison_label(current, timeframe=timeframe, metadata=current_metadata),
         "alignment_mode": alignment_mode,
+        "canonical_interval_start": _timestamp_payload(current_interval_start),
+        "canonical_interval_end": _timestamp_payload(current_interval_end),
+        "current_timestamp_convention": current_convention,
+        "candidate_timestamp_convention": candidate_convention,
+        "current_bar_completed": _bar_is_completed(
+            current,
+            timeframe=timeframe,
+            metadata=current_metadata,
+            server_run_at=server_run_at,
+        ),
+        "candidate_bar_completed": _bar_is_completed(
+            candidate,
+            timeframe=timeframe,
+            metadata=candidate_metadata,
+            server_run_at=server_run_at,
+        ),
         "current_raw_provider_timestamp": _bar_time_key(current),
         "candidate_raw_provider_timestamp": _bar_time_key(candidate),
-        "current_alignment": _bar_alignment_diagnostics(current, timeframe=timeframe),
-        "candidate_alignment": _bar_alignment_diagnostics(candidate, timeframe=timeframe),
+        "current_alignment": _bar_alignment_diagnostics(
+            current,
+            timeframe=timeframe,
+            metadata=current_metadata,
+            server_run_at=server_run_at,
+        ),
+        "candidate_alignment": _bar_alignment_diagnostics(
+            candidate,
+            timeframe=timeframe,
+            metadata=candidate_metadata,
+            server_run_at=server_run_at,
+        ),
         "current": _json_safe_bar(current),
         "candidate": _json_safe_bar(candidate),
         "deltas": deltas,
     }
 
 
-def _filter_bars_to_alignment_keys(bars: list[Bar], keys: set[str], *, timeframe: str) -> list[Bar]:
-    return [bar for bar in sorted(bars, key=_bar_sort_key) if _bar_alignment_key(bar, timeframe=timeframe) in keys]
+def _filter_bars_to_alignment_keys(
+    bars: list[Bar],
+    keys: set[str],
+    *,
+    timeframe: str,
+    metadata: dict[str, object],
+) -> list[Bar]:
+    return [
+        bar
+        for bar in sorted(bars, key=_bar_sort_key)
+        if _bar_comparison_key(bar, timeframe=timeframe, metadata=metadata) in keys
+    ]
 
 
-def _normalize_indicator_bars_for_alignment(bars: list[Bar], *, timeframe: str) -> list[Bar]:
+def _normalize_indicator_bars_for_alignment(
+    bars: list[Bar],
+    *,
+    timeframe: str,
+    metadata: dict[str, object],
+) -> list[Bar]:
     tf = validate_chart_timeframe(timeframe)
     if _bar_alignment_mode(tf) == "exact_timestamp":
         return sorted(bars, key=_bar_sort_key)
@@ -552,12 +870,18 @@ def _normalize_indicator_bars_for_alignment(bars: list[Bar], *, timeframe: str) 
     for bar in sorted(bars, key=_bar_sort_key):
         if tf == "1W":
             canonical_date, _week_end = _canonical_week_bounds(_bar_session_date(bar))
+            timestamp = datetime.combine(canonical_date, time.min, tzinfo=UTC)
+        elif tf in RTH_BUCKETS_BY_TIMEFRAME:
+            interval_start, _interval_end, _convention = _bar_interval_bounds(bar, timeframe=tf, metadata=metadata)
+            timestamp = interval_start or _bar_datetime(bar) or datetime.combine(_bar_session_date(bar), time.min, tzinfo=UTC)
+            canonical_date = timestamp.astimezone(US_EQUITY_TIMEZONE).date()
         else:
             canonical_date = _bar_session_date(bar)
+            timestamp = datetime.combine(canonical_date, time.min, tzinfo=UTC)
         normalized.append(
             Bar(
                 date=canonical_date,
-                timestamp=datetime.combine(canonical_date, time.min, tzinfo=UTC),
+                timestamp=timestamp.astimezone(UTC),
                 open=bar.open,
                 high=bar.high,
                 low=bar.low,
@@ -610,7 +934,7 @@ def _comparison_diagnostics(
         if str(current_adjusted).lower() != str(candidate_adjusted).lower():
             notes.append("adjusted_mode_difference_possible")
         if latest_alignment_key_match and (material_price or material_volume):
-            notes.append("exact_timestamps_align_so_remaining_ohlcv_difference_is_provider_data_or_adjustment_related")
+            notes.append("canonical_intervals_align_so_remaining_ohlcv_difference_is_provider_data_or_adjustment_related")
     return {
         "alignment_mode": alignment_mode,
         "latest_alignment_key_match": latest_alignment_key_match,
@@ -618,6 +942,12 @@ def _comparison_diagnostics(
         "candidate_adjusted": candidate_adjusted,
         "current_extended_hours_flag": current_extended,
         "candidate_extended_hours_flag": candidate_extended,
+        "current_timestamp_convention": _metadata_value(current_metadata, "timestamp_convention", "inferred_from_provider"),
+        "candidate_timestamp_convention": _metadata_value(candidate_metadata, "timestamp_convention", "inferred_from_provider"),
+        "current_aggregation_multiplier": _aggregation_multiplier(current_metadata, timeframe=tf),
+        "candidate_aggregation_multiplier": _aggregation_multiplier(candidate_metadata, timeframe=tf),
+        "current_aggregation_timespan": _aggregation_timespan(current_metadata, timeframe=tf),
+        "candidate_aggregation_timespan": _aggregation_timespan(candidate_metadata, timeframe=tf),
         "current_session_policy": current_metadata.get("session_policy"),
         "candidate_session_policy": candidate_metadata.get("session_policy"),
         "current_source_timeframe": current_metadata.get("source_timeframe"),
@@ -637,18 +967,35 @@ def _compare_bars(
     timeframe: str,
     mismatch_verdict: str,
     server_run_at: datetime,
+    completed_bars_only: bool,
 ) -> dict[str, object]:
     tf = validate_chart_timeframe(timeframe)
     alignment_mode = _bar_alignment_mode(tf)
-    ordered_current = sorted(current, key=_bar_sort_key)
-    ordered_candidate = sorted(candidate, key=_bar_sort_key)
-    current_by_key = {_bar_alignment_key(bar, timeframe=tf): bar for bar in ordered_current}
-    candidate_by_key = {_bar_alignment_key(bar, timeframe=tf): bar for bar in ordered_candidate}
+    input_ordered_current = sorted(current, key=_bar_sort_key)
+    input_ordered_candidate = sorted(candidate, key=_bar_sort_key)
+    ordered_current, filtered_current = _filter_completed_bars(
+        input_ordered_current,
+        timeframe=tf,
+        metadata=current_metadata,
+        server_run_at=server_run_at,
+        completed_bars_only=completed_bars_only,
+    )
+    ordered_candidate, filtered_candidate = _filter_completed_bars(
+        input_ordered_candidate,
+        timeframe=tf,
+        metadata=candidate_metadata,
+        server_run_at=server_run_at,
+        completed_bars_only=completed_bars_only,
+    )
+    current_by_key = {_bar_comparison_key(bar, timeframe=tf, metadata=current_metadata): bar for bar in ordered_current}
+    candidate_by_key = {_bar_comparison_key(bar, timeframe=tf, metadata=candidate_metadata): bar for bar in ordered_candidate}
     current_keys = set(current_by_key)
     candidate_keys = set(candidate_by_key)
     aligned = sorted(current_keys & candidate_keys)
     missing_on_current = sorted(candidate_keys - current_keys)
     missing_on_candidate = sorted(current_keys - candidate_keys)
+    latest_input_current = input_ordered_current[-1] if input_ordered_current else None
+    latest_input_candidate = input_ordered_candidate[-1] if input_ordered_candidate else None
     latest_current = ordered_current[-1] if ordered_current else None
     latest_candidate = ordered_candidate[-1] if ordered_candidate else None
     latest_timestamp_delta_seconds = _latest_timestamp_delta_seconds(latest_current, latest_candidate)
@@ -657,8 +1004,8 @@ def _compare_bars(
         latest_timestamp_delta_seconds is not None
         and latest_timestamp_delta_seconds > latest_timestamp_tolerance_seconds
     )
-    latest_current_alignment_key = _bar_alignment_key(latest_current, timeframe=tf) if latest_current else None
-    latest_candidate_alignment_key = _bar_alignment_key(latest_candidate, timeframe=tf) if latest_candidate else None
+    latest_current_alignment_key = _bar_comparison_key(latest_current, timeframe=tf, metadata=current_metadata) if latest_current else None
+    latest_candidate_alignment_key = _bar_comparison_key(latest_candidate, timeframe=tf, metadata=candidate_metadata) if latest_candidate else None
     latest_alignment_key_match = bool(
         latest_current_alignment_key
         and latest_candidate_alignment_key
@@ -718,7 +1065,7 @@ def _compare_bars(
     latest_common_current = current_by_key[latest_common_key] if latest_common_key else None
     latest_common_candidate = candidate_by_key[latest_common_key] if latest_common_key else None
     latest_common_alignment_label = (
-        _bar_alignment_label(latest_common_current, timeframe=tf)
+        _bar_comparison_label(latest_common_current, timeframe=tf, metadata=current_metadata)
         if latest_common_current is not None
         else None
     )
@@ -729,6 +1076,9 @@ def _compare_bars(
             timeframe=tf,
             alignment_key=latest_common_key,
             alignment_mode=alignment_mode,
+            current_metadata=current_metadata,
+            candidate_metadata=candidate_metadata,
+            server_run_at=server_run_at,
         )["deltas"]
         if latest_common_current and latest_common_candidate
         else {}
@@ -740,6 +1090,9 @@ def _compare_bars(
             timeframe=tf,
             alignment_key=key,
             alignment_mode=alignment_mode,
+            current_metadata=current_metadata,
+            candidate_metadata=candidate_metadata,
+            server_run_at=server_run_at,
         )
         for key in aligned[-25:]
     ]
@@ -754,6 +1107,32 @@ def _compare_bars(
         server_run_at=server_run_at,
         verdict=verdict,
         verdict_reason=verdict_reason,
+    )
+    freshness["latest_input_bar_timestamp_current"] = _timestamp_payload(_bar_datetime(latest_input_current))
+    freshness["latest_input_bar_timestamp_candidate"] = _timestamp_payload(_bar_datetime(latest_input_candidate))
+    freshness["latest_input_current_alignment"] = _bar_alignment_diagnostics(
+        latest_input_current,
+        timeframe=tf,
+        metadata=current_metadata,
+        server_run_at=server_run_at,
+    )
+    freshness["latest_input_candidate_alignment"] = _bar_alignment_diagnostics(
+        latest_input_candidate,
+        timeframe=tf,
+        metadata=candidate_metadata,
+        server_run_at=server_run_at,
+    )
+    freshness["latest_compared_current_alignment"] = _bar_alignment_diagnostics(
+        latest_current,
+        timeframe=tf,
+        metadata=current_metadata,
+        server_run_at=server_run_at,
+    )
+    freshness["latest_compared_candidate_alignment"] = _bar_alignment_diagnostics(
+        latest_candidate,
+        timeframe=tf,
+        metadata=candidate_metadata,
+        server_run_at=server_run_at,
     )
     comparison_diagnostics = _comparison_diagnostics(
         timeframe=tf,
@@ -778,7 +1157,13 @@ def _compare_bars(
         "not_comparable_reason": verdict if verdict in NOT_COMPARABLE_VERDICTS else None,
         "alignment_mode": alignment_mode,
         "alignment_key_type": alignment_mode,
+        "comparison_scope": "completed_bars_only" if completed_bars_only else "all_returned_bars",
+        "completed_bars_only": completed_bars_only,
         "alignment_failure_reason": alignment_failure_reason,
+        "input_bars_current": len(input_ordered_current),
+        "input_bars_candidate": len(input_ordered_candidate),
+        "filtered_in_progress_current_count": filtered_current,
+        "filtered_in_progress_candidate_count": filtered_candidate,
         "bars_current": len(ordered_current),
         "bars_candidate": len(ordered_candidate),
         "aligned_timestamps": len(aligned),
@@ -789,16 +1174,42 @@ def _compare_bars(
         "latest_common_alignment_label": latest_common_alignment_label,
         "latest_common_current_raw_timestamp": _bar_time_key(latest_common_current) if latest_common_current else None,
         "latest_common_candidate_raw_timestamp": _bar_time_key(latest_common_candidate) if latest_common_candidate else None,
+        "latest_input_current_raw_timestamp": _bar_time_key(latest_input_current) if latest_input_current else None,
+        "latest_input_candidate_raw_timestamp": _bar_time_key(latest_input_candidate) if latest_input_candidate else None,
         "first_timestamp_current": _bar_time_key(ordered_current[0]) if ordered_current else None,
         "first_timestamp_candidate": _bar_time_key(ordered_candidate[0]) if ordered_candidate else None,
         "last_timestamp_current": _bar_time_key(latest_current) if latest_current else None,
         "last_timestamp_candidate": _bar_time_key(latest_candidate) if latest_candidate else None,
         "latest_timestamp_match": latest_timestamp_match,
         "latest_alignment_key_match": latest_alignment_key_match,
-        "latest_current_alignment": _bar_alignment_diagnostics(latest_current, timeframe=tf),
-        "latest_candidate_alignment": _bar_alignment_diagnostics(latest_candidate, timeframe=tf),
+        "latest_input_current_alignment": _bar_alignment_diagnostics(
+            latest_input_current,
+            timeframe=tf,
+            metadata=current_metadata,
+            server_run_at=server_run_at,
+        ),
+        "latest_input_candidate_alignment": _bar_alignment_diagnostics(
+            latest_input_candidate,
+            timeframe=tf,
+            metadata=candidate_metadata,
+            server_run_at=server_run_at,
+        ),
+        "latest_current_alignment": _bar_alignment_diagnostics(
+            latest_current,
+            timeframe=tf,
+            metadata=current_metadata,
+            server_run_at=server_run_at,
+        ),
+        "latest_candidate_alignment": _bar_alignment_diagnostics(
+            latest_candidate,
+            timeframe=tf,
+            metadata=candidate_metadata,
+            server_run_at=server_run_at,
+        ),
         "latest_timestamp_delta_seconds": round(latest_timestamp_delta_seconds, 3) if latest_timestamp_delta_seconds is not None else None,
         "latest_timestamp_tolerance_seconds": latest_timestamp_tolerance_seconds,
+        "latest_input_current": _json_safe_bar(latest_input_current),
+        "latest_input_candidate": _json_safe_bar(latest_input_candidate),
         "latest_current": _json_safe_bar(latest_current),
         "latest_candidate": _json_safe_bar(latest_candidate),
         "latest_common_current": _json_safe_bar(latest_common_current),
@@ -854,8 +1265,24 @@ def _annotate_raw_metadata(
     if requested_timeframe.upper() in RTH_BUCKETS_BY_TIMEFRAME:
         annotated.setdefault("regular_hours_timezone", "America/New_York")
         annotated.setdefault("rth_bucket_boundaries", _format_rth_bucket_boundaries(requested_timeframe))
+        provider = str(annotated.get("provider") or "").lower()
+        if "schwab" in provider:
+            annotated.setdefault("timestamp_convention", "bar_end")
+        elif "polygon" in provider or "massive" in provider:
+            annotated.setdefault("timestamp_convention", "bar_start")
+        else:
+            annotated.setdefault("timestamp_convention", "unknown")
+        annotated.setdefault("aggregation_multiplier", _aggregation_multiplier(annotated, timeframe=source_timeframe))
+        annotated.setdefault("aggregation_timespan", _aggregation_timespan(annotated, timeframe=source_timeframe))
     if requested_timeframe.upper() == "1W":
         annotated.setdefault("weekly_anchor", "provider_weekly_frequency")
+        annotated.setdefault("timestamp_convention", "session_anchor")
+        annotated.setdefault("aggregation_multiplier", _aggregation_multiplier(annotated, timeframe=source_timeframe))
+        annotated.setdefault("aggregation_timespan", _aggregation_timespan(annotated, timeframe=source_timeframe))
+    if requested_timeframe.upper() == "1D":
+        annotated.setdefault("timestamp_convention", "session_anchor")
+        annotated.setdefault("aggregation_multiplier", _aggregation_multiplier(annotated, timeframe=source_timeframe))
+        annotated.setdefault("aggregation_timespan", _aggregation_timespan(annotated, timeframe=source_timeframe))
     return annotated
 
 
@@ -1280,6 +1707,7 @@ class ProviderParityService:
         lookback = max(5, min(lookback, self.cfg.data_parity_max_lookback_bars))
         session_policy = str(request.get("sessionPolicy") or "regular_hours")
         include_extended = bool(request.get("includeExtendedHours") or False)
+        completed_bars_only = bool(request.get("completedBarsOnly", True))
         save_snapshot = bool(request.get("saveSnapshot", self.cfg.data_parity_save_snapshots)) and self.cfg.data_parity_save_snapshots
         tos_refs = request.get("tosReferences") if isinstance(request.get("tosReferences"), list) else []
         tos_by_key: dict[tuple[str, str], dict[str, object]] = {}
@@ -1339,6 +1767,7 @@ class ProviderParityService:
                         timeframe=_raw_source_timeframe(timeframe),
                         mismatch_verdict="comparable_raw_mismatch",
                         server_run_at=run_at,
+                        completed_bars_only=completed_bars_only,
                     )
                     current_canonical, current_metadata = _canonicalize_bars(
                         current_raw.bars,
@@ -1360,13 +1789,32 @@ class ProviderParityService:
                         timeframe=timeframe,
                         mismatch_verdict="comparable_normalized_mismatch",
                         server_run_at=run_at,
+                        completed_bars_only=completed_bars_only,
                     )
                     if canonical_comparison.get("verdict") == "match":
                         aligned_keys = set(str(key) for key in canonical_comparison.get("aligned_timestamp_keys", []) if key)
-                        current_indicator_bars = _filter_bars_to_alignment_keys(current_canonical, aligned_keys, timeframe=timeframe)
-                        schwab_indicator_bars = _filter_bars_to_alignment_keys(schwab_canonical, aligned_keys, timeframe=timeframe)
-                        current_indicator_bars = _normalize_indicator_bars_for_alignment(current_indicator_bars, timeframe=timeframe)
-                        schwab_indicator_bars = _normalize_indicator_bars_for_alignment(schwab_indicator_bars, timeframe=timeframe)
+                        current_indicator_bars = _filter_bars_to_alignment_keys(
+                            current_canonical,
+                            aligned_keys,
+                            timeframe=timeframe,
+                            metadata=current_metadata,
+                        )
+                        schwab_indicator_bars = _filter_bars_to_alignment_keys(
+                            schwab_canonical,
+                            aligned_keys,
+                            timeframe=timeframe,
+                            metadata=schwab_metadata,
+                        )
+                        current_indicator_bars = _normalize_indicator_bars_for_alignment(
+                            current_indicator_bars,
+                            timeframe=timeframe,
+                            metadata=current_metadata,
+                        )
+                        schwab_indicator_bars = _normalize_indicator_bars_for_alignment(
+                            schwab_indicator_bars,
+                            timeframe=timeframe,
+                            metadata=schwab_metadata,
+                        )
                         current_bundle = _compute_indicator_bundle(current_indicator_bars, symbol=symbol, timeframe=timeframe)
                         schwab_bundle = _compute_indicator_bundle(schwab_indicator_bars, symbol=symbol, timeframe=timeframe)
                         indicators_comparison = _compare_indicator_bundles(current_bundle, schwab_bundle)
@@ -1382,7 +1830,7 @@ class ProviderParityService:
                             "mode": canonical_comparison.get("alignment_mode"),
                             "normalized": canonical_comparison.get("alignment_mode") != "exact_timestamp",
                             "latest_common_alignment_label": canonical_comparison.get("latest_common_alignment_label"),
-                            "reason": "daily_weekly_indicator_inputs_use_canonical_session_labels"
+                            "reason": "indicator_inputs_use_canonical_session_or_interval_labels"
                             if canonical_comparison.get("alignment_mode") != "exact_timestamp"
                             else "intraday_indicator_inputs_preserve_exact_provider_timestamps",
                         }
@@ -1445,6 +1893,7 @@ class ProviderParityService:
                 "lookbackBars": lookback,
                 "sessionPolicy": session_policy,
                 "includeExtendedHours": include_extended,
+                "completedBarsOnly": completed_bars_only,
                 "saveSnapshot": save_snapshot,
                 "tosReferencesProvided": len(tos_by_key),
             },

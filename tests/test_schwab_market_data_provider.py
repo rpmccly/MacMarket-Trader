@@ -146,6 +146,49 @@ def test_handles_empty_symbol_response(monkeypatch) -> None:
         provider.fetch_raw_historical_bars("SPY", "1D", 10)
 
 
+def test_intraday_normalization_shifts_schwab_bar_end_labels_before_rth_aggregation() -> None:
+    cfg = _cfg()
+    repo = _repo()
+    provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
+    raw = [
+        provider._normalize_candle(
+            {
+                "datetime": int(datetime(2026, 1, 2, 15, 0, tzinfo=UTC).timestamp() * 1000),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+                "volume": 1000,
+            },
+            provider="schwab",
+            source_timeframe="30M",
+        ),
+        provider._normalize_candle(
+            {
+                "datetime": int(datetime(2026, 1, 2, 15, 30, tzinfo=UTC).timestamp() * 1000),
+                "open": 101,
+                "high": 102,
+                "low": 100,
+                "close": 101.5,
+                "volume": 1100,
+            },
+            provider="schwab",
+            source_timeframe="30M",
+        ),
+    ]
+
+    bars, metadata = provider.normalize_bars(raw, timeframe="1H", limit=5)
+
+    assert len(bars) == 1
+    assert bars[0].timestamp == datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
+    assert bars[0].open == 100
+    assert bars[0].close == 101.5
+    assert bars[0].volume == 2100
+    assert metadata["source_timestamp_convention"] == "bar_end"
+    assert metadata["timestamp_convention"] == "bar_start"
+    assert metadata["timestamp_convention_adjustment"] == "schwab_intraday_bar_end_shifted_to_interval_start_for_rth_aggregation"
+
+
 def test_handles_entitlement_errors_without_leaking_authorization(monkeypatch) -> None:
     cfg = _cfg()
     repo = _repo()

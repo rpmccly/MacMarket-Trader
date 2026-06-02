@@ -93,11 +93,28 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function formatValue(value: unknown): string {
+export function formatDataParityValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4);
   if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "object") {
+    const record = asRecord(value);
+    for (const key of ["message", "error", "detail", "details", "reason", "status", "verdict"]) {
+      const candidate = record[key];
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+    try {
+      const text = JSON.stringify(value);
+      return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+    } catch {
+      return "unavailable diagnostic object";
+    }
+  }
   return String(value);
+}
+
+function formatValue(value: unknown): string {
+  return formatDataParityValue(value);
 }
 
 function formatTimestampInZone(value: unknown, timeZone: "UTC" | "America/New_York"): string {
@@ -149,6 +166,10 @@ function providerFreshness(result: DataParityResult, side: "current" | "candidat
 }
 
 function providerAsOf(result: DataParityResult, side: "current" | "candidate"): string {
+  const rawFreshness = providerFreshnessRecord(result);
+  const inputKey = side === "current" ? "latest_input_bar_timestamp_current" : "latest_input_bar_timestamp_candidate";
+  const inputTimestamp = asRecord(rawFreshness[inputKey]);
+  if (inputTimestamp.utc || inputTimestamp.new_york) return formatTimestamp(inputTimestamp);
   return formatTimestamp(asRecord(providerFreshness(result, side).latest_bar_timestamp));
 }
 
@@ -299,11 +320,16 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>Schwab latest close</span><strong>{latestClose(record, "latest_candidate")}</strong>
         <span>latest common timestamp</span><strong>{formatTimestamp(record.latest_common_timestamp)}</strong>
         <span>alignment mode</span><strong>{formatValue(record.alignment_mode)}</strong>
+        <span>comparison scope</span><strong>{formatValue(record.comparison_scope)}</strong>
         <span>latest alignment label</span><strong>{formatValue(record.latest_common_alignment_label)}</strong>
         <span>current common raw timestamp</span><strong>{formatTimestamp(record.latest_common_current_raw_timestamp)}</strong>
         <span>Schwab common raw timestamp</span><strong>{formatTimestamp(record.latest_common_candidate_raw_timestamp)}</strong>
+        <span>current latest returned</span><strong>{formatTimestamp(record.latest_input_current_raw_timestamp)}</strong>
+        <span>Schwab latest returned</span><strong>{formatTimestamp(record.latest_input_candidate_raw_timestamp)}</strong>
         <span>latest alignment match</span><strong>{formatValue(record.latest_alignment_key_match)}</strong>
         <span>alignment failure</span><strong>{formatValue(record.alignment_failure_reason)}</strong>
+        <span>current in-progress filtered</span><strong>{formatValue(record.filtered_in_progress_current_count)}</strong>
+        <span>Schwab in-progress filtered</span><strong>{formatValue(record.filtered_in_progress_candidate_count)}</strong>
         <span>current as-of</span><strong>{formatTimestamp(asRecord(currentFreshness.latest_bar_timestamp))}</strong>
         <span>Schwab as-of</span><strong>{formatTimestamp(asRecord(candidateFreshness.latest_bar_timestamp))}</strong>
         <span>market session</span><strong>{formatValue(freshness.market_session_state)}</strong>
@@ -330,6 +356,12 @@ function ComparisonDetail({ title, comparison }: { title: string; comparison: un
         <span>current source</span><strong>{formatValue(currentMeta.provider)}</strong>
         <span>Schwab source</span><strong>{formatValue(candidateMeta.provider)}</strong>
         <span>session policy</span><strong>{formatValue(candidateMeta.session_policy ?? currentMeta.session_policy)}</strong>
+        <span>current timestamp convention</span><strong>{formatValue(asRecord(record.latest_current_alignment).timestamp_convention)}</strong>
+        <span>Schwab timestamp convention</span><strong>{formatValue(asRecord(record.latest_candidate_alignment).timestamp_convention)}</strong>
+        <span>current interval start</span><strong>{formatTimestamp(asRecord(asRecord(record.latest_current_alignment).canonical_interval_start))}</strong>
+        <span>current interval end</span><strong>{formatTimestamp(asRecord(asRecord(record.latest_current_alignment).canonical_interval_end))}</strong>
+        <span>Schwab interval start</span><strong>{formatTimestamp(asRecord(asRecord(record.latest_candidate_alignment).canonical_interval_start))}</strong>
+        <span>Schwab interval end</span><strong>{formatTimestamp(asRecord(asRecord(record.latest_candidate_alignment).canonical_interval_end))}</strong>
         <span>diagnostic notes</span><strong>{diagnosticNotes}</strong>
       </div>
     </section>
@@ -355,8 +387,12 @@ function SideBySideBarsTable({ title, comparison }: { title: string; comparison:
           <thead>
             <tr>
               <th>Alignment</th>
+              <th>Interval start</th>
+              <th>Interval end</th>
               <th>Current timestamp</th>
               <th>Schwab timestamp</th>
+              <th>Timestamp convention</th>
+              <th>Completed</th>
               <th>Current provider O/H/L/C/V</th>
               <th>Schwab O/H/L/C/V</th>
               <th>Close delta</th>
@@ -372,8 +408,12 @@ function SideBySideBarsTable({ title, comparison }: { title: string; comparison:
               return (
                 <tr key={`${String(record.alignment_key ?? record.timestamp)}-${index}`}>
                   <td>{formatValue(record.alignment_label ?? record.alignment_key)}</td>
+                  <td>{formatTimestamp(asRecord(record.canonical_interval_start))}</td>
+                  <td>{formatTimestamp(asRecord(record.canonical_interval_end))}</td>
                   <td>{formatTimestamp(record.current_raw_provider_timestamp ?? record.timestamp)}</td>
                   <td>{formatTimestamp(record.candidate_raw_provider_timestamp)}</td>
+                  <td>{formatValue(record.current_timestamp_convention)} / {formatValue(record.candidate_timestamp_convention)}</td>
+                  <td>{formatValue(record.current_bar_completed)} / {formatValue(record.candidate_bar_completed)}</td>
                   <td>{[current.open, current.high, current.low, current.close, current.volume].map(formatValue).join(" / ")}</td>
                   <td>{[candidate.open, candidate.high, candidate.low, candidate.close, candidate.volume].map(formatValue).join(" / ")}</td>
                   <td>{formatValue(deltas.close)}</td>
@@ -539,6 +579,7 @@ export function DataParityLab() {
   });
   const [lookbackBars, setLookbackBars] = useState(DATA_PARITY_DEFAULT_LOOKBACK_BARS);
   const [saveSnapshot, setSaveSnapshot] = useState(true);
+  const [completedBarsOnly, setCompletedBarsOnly] = useState(true);
   const [tosRows, setTosRows] = useState<TosReferenceInput[]>([]);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -601,6 +642,7 @@ export function DataParityLab() {
         lookbackBars,
         sessionPolicy: "regular_hours",
         includeExtendedHours: false,
+        completedBarsOnly,
         saveSnapshot,
         tosReferences: normalizeTosReferenceRows(tosRows),
       });
@@ -731,6 +773,14 @@ export function DataParityLab() {
           <label className="dp-field">
             <span>Session policy</span>
             <input value="regular_hours" readOnly />
+          </label>
+          <label className="dp-inline-check dp-save-check">
+            <input
+              type="checkbox"
+              checked={completedBarsOnly}
+              onChange={(event) => setCompletedBarsOnly(event.currentTarget.checked)}
+            />
+            <span>Completed bars only</span>
           </label>
           <label className="dp-inline-check dp-save-check">
             <input

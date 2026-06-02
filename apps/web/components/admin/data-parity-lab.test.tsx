@@ -35,6 +35,7 @@ vi.mock("@/components/operator-ui", async () => {
 import {
   DataParityLab,
   cleanDataParityErrorMessage,
+  formatDataParityValue,
   isSchwabConnected,
   shouldShowSchwabReconnect,
 } from "@/components/admin/data-parity-lab";
@@ -93,6 +94,10 @@ describe("DataParityLab", () => {
       "latest alignment label",
       "Current timestamp",
       "Schwab timestamp",
+      "Interval start",
+      "Interval end",
+      "Timestamp convention",
+      "Completed bars only",
       "diagnostic notes",
       "Verdict reason",
       "lag vs server",
@@ -135,5 +140,14 @@ describe("DataParityLab", () => {
       ),
     ).toBe("Data parity run failed.");
     expect(cleanDataParityErrorMessage("Backend unavailable", "Data parity run failed.")).toBe("Backend unavailable");
+  });
+
+  it("renders diagnostic objects as readable text instead of object strings", () => {
+    expect(formatDataParityValue({ error: "Schwab provider unavailable", code: "provider_unavailable" })).toBe(
+      "Schwab provider unavailable",
+    );
+    const fallback = formatDataParityValue({ code: "provider_unavailable", details: ["missing quote"] });
+    expect(fallback).toContain("provider_unavailable");
+    expect(fallback).not.toContain("[object Object]");
   });
 });

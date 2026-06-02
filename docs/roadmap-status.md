@@ -2,20 +2,31 @@
 
 Last updated: 2026-06-02
 
-## 2026-06-02 Update - Data Parity Session Alignment Diagnostics
+## 2026-06-02 Update - Data Parity Interval Alignment Diagnostics
 
 Completed in the current Phase 1 provider-trust track:
 - Updated Data Parity Lab bar comparison so `1D` bars align by canonical market
-  session date and `1W` bars align by canonical Monday-Friday trading week,
-  while preserving exact timestamp alignment for intraday bars.
+  session date, `1W` bars align by canonical Monday-Friday trading week, and
+  intraday `30M`, `1H`, and `4H` bars align by canonical covered interval when
+  providers label the same interval with bar-start versus bar-end timestamps.
 - Preserved raw provider timestamps in the diagnostic payload and UI alongside
-  the normalized session/week label, alignment mode, latest common raw
+  the normalized session/week/interval label, alignment mode, inferred
+  timestamp convention, canonical interval start/end, latest common raw
   timestamps, and alignment failure reason.
-- Normalized only Data Parity Lab indicator input copies for `1D` and `1W` so
-  Sunday/Monday or daily UTC-anchor differences do not create false indicator
-  mismatches when OHLCV bars cover the same session/week.
+- Defaulted diagnostic comparisons to completed bars only and surfaced the
+  latest provider-returned bar separately from the latest compared completed
+  bar, so in-progress intraday/daily/weekly bars are not labeled as true
+  mismatches during market hours.
+- Normalized only Data Parity Lab indicator input copies for aligned comparison
+  keys so Sunday/Monday, daily UTC-anchor, or intraday bar-start/bar-end label
+  differences do not create false indicator mismatches when OHLCV bars cover the
+  same session/week/interval.
+- Shifted Schwab diagnostic intraday bar-end labels to interval starts before
+  regular-hours aggregation for canonical Data Parity Lab bars, without adding
+  Schwab to production provider selection.
 - Surfaced intraday mismatch diagnostics for adjusted-mode, extended-hours,
-  session-policy, source-timeframe, and regular-hours bucket-boundary evidence.
+  session-policy, source-timeframe, timestamp-convention, aggregation
+  multiplier/timespan, and regular-hours bucket-boundary evidence.
 
 No production provider default, broker routing, live trading, recommendation
 scoring, risk-calendar decisions, volatility-breaker threshold, replay, Agent
