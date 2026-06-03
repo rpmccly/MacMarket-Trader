@@ -714,8 +714,12 @@ Scheduled Reports select existing lists and keep their saved static symbol
 snapshots for schedule execution.
 Agent Mode also uses its selected/default watchlist as the primary run universe
 unless the operator explicitly chooses manual override, and run audit payloads
-record the selected watchlist plus resolved symbol snapshot. Agent Mode
-notifications are summarized per run rather than per symbol/event.
+record the selected watchlist plus resolved symbol snapshot. The Windows
+deployment/restart scripts start the Agent Mode scheduler loop, which checks
+due windows from the deployed runtime and records scheduler health/status for
+the Overview card. The loop also supports safe foreground diagnostics with
+`scripts\run-agent-mode-scheduler.ps1 -Once -NoNotifications -DryRun`. Agent
+Mode notifications are summarized per run rather than per symbol/event.
 Current manual entry now shows clearer separator guidance, parsed uppercase
 previews, duplicate feedback, and ETF/index substitute copy, but remains a
 temporary manual universe until richer watchlist management is implemented.

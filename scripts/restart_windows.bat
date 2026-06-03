@@ -11,6 +11,8 @@ if not "%~1"=="" set "DST=%~1"
 
 set "LOG_DIR=%DST%\logs"
 set "WEB_DIR=%DST%\apps\web"
+set "AGENT_SCHEDULER_LOG=%LOG_DIR%\agent_scheduler.log"
+set "AGENT_SCHEDULER_BOOT_LOG=%LOG_DIR%\agent_scheduler_boot.log"
 
 echo.
 echo =========================================================
@@ -35,12 +37,21 @@ for %%P in (%FRONTEND_PORT% %BACKEND_PORT%) do (
   )
 )
 
+powershell -NoProfile -Command "$self=$PID; $dst='%DST%'; $script=$dst + '\scripts\run-agent-mode-scheduler.ps1'; $procs = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and ($_.CommandLine -like ('*' + $script + '*') -or $_.CommandLine -like '*agent-scheduler-check*') }); foreach($p in $procs){ Write-Host ('[INFO] taskkill /PID ' + $p.ProcessId + ' Agent scheduler'); Start-Process -FilePath taskkill.exe -ArgumentList '/PID', $p.ProcessId, '/F', '/T' -NoNewWindow -Wait }"
+
 echo [INFO] Starting backend...
 start "MacMarket-Trader API" /MIN cmd /c "cd /d \"%DST%\" && call .venv\Scripts\activate.bat && python -m uvicorn macmarket_trader.api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% > \"%LOG_DIR%\backend.log\" 2>&1"
 
 if exist "%WEB_DIR%\package.json" (
   echo [INFO] Starting frontend...
   start "MacMarket-Trader WEB" /MIN cmd /c "cd /d \"%WEB_DIR%\" && npm run start -- --hostname %FRONTEND_HOST% --port %FRONTEND_PORT% > \"%LOG_DIR%\frontend.log\" 2>&1"
+)
+
+if exist "%DST%\scripts\run-agent-mode-scheduler.ps1" (
+  echo [INFO] Starting Agent Mode scheduler...
+  start "MacMarket-Trader Agent Scheduler" /MIN /D "%DST%" cmd /c ""%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%DST%\scripts\run-agent-mode-scheduler.ps1" -RepoPath "%DST%" -Loop >> "%AGENT_SCHEDULER_BOOT_LOG%" 2>&1"
+) else (
+  echo [WARN] Agent Mode scheduler script not found: %DST%\scripts\run-agent-mode-scheduler.ps1
 )
 
 echo [OK] Restart issued.

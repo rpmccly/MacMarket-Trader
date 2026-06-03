@@ -193,6 +193,12 @@ class AgentModeRepository:
             "sms_consent_confirmed": False,
             "email_notifications_enabled": False,
             "sms_notifications_enabled": False,
+            "scheduler_last_checked_at": None,
+            "scheduler_last_check_result": None,
+            "scheduler_last_check_reason": None,
+            "scheduler_last_due_at": None,
+            "scheduler_last_run_id": None,
+            "scheduler_last_window_key": None,
         }
 
     def get_or_create_settings(self, *, app_user_id: int) -> AgentModeSettingsModel:
@@ -239,6 +245,12 @@ class AgentModeRepository:
             "sms_consent_confirmed",
             "email_notifications_enabled",
             "sms_notifications_enabled",
+            "scheduler_last_checked_at",
+            "scheduler_last_check_result",
+            "scheduler_last_check_reason",
+            "scheduler_last_due_at",
+            "scheduler_last_run_id",
+            "scheduler_last_window_key",
         }
         with self.session_factory() as session:
             row = session.execute(
@@ -298,6 +310,47 @@ class AgentModeRepository:
             )
             return session.execute(stmt).scalar_one_or_none()
 
+    @staticmethod
+    def _run_source(row: AgentModeRunModel) -> str:
+        request = row.request_json or {}
+        response = row.response_json or {}
+        summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
+        return str(
+            request.get("source")
+            or response.get("source")
+            or (summary.get("source") if isinstance(summary, dict) else None)
+            or ""
+        )
+
+    @staticmethod
+    def _run_window_key(row: AgentModeRunModel) -> str:
+        request = row.request_json or {}
+        response = row.response_json or {}
+        scheduler = request.get("scheduler") if isinstance(request.get("scheduler"), dict) else {}
+        response_scheduler = response.get("scheduler") if isinstance(response.get("scheduler"), dict) else {}
+        summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
+        return str(
+            request.get("scheduled_window_key")
+            or scheduler.get("window_key")
+            or response_scheduler.get("window_key")
+            or (summary.get("scheduledWindowKey") if isinstance(summary, dict) else None)
+            or ""
+        )
+
+    def latest_scheduled_run(self, *, app_user_id: int) -> AgentModeRunModel | None:
+        for row in self.list_runs(app_user_id=app_user_id, limit=100):
+            if self._run_source(row) == "scheduled_agent":
+                return row
+        return None
+
+    def scheduled_run_for_window(self, *, app_user_id: int, window_key: str) -> AgentModeRunModel | None:
+        if not window_key:
+            return None
+        for row in self.list_runs(app_user_id=app_user_id, limit=100):
+            if self._run_source(row) == "scheduled_agent" and self._run_window_key(row) == window_key:
+                return row
+        return None
+
     def list_runs(
         self,
         *,
@@ -315,6 +368,11 @@ class AgentModeRepository:
             stmt = stmt.order_by(AgentModeRunModel.created_at.desc()).limit(max(1, min(int(limit), 100)))
             return list(session.execute(stmt).scalars())
 
+    def list_settings(self) -> list[AgentModeSettingsModel]:
+        with self.session_factory() as session:
+            stmt = select(AgentModeSettingsModel).order_by(AgentModeSettingsModel.app_user_id.asc())
+            return list(session.execute(stmt).scalars())
+
     def list_enabled_settings(self) -> list[AgentModeSettingsModel]:
         with self.session_factory() as session:
             stmt = select(AgentModeSettingsModel).where(
@@ -323,6 +381,77 @@ class AgentModeRepository:
                 AgentModeSettingsModel.kill_switch_enabled.is_(False),
             )
             return list(session.execute(stmt).scalars())
+
+    def update_scheduler_check(
+        self,
+        *,
+        app_user_id: int,
+        checked_at: datetime,
+        result: str,
+        reason: str | None,
+        due_at: datetime | None,
+        run_id: str | None,
+        window_key: str | None,
+    ) -> AgentModeSettingsModel | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentModeSettingsModel).where(AgentModeSettingsModel.app_user_id == app_user_id)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            row.scheduler_last_checked_at = checked_at
+            row.scheduler_last_check_result = str(result or "")[:32] or None
+            row.scheduler_last_check_reason = str(reason or "")[:255] or None
+            row.scheduler_last_due_at = due_at
+            row.scheduler_last_run_id = str(run_id or "")[:80] or None
+            row.scheduler_last_window_key = str(window_key or "")[:80] or None
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def claim_scheduler_window(
+        self,
+        *,
+        app_user_id: int,
+        checked_at: datetime,
+        due_at: datetime | None,
+        window_key: str,
+        stale_after_seconds: int,
+    ) -> bool:
+        if not window_key:
+            return False
+        stale_before = checked_at - timedelta(seconds=max(60, int(stale_after_seconds)))
+        with self.session_factory() as session:
+            stmt = (
+                update(AgentModeSettingsModel)
+                .where(AgentModeSettingsModel.app_user_id == app_user_id)
+                .where(
+                    or_(
+                        AgentModeSettingsModel.scheduler_last_window_key.is_(None),
+                        AgentModeSettingsModel.scheduler_last_window_key != window_key,
+                        AgentModeSettingsModel.scheduler_last_check_result.is_(None),
+                        AgentModeSettingsModel.scheduler_last_check_result != "running",
+                        AgentModeSettingsModel.scheduler_last_checked_at.is_(None),
+                        AgentModeSettingsModel.scheduler_last_checked_at < stale_before,
+                    )
+                )
+                .values(
+                    scheduler_last_checked_at=checked_at,
+                    scheduler_last_check_result="running",
+                    scheduler_last_check_reason="due_now",
+                    scheduler_last_due_at=due_at,
+                    scheduler_last_run_id=None,
+                    scheduler_last_window_key=str(window_key)[:80],
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            return bool(result.rowcount)
+
+    def enabled_settings_count(self) -> int:
+        return sum(1 for _ in self.list_enabled_settings())
 
 
 def gross_pnl_or_fallback(row: PaperTradeModel) -> float:

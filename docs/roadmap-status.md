@@ -2,6 +2,47 @@
 
 Last updated: 2026-06-03
 
+## 2026-06-03 Update - Agent Scheduler Startup Hardening
+
+Completed in the current Phase 1 operator-control hardening track:
+- Hardened `scripts/run-agent-mode-scheduler.ps1` with safe foreground
+  `-Once -DryRun -NoNotifications` mode, persistent `-Loop` mode, top-of-script
+  startup diagnostics, DB diagnostics, scheduler check output, heartbeat logs,
+  and caught startup errors.
+- Updated Windows deploy/restart launchers to start the scheduler from the live
+  runtime with explicit `-RepoPath`/`-Loop`, separate boot logging, and safer
+  stale-process cleanup.
+- Extended `agent-scheduler-diagnostics` to report scheduler log last-write
+  time, last heartbeat/check lines, startup error state, and detected scheduler
+  process counts.
+
+No recommendation scoring, strategy math, provider defaults, risk-calendar
+decisions, volatility thresholds, HACO/Momentum math, Replay behavior, broker
+routing, live trading, Daily Target Book behavior, or non-Agent paper lifecycle
+behavior changed.
+
+## 2026-06-03 Update - Agent Mode Scheduler Diagnostics
+
+Completed in the current Phase 1 operator-control hardening track:
+- Fixed the Agent Mode scheduled-run duplicate guard so manual Agent runs do
+  not suppress a due scheduled run; duplicate prevention now uses the
+  scheduled local-date/time/timezone window plus a scheduler-window claim for
+  `scheduled_agent` runs.
+- Added persisted scheduler check diagnostics on Agent Mode settings plus
+  `/user/agent-mode/status` fields for scheduler health, last check, due-now
+  state, selected watchlist, resolved symbol count, last scheduled run result,
+  and safe skip/error reasons.
+- Added redacted CLI diagnostics and dry-run check commands:
+  `agent-scheduler-diagnostics` and
+  `agent-scheduler-check --dry-run --no-notifications`.
+- Updated Windows deploy/restart scripts to stop stale Agent scheduler loops
+  and start `scripts/run-agent-mode-scheduler.ps1` from the deployed runtime.
+
+No recommendation scoring, strategy math, provider defaults, risk-calendar
+decisions, volatility thresholds, HACO/Momentum math, Replay behavior, broker
+routing, live trading, Daily Target Book behavior, or non-Agent paper lifecycle
+behavior changed.
+
 ## 2026-06-03 Update - Scheduled Heatmap Email Reports
 
 Completed in the current Phase 1 operator-reporting track:
@@ -2609,7 +2650,11 @@ First implementation slice:
 - Frontend: Next.js on `0.0.0.0:9500`
 - DB: SQLite at `C:\Dashboard\MacMarket-Trader\macmarket_trader.db`
 - Backup: daily 3 AM via `MacMarket-DB-Backup` scheduled task
-- Scheduler: every 5 min via `MacMarket-StrategyScheduler` scheduled task
+- Strategy report scheduler: every 5 min via `MacMarket-StrategyScheduler`
+  scheduled task
+- Agent Mode scheduler: deploy/restart-started
+  `scripts/run-agent-mode-scheduler.ps1` loop, every 5 min from
+  `C:\Dashboard\MacMarket-Trader`
 - Alpha users: 3 (admin + 2 approved)
 - Alpaca paper API keys: configured, `BROKER_PROVIDER=mock` (execution phase
   not active)

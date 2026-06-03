@@ -39,6 +39,11 @@ AGENT_MODE_INTENTS = [
     "CASH_NO_TRADE",
 ]
 
+AGENT_MODE_SOURCE_MANUAL = "manual_agent"
+AGENT_MODE_SOURCE_SCHEDULED = "scheduled_agent"
+AGENT_MODE_SOURCE_DIAGNOSTIC = "scheduler_diagnostic"
+AGENT_SCHEDULER_HEALTH_STALE_SECONDS = 15 * 60
+
 
 class AgentModeService:
     """Deterministic paper-only operator loop for the Agent Mode MVP."""
@@ -94,6 +99,12 @@ class AgentModeService:
             "sms_consent_confirmed": bool(getattr(row, "sms_consent_confirmed", False)),
             "email_notifications_enabled": bool(getattr(row, "email_notifications_enabled", False)),
             "sms_notifications_enabled": bool(getattr(row, "sms_notifications_enabled", False)),
+            "scheduler_last_checked_at": row.scheduler_last_checked_at.isoformat() if getattr(row, "scheduler_last_checked_at", None) else None,
+            "scheduler_last_check_result": getattr(row, "scheduler_last_check_result", None),
+            "scheduler_last_check_reason": getattr(row, "scheduler_last_check_reason", None),
+            "scheduler_last_due_at": row.scheduler_last_due_at.isoformat() if getattr(row, "scheduler_last_due_at", None) else None,
+            "scheduler_last_run_id": getattr(row, "scheduler_last_run_id", None),
+            "scheduler_last_window_key": getattr(row, "scheduler_last_window_key", None),
             "sms_provider_status": NotificationService.sms_readiness(),
             "paper_only": True,
             "execution_mode": "paper",
@@ -255,7 +266,10 @@ class AgentModeService:
         return self.serialize_settings(row)
 
     def resolve_universe(self, *, app_user_id: int, settings_payload: dict[str, object], overrides: dict[str, object]) -> dict[str, object]:
-        explicit_source = overrides.get("universe_source") or overrides.get("source")
+        explicit_source = overrides.get("universe_source")
+        raw_source = str(overrides.get("source") or "").strip().lower()
+        if not explicit_source and raw_source in {"manual", "watchlist", "watchlist_plus_manual", "all_active"}:
+            explicit_source = raw_source
         source = str(explicit_source or settings_payload.get("universe_source") or "manual").strip().lower()
         if source not in {"manual", "watchlist", "watchlist_plus_manual", "all_active"}:
             source = "manual"
@@ -387,6 +401,90 @@ class AgentModeService:
             hour, minute = 15, 45
         return max(0, min(23, hour)), max(0, min(59, minute))
 
+    @staticmethod
+    def _safe_error_summary(value: object) -> str:
+        text = str(value or "agent_scheduler_error").strip() or "agent_scheduler_error"
+        for marker in ("Authorization:", "Bearer ", "access_token", "refresh_token", "client_secret", "TWILIO_AUTH_TOKEN"):
+            if marker.lower() in text.lower():
+                return "redacted_sensitive_error"
+        return text[:240]
+
+    @staticmethod
+    def _parse_iso_datetime(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    @staticmethod
+    def _run_source_from_request(request: dict[str, object]) -> str:
+        raw_source = str(request.get("source") or "").strip().lower()
+        if raw_source in {AGENT_MODE_SOURCE_MANUAL, AGENT_MODE_SOURCE_SCHEDULED, AGENT_MODE_SOURCE_DIAGNOSTIC}:
+            return raw_source
+        trigger = str(request.get("trigger") or "").strip().lower()
+        if trigger in {"daily_scheduler", "scheduled_agent"}:
+            return AGENT_MODE_SOURCE_SCHEDULED
+        if trigger in {"scheduler_diagnostic", "diagnostic"}:
+            return AGENT_MODE_SOURCE_DIAGNOSTIC
+        return AGENT_MODE_SOURCE_MANUAL
+
+    @staticmethod
+    def _notifications_suppressed(request: dict[str, object]) -> bool:
+        for key in ("no_notifications", "suppress_notifications", "notifications_disabled"):
+            value = request.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"}:
+                return True
+        return False
+
+    def _scheduler_window(self, *, settings_payload: dict[str, object], now: datetime) -> dict[str, object]:
+        zone_name = str(settings_payload.get("timezone") or "America/New_York")
+        zone = self._setting_zone(zone_name)
+        current_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        local_now = current_utc.astimezone(zone)
+        hour, minute = self._parse_run_time(settings_payload.get("daily_run_time"))
+        due_local = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        due_utc = due_local.astimezone(timezone.utc)
+        window_key = f"{local_now.date().isoformat()}|{hour:02d}:{minute:02d}|{zone_name}"
+        return {
+            "timezone": zone_name,
+            "local_date": local_now.date().isoformat(),
+            "local_now": local_now.isoformat(),
+            "run_time": f"{hour:02d}:{minute:02d}",
+            "due_at": due_utc,
+            "due_at_iso": due_utc.isoformat(),
+            "due_at_local": due_local.isoformat(),
+            "due_now": local_now >= due_local,
+            "window_key": window_key,
+        }
+
+    def _next_scheduled_candidate(
+        self,
+        *,
+        settings_payload: dict[str, object],
+        now: datetime,
+        already_ran_window: bool,
+    ) -> datetime | None:
+        if (
+            not bool(settings_payload.get("enabled"))
+            or bool(settings_payload.get("paused"))
+            or bool(settings_payload.get("kill_switch_enabled"))
+        ):
+            return None
+        window = self._scheduler_window(settings_payload=settings_payload, now=now)
+        due_at = window["due_at"]
+        if isinstance(due_at, datetime) and (not bool(window["due_now"]) or not already_ran_window):
+            return due_at
+        zone = self._setting_zone(str(settings_payload.get("timezone") or "America/New_York"))
+        tomorrow_local = due_at.astimezone(zone) + timedelta(days=1) if isinstance(due_at, datetime) else now.astimezone(zone) + timedelta(days=1)
+        return tomorrow_local.astimezone(timezone.utc)
+
     def _next_run_at(
         self,
         *,
@@ -412,10 +510,26 @@ class AgentModeService:
         row = self.agent_repo.get_or_create_settings(app_user_id=user.id)
         settings_payload = self.serialize_settings(row)
         latest = self.agent_repo.latest_run(app_user_id=user.id)
+        latest_scheduled = self.agent_repo.latest_scheduled_run(app_user_id=user.id)
         now = utc_now()
-        next_run = self._next_run_at(settings_payload=settings_payload, latest_row=latest, now=now)
+        window = self._scheduler_window(settings_payload=settings_payload, now=now)
+        already_ran_window = self.agent_repo.scheduled_run_for_window(
+            app_user_id=user.id,
+            window_key=str(window.get("window_key") or ""),
+        ) is not None
+        next_run = self._next_scheduled_candidate(
+            settings_payload=settings_payload,
+            now=now,
+            already_ran_window=already_ran_window,
+        )
         latest_payload = self._run_response(latest) if latest else {}
         summary = latest_payload.get("summary") if isinstance(latest_payload.get("summary"), dict) else {}
+        latest_scheduled_payload = self._run_response(latest_scheduled) if latest_scheduled else {}
+        scheduled_summary = (
+            latest_scheduled_payload.get("summary")
+            if isinstance(latest_scheduled_payload.get("summary"), dict)
+            else {}
+        )
         status = "never_run"
         if not bool(settings_payload.get("enabled")):
             status = "disabled"
@@ -430,7 +544,35 @@ class AgentModeService:
             last_skip_reason = "agent_disabled"
         elif isinstance(summary, dict):
             last_skip_reason = summary.get("skipReason")
+        scheduler_checked_at = row.scheduler_last_checked_at
+        if scheduler_checked_at and scheduler_checked_at.tzinfo is None:
+            scheduler_checked_at = scheduler_checked_at.replace(tzinfo=timezone.utc)
+        scheduler_age_seconds = (
+            int(max(0.0, (now - scheduler_checked_at).total_seconds()))
+            if scheduler_checked_at
+            else None
+        )
+        scheduler_health = "unknown"
+        if scheduler_checked_at:
+            if row.scheduler_last_check_result == "error":
+                scheduler_health = "degraded"
+            elif scheduler_age_seconds is not None and scheduler_age_seconds > AGENT_SCHEDULER_HEALTH_STALE_SECONDS:
+                scheduler_health = "stale"
+            else:
+                scheduler_health = "ok"
+        try:
+            universe = self.resolve_universe(app_user_id=user.id, settings_payload=settings_payload, overrides={})
+        except Exception as exc:  # noqa: BLE001 - status should stay available if universe diagnostics fail.
+            universe = {
+                "symbols": [],
+                "source": settings_payload.get("universe_source") or "unknown",
+                "source_status": "error",
+                "reason": self._safe_error_summary(exc),
+                "watchlist_id": settings_payload.get("default_watchlist_id"),
+                "watchlist_name": None,
+            }
         warnings = list(latest_payload.get("warnings") or []) if isinstance(latest_payload, dict) else []
+        due_now = bool(window.get("due_now")) and not already_ran_window and bool(settings_payload.get("enabled")) and not bool(settings_payload.get("paused")) and not bool(settings_payload.get("kill_switch_enabled"))
         return {
             "agent_enabled": bool(settings_payload.get("enabled")) and not bool(settings_payload.get("paused")) and not bool(settings_payload.get("kill_switch_enabled")),
             "configured_timezone": settings_payload.get("timezone"),
@@ -439,6 +581,28 @@ class AgentModeService:
             "current_server_timezone": "UTC",
             "next_scheduled_run_at": next_run.isoformat() if next_run else None,
             "seconds_until_next_run": int(max(0.0, (next_run - now).total_seconds())) if next_run else None,
+            "scheduler_health": scheduler_health,
+            "scheduler_last_checked_at": scheduler_checked_at.isoformat() if scheduler_checked_at else None,
+            "scheduler_last_check_result": row.scheduler_last_check_result,
+            "scheduler_last_check_reason": row.scheduler_last_check_reason,
+            "scheduler_last_due_at": row.scheduler_last_due_at.isoformat() if row.scheduler_last_due_at else None,
+            "scheduler_last_run_id": row.scheduler_last_run_id,
+            "scheduler_last_window_key": row.scheduler_last_window_key,
+            "scheduler_check_age_seconds": scheduler_age_seconds,
+            "scheduler_expected_interval_seconds": 300,
+            "scheduler_stale_after_seconds": AGENT_SCHEDULER_HEALTH_STALE_SECONDS,
+            "scheduler_due_now": due_now,
+            "scheduler_current_window_key": window.get("window_key"),
+            "scheduler_current_due_at": window.get("due_at_iso"),
+            "scheduler_current_due_at_local": window.get("due_at_local"),
+            "scheduler_already_ran_current_window": already_ran_window,
+            "selected_watchlist_id": universe.get("watchlist_id"),
+            "selected_watchlist_name": universe.get("watchlist_name"),
+            "resolved_symbol_count": len(universe.get("symbols") or []),
+            "resolved_symbols_preview": list(universe.get("symbols") or [])[:10],
+            "universe_source": universe.get("source"),
+            "universe_source_status": universe.get("source_status"),
+            "universe_skip_reason": universe.get("reason"),
             "last_run_started_at": latest.created_at.isoformat() if latest and latest.created_at else None,
             "last_run_completed_at": latest.completed_at.isoformat() if latest and latest.completed_at else None,
             "last_run_status": status,
@@ -448,9 +612,32 @@ class AgentModeService:
             "last_run_trade_count": int(summary.get("totalExecutedActions", summary.get("executedOrderCount", 0)) or 0) if isinstance(summary, dict) else 0,
             "last_run_position_review_count": len(latest_payload.get("positionReviews") or []) if isinstance(latest_payload, dict) else 0,
             "last_run_blocked_count": int(summary.get("blockedActions", 0) or 0) if isinstance(summary, dict) else 0,
+            "last_scheduled_run_id": latest_scheduled.run_id if latest_scheduled else None,
+            "last_scheduled_run_started_at": latest_scheduled.created_at.isoformat() if latest_scheduled and latest_scheduled.created_at else None,
+            "last_scheduled_run_completed_at": latest_scheduled.completed_at.isoformat() if latest_scheduled and latest_scheduled.completed_at else None,
+            "last_scheduled_run_status": (
+                "never_run"
+                if latest_scheduled is None
+                else "failed"
+                if latest_scheduled.status in {"error", "failed"}
+                else "success"
+                if latest_scheduled.status == "completed"
+                else str(latest_scheduled.status)
+            ),
+            "last_scheduled_skip_reason": (
+                scheduled_summary.get("skipReason") or scheduled_summary.get("universeSkipReason")
+                if isinstance(scheduled_summary, dict)
+                else None
+            ),
+            "last_scheduled_trade_count": int(scheduled_summary.get("totalExecutedActions", scheduled_summary.get("executedOrderCount", 0)) or 0) if isinstance(scheduled_summary, dict) else 0,
             "in_progress": status == "running",
-            "lock_diagnostics": {"available": False, "reason": "scheduler_lock_not_persisted"},
-            "scheduler_source": "backend-owned",
+            "lock_diagnostics": {
+                "available": False,
+                "reason": "database_lock_not_configured",
+                "duplicate_guard": "scheduled_window_key_plus_scheduler_claim",
+                "current_window_key": window.get("window_key"),
+            },
+            "scheduler_source": "external-cli-loop",
             "paperOnly": True,
             "executionMode": "paper",
         }
@@ -1462,6 +1649,9 @@ class AgentModeService:
 
     def run(self, *, user, request: dict[str, object] | None = None) -> dict[str, object]:
         request = dict(request or {})
+        run_source = self._run_source_from_request(request)
+        request["source"] = run_source
+        suppress_notifications = self._notifications_suppressed(request)
         if not self._user_is_approved(user):
             raise HTTPException(status_code=403, detail=f"Approval status is {getattr(user, 'approval_status', 'unknown')}")
         mode = str(request.get("mode") or request.get("execution_mode") or "paper").strip().lower()
@@ -1696,14 +1886,39 @@ class AgentModeService:
         total_agent_paper_pnl = None
         if unrealized_after is not None:
             total_agent_paper_pnl = self._round_money(realized_from_closes + unrealized_after)
+        universe_skip_reason = (
+            str(universe.get("reason") or "")
+            if universe.get("source_status") in {"missing", "empty", "error"}
+            else None
+        ) or None
+        scheduler_payload = request.get("scheduler") if isinstance(request.get("scheduler"), dict) else {}
+        scheduled_window_key = str(
+            request.get("scheduled_window_key")
+            or scheduler_payload.get("window_key")
+            or ""
+        ) or None
+        scheduled_due_at = self._parse_iso_datetime(scheduler_payload.get("due_at_iso") or scheduler_payload.get("due_at"))
         summary = {
             "paperOnly": True,
             "executionMode": "paper",
             "dryRun": dry_run,
+            "source": run_source,
+            "schedulerDiagnostic": run_source == AGENT_MODE_SOURCE_DIAGNOSTIC,
             "enabled": bool(settings_payload["enabled"]),
             "paused": bool(settings_payload["paused"]),
             "killSwitchEnabled": bool(settings_payload["kill_switch_enabled"]),
-            "skipReason": run_guard_reason,
+            "skipReason": run_guard_reason or universe_skip_reason,
+            "universeSkipReason": universe_skip_reason,
+            "scheduledWindowKey": scheduled_window_key,
+            "scheduledDueAt": scheduler_payload.get("due_at_iso") or scheduler_payload.get("due_at"),
+            "scheduledDueAtLocal": scheduler_payload.get("due_at_local"),
+            "scheduledActualStartAt": now.isoformat(),
+            "scheduledDelaySeconds": (
+                int(max(0.0, (now - scheduled_due_at).total_seconds()))
+                if scheduled_due_at is not None
+                else None
+            ),
+            "schedulerTimezone": scheduler_payload.get("timezone") or settings_payload.get("timezone"),
             "maxPositions": max_positions,
             "maxOpenAgentPositions": max_positions,
             "maxNewTradesPerRun": max_new_trades_per_run,
@@ -1723,6 +1938,8 @@ class AgentModeService:
             "runId": run_id,
             "asOf": datetime.now(timezone.utc).isoformat(),
             "status": "completed",
+            "source": run_source,
+            "scheduler": scheduler_payload,
             "settings": settings_payload,
             "universe": universe,
             "summary": summary,
@@ -1753,26 +1970,29 @@ class AgentModeService:
             ],
         }
         notification_attempts: list[dict[str, object]] = []
-        digest = self._build_run_notification_digest(
-            run_id=run_id,
-            response=response,
-            final_intents=final_intents,
-            candidates=candidates,
-            universe=universe,
-        )
-        notification_attempts.extend(
-            self.notification_service.send_event(
-                user=user,
-                settings_payload=settings_payload,
-                event_type=str(digest["event_type"]),
-                title=str(digest["title"]),
-                body=str(digest["text"]),
-                email_html=str(digest["html"]),
-                sms_body=str(digest["sms"]),
+        if suppress_notifications:
+            response["notificationDigestSuppressed"] = True
+        else:
+            digest = self._build_run_notification_digest(
                 run_id=run_id,
-                payload=digest["payload"] if isinstance(digest.get("payload"), dict) else None,
+                response=response,
+                final_intents=final_intents,
+                candidates=candidates,
+                universe=universe,
             )
-        )
+            notification_attempts.extend(
+                self.notification_service.send_event(
+                    user=user,
+                    settings_payload=settings_payload,
+                    event_type=str(digest["event_type"]),
+                    title=str(digest["title"]),
+                    body=str(digest["text"]),
+                    email_html=str(digest["html"]),
+                    sms_body=str(digest["sms"]),
+                    run_id=run_id,
+                    payload=digest["payload"] if isinstance(digest.get("payload"), dict) else None,
+                )
+            )
         response["notificationAttempts"] = notification_attempts
         self.agent_repo.create_run(
             app_user_id=user.id,
@@ -1805,35 +2025,264 @@ class AgentModeService:
         except ZoneInfoNotFoundError:
             return ZoneInfo("UTC")
 
-    def run_due(self, *, now: datetime | None = None) -> list[dict[str, object]]:
+    @staticmethod
+    def _scheduler_request_metadata(window: dict[str, object]) -> dict[str, object]:
+        return {
+            "timezone": window.get("timezone"),
+            "local_date": window.get("local_date"),
+            "local_now": window.get("local_now"),
+            "run_time": window.get("run_time"),
+            "due_at": window.get("due_at_iso"),
+            "due_at_iso": window.get("due_at_iso"),
+            "due_at_local": window.get("due_at_local"),
+            "window_key": window.get("window_key"),
+        }
+
+    def scheduler_diagnostics(self, *, now: datetime | None = None) -> dict[str, object]:
+        current_utc = now or datetime.now(timezone.utc)
+        settings_rows = self.agent_repo.list_settings()
+        rows: list[dict[str, object]] = []
+        for setting in settings_rows:
+            payload = self.serialize_settings(setting)
+            window = self._scheduler_window(settings_payload=payload, now=current_utc)
+            already_ran = self.agent_repo.scheduled_run_for_window(
+                app_user_id=setting.app_user_id,
+                window_key=str(window.get("window_key") or ""),
+            ) is not None
+            try:
+                universe = self.resolve_universe(app_user_id=setting.app_user_id, settings_payload=payload, overrides={})
+            except Exception as exc:  # noqa: BLE001 - diagnostics should keep reporting other users.
+                universe = {"symbols": [], "reason": self._safe_error_summary(exc), "source_status": "error"}
+            enabled = bool(setting.enabled) and not bool(setting.paused) and not bool(setting.kill_switch_enabled)
+            rows.append(
+                {
+                    "app_user_id": setting.app_user_id,
+                    "enabled": enabled,
+                    "paused": bool(setting.paused),
+                    "kill_switch_enabled": bool(setting.kill_switch_enabled),
+                    "timezone": setting.timezone,
+                    "daily_run_time": setting.daily_run_time,
+                    "due_now": bool(window.get("due_now")) and enabled and not already_ran,
+                    "already_ran_current_window": already_ran,
+                    "current_window_key": window.get("window_key"),
+                    "current_due_at": window.get("due_at_iso"),
+                    "last_checked_at": payload.get("scheduler_last_checked_at"),
+                    "last_check_result": payload.get("scheduler_last_check_result"),
+                    "last_check_reason": payload.get("scheduler_last_check_reason"),
+                    "selected_watchlist_id": universe.get("watchlist_id"),
+                    "selected_watchlist_name": universe.get("watchlist_name"),
+                    "resolved_symbol_count": len(universe.get("symbols") or []),
+                    "universe_source": universe.get("source") or payload.get("universe_source"),
+                    "universe_source_status": universe.get("source_status"),
+                    "universe_reason": universe.get("reason"),
+                }
+            )
+        return {
+            "status": "ok",
+            "paper_only": True,
+            "no_live_routing": True,
+            "as_of": current_utc.isoformat(),
+            "scheduler": {
+                "entrypoint": "python -m macmarket_trader.cli agent-scheduler-check",
+                "loop_script": "scripts/run-agent-mode-scheduler.ps1",
+                "wake_interval_seconds": 300,
+                "duplicate_guard": "scheduled_window_key_plus_scheduler_claim",
+                "source_for_scheduled_runs": AGENT_MODE_SOURCE_SCHEDULED,
+                "source_for_diagnostics": AGENT_MODE_SOURCE_DIAGNOSTIC,
+            },
+            "counts": {
+                "settings_rows": len(settings_rows),
+                "enabled_rows": sum(1 for row in rows if row.get("enabled")),
+                "due_now": sum(1 for row in rows if row.get("due_now")),
+                "unknown_scheduler_health": sum(1 for row in rows if not row.get("last_checked_at")),
+            },
+            "users": rows,
+        }
+
+    def run_due(
+        self,
+        *,
+        now: datetime | None = None,
+        dry_run: bool = False,
+        no_notifications: bool = False,
+        force: bool = False,
+        app_user_id: int | None = None,
+    ) -> list[dict[str, object]]:
         current_utc = now or datetime.now(timezone.utc)
         output: list[dict[str, object]] = []
-        for setting in self.agent_repo.list_enabled_settings():
-            zone = self._setting_zone(setting.timezone)
-            local_now = current_utc.astimezone(zone)
-            latest = self.agent_repo.latest_run(app_user_id=setting.app_user_id)
-            latest_local_date = None
-            if latest and latest.created_at:
-                latest_at = latest.created_at if latest.created_at.tzinfo else latest.created_at.replace(tzinfo=timezone.utc)
-                latest_local_date = latest_at.astimezone(zone).date()
-            if latest_local_date == local_now.date():
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "already_ran_today"})
+        for setting in self.agent_repo.list_settings():
+            if app_user_id is not None and int(setting.app_user_id) != int(app_user_id):
                 continue
-            if not self._scheduled_time_due(run_time=setting.daily_run_time, now=local_now):
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "not_due_yet"})
+            settings_payload = self.serialize_settings(setting)
+            window = self._scheduler_window(settings_payload=settings_payload, now=current_utc)
+            due_at = window.get("due_at") if isinstance(window.get("due_at"), datetime) else None
+            window_key = str(window.get("window_key") or "")
+            enabled = bool(setting.enabled) and not bool(setting.paused) and not bool(setting.kill_switch_enabled)
+            if not enabled:
+                reason = "agent_paused" if setting.paused else "kill_switch_enabled" if setting.kill_switch_enabled else "agent_disabled"
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="skipped",
+                    reason=reason,
+                    due_at=due_at,
+                    run_id=None,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": reason, "due_now": False})
+                continue
+            due_now = bool(window.get("due_now"))
+            if not due_now and not force:
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="skipped",
+                    reason="not_due_yet",
+                    due_at=due_at,
+                    run_id=None,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "not_due_yet", "due_now": False, "window_key": window_key})
+                continue
+            existing = self.agent_repo.scheduled_run_for_window(app_user_id=setting.app_user_id, window_key=window_key)
+            if existing is not None and not force:
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="skipped",
+                    reason="already_ran_for_window",
+                    due_at=due_at,
+                    run_id=existing.run_id,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "already_ran_for_window", "runId": existing.run_id, "window_key": window_key})
+                continue
+            if not force and not self.agent_repo.claim_scheduler_window(
+                app_user_id=setting.app_user_id,
+                checked_at=current_utc,
+                due_at=due_at,
+                window_key=window_key,
+                stale_after_seconds=AGENT_SCHEDULER_HEALTH_STALE_SECONDS,
+            ):
+                output.append(
+                    {
+                        "app_user_id": setting.app_user_id,
+                        "status": "skipped",
+                        "reason": "scheduler_window_already_claimed",
+                        "due_now": True,
+                        "window_key": window_key,
+                    }
+                )
                 continue
             with SessionLocal() as session:
                 user = session.execute(select(AppUserModel).where(AppUserModel.id == setting.app_user_id)).scalar_one_or_none()
             if user is None:
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_found"})
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="skipped",
+                    reason="user_not_found",
+                    due_at=due_at,
+                    run_id=None,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_found", "window_key": window_key})
                 continue
             if not self._user_is_approved(user):
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_approved"})
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="skipped",
+                    reason="user_not_approved",
+                    due_at=due_at,
+                    run_id=None,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_approved", "window_key": window_key})
                 continue
             try:
-                result = self.run(user=user, request={"mode": "paper", "dry_run": False, "trigger": "daily_scheduler"})
+                result = self.run(
+                    user=user,
+                    request={
+                        "mode": "paper",
+                        "dry_run": bool(dry_run),
+                        "trigger": "scheduler_diagnostic" if dry_run else "daily_scheduler",
+                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "scheduler": self._scheduler_request_metadata(window),
+                        "scheduled_window_key": window_key,
+                        "no_notifications": bool(no_notifications),
+                    },
+                )
             except Exception as exc:  # noqa: BLE001 - scheduler reports per-user failure and continues.
-                output.append({"app_user_id": setting.app_user_id, "status": "error", "reason": str(exc)})
+                reason = self._safe_error_summary(exc)
+                run_id = f"agent_error_{uuid4().hex[:16]}"
+                response_json = {
+                    "runId": run_id,
+                    "status": "error",
+                    "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                    "scheduler": self._scheduler_request_metadata(window),
+                    "summary": {
+                        "paperOnly": True,
+                        "executionMode": "paper",
+                        "dryRun": bool(dry_run),
+                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "skipReason": reason,
+                        "scheduledWindowKey": window_key,
+                    },
+                    "warnings": [reason],
+                    "notificationAttempts": [],
+                    "notificationDigestSuppressed": True,
+                }
+                self.agent_repo.create_run(
+                    app_user_id=setting.app_user_id,
+                    run_id=run_id,
+                    status="error",
+                    execution_mode="paper",
+                    dry_run=bool(dry_run),
+                    intent_count=0,
+                    executed_order_count=0,
+                    request_json={
+                        "mode": "paper",
+                        "dry_run": bool(dry_run),
+                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "scheduler": self._scheduler_request_metadata(window),
+                        "scheduled_window_key": window_key,
+                        "no_notifications": True,
+                    },
+                    response_json=response_json,
+                    completed_at=utc_now(),
+                )
+                self.agent_repo.update_scheduler_check(
+                    app_user_id=setting.app_user_id,
+                    checked_at=current_utc,
+                    result="error",
+                    reason=reason,
+                    due_at=due_at,
+                    run_id=run_id,
+                    window_key=window_key,
+                )
+                output.append({"app_user_id": setting.app_user_id, "status": "error", "reason": reason, "runId": run_id, "window_key": window_key})
                 continue
-            output.append({"app_user_id": setting.app_user_id, "status": "completed", "runId": result.get("runId")})
+            run_id = str(result.get("runId") or "")
+            self.agent_repo.update_scheduler_check(
+                app_user_id=setting.app_user_id,
+                checked_at=current_utc,
+                result="completed",
+                reason=str((result.get("summary") if isinstance(result.get("summary"), dict) else {}).get("skipReason") or "") or None,
+                due_at=due_at,
+                run_id=run_id,
+                window_key=window_key,
+            )
+            output.append(
+                {
+                    "app_user_id": setting.app_user_id,
+                    "status": "completed",
+                    "runId": run_id,
+                    "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                    "dry_run": bool(dry_run),
+                    "no_notifications": bool(no_notifications),
+                    "window_key": window_key,
+                    "resolved_symbol_count": len((result.get("universe") if isinstance(result.get("universe"), dict) else {}).get("symbols") or []),
+                }
+            )
         return output

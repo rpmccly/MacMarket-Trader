@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import subprocess
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import make_url
 
 from macmarket_trader.config import settings
@@ -59,6 +62,132 @@ def _database_diagnostics() -> dict[str, object]:
     }
 
 
+def _safe_init_db_for_cli() -> None:
+    try:
+        init_db()
+    except OperationalError as exc:
+        if "already exists" not in str(exc).lower():
+            raise
+
+
+def _safe_subprocess_json(command: list[str]) -> dict[str, object]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+    except Exception as exc:  # noqa: BLE001 - diagnostics should never crash the CLI.
+        return {"available": False, "reason": type(exc).__name__}
+    return {
+        "available": True,
+        "returncode": result.returncode,
+        "stdout": (result.stdout or "").strip()[:500],
+        "stderr": (result.stderr or "").strip()[:500],
+    }
+
+
+def _windows_agent_scheduler_runtime() -> dict[str, object]:
+    if platform.system().lower() != "windows":
+        return {"platform": platform.system(), "windows_checks": False}
+    task = _safe_subprocess_json(["schtasks", "/query", "/tn", "MacMarket-AgentScheduler", "/fo", "LIST", "/v"])
+    process = _safe_subprocess_json(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$self = $PID; "
+            "$all = @(Get-CimInstance Win32_Process); "
+            "$p = @($all | Where-Object { "
+            "$_.ProcessId -ne $self -and $_.Name -match '(?i)powershell' -and $_.CommandLine -and "
+            "$_.CommandLine -notmatch '(?i)\\s-Command\\s' -and "
+            "$_.CommandLine -match '(?i)\\s-File\\s+.*run-agent-mode-scheduler\\.ps1' "
+            "}); "
+            "$checks = @($all | Where-Object { "
+            "$_.ProcessId -ne $self -and $_.CommandLine -and "
+            "$_.CommandLine -match '(?i)agent-scheduler-check' "
+            "}); "
+            "[pscustomobject]@{"
+            "count=$p.Count;"
+            "schedulerCheckCount=$checks.Count;"
+            "processIds=($p | Select-Object -ExpandProperty ProcessId);"
+            "schedulerCheckProcessIds=($checks | Select-Object -ExpandProperty ProcessId)"
+            "} | ConvertTo-Json -Compress",
+        ]
+    )
+    detected_scheduler_process_count = None
+    detected_scheduler_check_count = None
+    if process.get("stdout"):
+        try:
+            parsed = json.loads(str(process["stdout"]))
+            detected_scheduler_process_count = int(parsed.get("count", 0))
+            detected_scheduler_check_count = int(parsed.get("schedulerCheckCount", 0))
+        except Exception:
+            detected_scheduler_process_count = None
+    return {
+        "platform": "Windows",
+        "windows_checks": True,
+        "task_registered": bool(task.get("returncode") == 0),
+        "task_query": task,
+        "process_query": process,
+        "detected_scheduler_process_count": detected_scheduler_process_count,
+        "detected_scheduler_check_count": detected_scheduler_check_count,
+    }
+
+
+def _agent_scheduler_log_diagnostics(log_path: Path) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "path": str(log_path),
+        "exists": log_path.exists(),
+        "last_write_time": None,
+        "last_startup_error": None,
+        "last_heartbeat": None,
+        "last_check_start": None,
+        "last_check_end": None,
+        "last_check_exit_code": None,
+    }
+    if not log_path.exists():
+        return payload
+    try:
+        payload["last_write_time"] = datetime.fromtimestamp(log_path.stat().st_mtime).astimezone().isoformat()
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
+    except Exception as exc:  # noqa: BLE001 - diagnostics should stay safe and redacted.
+        payload["last_startup_error"] = f"log_read_error:{type(exc).__name__}"
+        return payload
+    for line in lines:
+        safe_line = line[:500]
+        if "STARTUP_ERROR" in line:
+            payload["last_startup_error"] = safe_line
+        if "HEARTBEAT" in line:
+            payload["last_heartbeat"] = safe_line
+        if "SCHEDULER_CHECK START" in line:
+            payload["last_check_start"] = safe_line
+        if "SCHEDULER_CHECK END" in line:
+            payload["last_check_end"] = safe_line
+            marker = "exit_code="
+            if marker in line:
+                payload["last_check_exit_code"] = line.rsplit(marker, 1)[-1].strip()[:20]
+    return payload
+
+
+def _agent_scheduler_diagnostics_payload() -> dict[str, object]:
+    _safe_init_db_for_cli()
+    service_payload = AgentModeService().scheduler_diagnostics()
+    repo_root = Path.cwd()
+    script_path = repo_root / "scripts" / "run-agent-mode-scheduler.ps1"
+    log_path = repo_root / "logs" / "agent_scheduler.log"
+    return {
+        **service_payload,
+        "database": _database_diagnostics()["database"],
+        "working_directory": str(repo_root),
+        "scheduler_script": {
+            "path": str(script_path),
+            "exists": script_path.exists(),
+        },
+        "scheduler_log": {
+            **_agent_scheduler_log_diagnostics(log_path),
+        },
+        "runtime": _windows_agent_scheduler_runtime(),
+        "secrets_redacted": True,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="macmarket-trader")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -70,6 +199,12 @@ def main() -> None:
     sub.add_parser("seed-demo-data")
     sub.add_parser("run-due-strategy-schedules")
     sub.add_parser("run-due-agent-mode")
+    sub.add_parser("agent-scheduler-diagnostics")
+    agent_check = sub.add_parser("agent-scheduler-check")
+    agent_check.add_argument("--dry-run", action="store_true", help="Run due users through dry-run only; creates no paper orders.")
+    agent_check.add_argument("--no-notifications", action="store_true", help="Suppress Agent Mode email/SMS digests for this check.")
+    agent_check.add_argument("--force", action="store_true", help="Run the check even when the configured time is not due.")
+    agent_check.add_argument("--user-id", type=int, default=None, help="Limit the check to one local app_user_id.")
     sub.add_parser("run-due-momentum-heatmap-reports")
     args = parser.parse_args()
 
@@ -111,25 +246,45 @@ def main() -> None:
     elif args.command == "seed-demo-data":
         payload = seed_demo_data()
     elif args.command == "run-due-strategy-schedules":
-        init_db()
+        _safe_init_db_for_cli()
         payload = {"runs": strategy_report_service.run_due_schedules()}
     elif args.command == "run-due-agent-mode":
-        init_db()
+        _safe_init_db_for_cli()
         payload = {
             "runs": AgentModeService().run_due(),
             "status": "agent_mode_due_run_complete",
             "paper_only": True,
             "no_live_routing": True,
         }
+    elif args.command == "agent-scheduler-diagnostics":
+        payload = _agent_scheduler_diagnostics_payload()
+    elif args.command == "agent-scheduler-check":
+        _safe_init_db_for_cli()
+        dry_run = bool(getattr(args, "dry_run", False))
+        no_notifications = bool(getattr(args, "no_notifications", False)) or dry_run
+        payload = {
+            "runs": AgentModeService().run_due(
+                dry_run=dry_run,
+                no_notifications=no_notifications,
+                force=bool(getattr(args, "force", False)),
+                app_user_id=getattr(args, "user_id", None),
+            ),
+            "status": "agent_scheduler_check_complete",
+            "dry_run": dry_run,
+            "notifications_suppressed": no_notifications,
+            "paper_only": True,
+            "no_live_routing": True,
+            "secrets_redacted": True,
+        }
     elif args.command == "run-due-momentum-heatmap-reports":
-        init_db()
+        _safe_init_db_for_cli()
         payload = {
             "runs": strategy_report_service.run_due_schedules(report_types={REPORT_TYPE_MOMENTUM_HEATMAP}),
             "status": "momentum_heatmap_due_schedule_run_complete",
             "detail": "Delegates to strategy_report_schedules entries with report_type=momentum_heatmap.",
         }
     else:
-        init_db()
+        _safe_init_db_for_cli()
         payload = {"status": "initialized", "database": "sqlite"}
 
     print(json.dumps(payload, indent=2, sort_keys=True))

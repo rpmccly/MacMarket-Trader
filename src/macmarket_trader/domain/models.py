@@ -633,6 +633,12 @@ class AgentModeSettingsModel(Base):
     sms_consent_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     email_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     sms_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduler_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    scheduler_last_check_result: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    scheduler_last_check_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scheduler_last_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    scheduler_last_run_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    scheduler_last_window_key: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
 

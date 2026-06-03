@@ -41,9 +41,39 @@ SQLite databases, uploads, and generated build folders is preserved.
    as Agent Mode run/settings audit tables.
 5. Run the selected backend and frontend validation profile.
 6. Install/build frontend dependencies if present.
-7. Restart backend and frontend processes from the live runtime directories and
-   write logs under `C:\Dashboard\MacMarket-Trader\logs`.
+7. Restart backend, frontend, and the Agent Mode scheduler loop from the live
+   runtime directories and write logs under
+   `C:\Dashboard\MacMarket-Trader\logs`.
 8. Run backend and frontend health checks before reporting success.
+
+The Agent Mode scheduler is a separate PowerShell loop started by
+`scripts/run-agent-mode-scheduler.ps1`. It calls
+`python -m macmarket_trader.cli agent-scheduler-check` every five minutes from
+`C:\Dashboard\MacMarket-Trader`, using the same deployed `.env`, virtualenv,
+and database as the backend. Its logs are:
+
+```powershell
+C:\Dashboard\MacMarket-Trader\logs\agent_scheduler.log
+C:\Dashboard\MacMarket-Trader\logs\agent_scheduler_boot.log
+```
+
+Verify the scheduler after deploy or restart:
+
+```powershell
+cd C:\Dashboard\MacMarket-Trader
+.\scripts\run-agent-mode-scheduler.ps1 -Once -NoNotifications -DryRun
+.\.venv\Scripts\python.exe -m macmarket_trader.cli agent-scheduler-diagnostics
+.\.venv\Scripts\python.exe -m macmarket_trader.cli agent-scheduler-check --dry-run --no-notifications
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run-agent-mode-scheduler.ps1*" -or $_.CommandLine -like "*agent-scheduler-check*" } | Select-Object ProcessId, CommandLine
+Get-Content C:\Dashboard\MacMarket-Trader\logs\agent_scheduler.log -Tail 80
+```
+
+The foreground `-Once -DryRun -NoNotifications` check creates no paper orders,
+suppresses email/SMS digests, prints safe diagnostics, and exits. The
+deployment/restart launcher uses `-Loop`; the scheduler writes `HEARTBEAT`,
+`DB_DIAGNOSTICS`, `SCHEDULER_CHECK`, and `STARTUP_ERROR` lines so
+`agent-scheduler-diagnostics` can report the latest heartbeat/check time,
+startup error, scheduler process count, and log last-write time.
 
 ## Runtime state safety
 
@@ -95,7 +125,9 @@ wrapper instead of a restart-only script:
 ```
 
 Use `restart-macmarket-trader.bat` only after the live runtime already has the
-current code, dependencies, frontend build, and schema updates.
+current code, dependencies, frontend build, and schema updates. The restart
+script now stops stale Agent Mode scheduler loops and starts a fresh scheduler
+loop alongside backend and frontend.
 
 ## Database migration sanity
 

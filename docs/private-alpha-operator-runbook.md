@@ -771,6 +771,44 @@ Get-Content C:\Dashboard\MacMarket-Trader\logs\scheduler.log -Tail 20
 A clean run prints the timestamp line plus the CLI's per-schedule decisions
 (`due` / `not due` / `dispatched`) without a Python traceback.
 
+## 12A) Agent Mode scheduler verification
+
+Agent Mode scheduled runs are handled by the deployed scheduler loop:
+
+```powershell
+C:\Dashboard\MacMarket-Trader\scripts\run-agent-mode-scheduler.ps1
+```
+
+`scripts\deploy_windows.bat` and `scripts\restart_windows.bat` stop stale
+copies of that loop and start a fresh one from `C:\Dashboard\MacMarket-Trader`.
+The loop calls the backend CLI every five minutes using the deployed venv and
+`.env`:
+
+```powershell
+.\.venv\Scripts\python.exe -m macmarket_trader.cli agent-scheduler-check
+```
+
+Post-deploy checks:
+
+```powershell
+cd C:\Dashboard\MacMarket-Trader
+.\scripts\run-agent-mode-scheduler.ps1 -Once -NoNotifications -DryRun
+.\scripts\restart_windows.bat C:\Dashboard\MacMarket-Trader
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run-agent-mode-scheduler.ps1*" -or $_.CommandLine -like "*agent-scheduler-check*" } | Select-Object ProcessId, CommandLine
+.\.venv\Scripts\python.exe -m macmarket_trader.cli agent-scheduler-diagnostics
+.\.venv\Scripts\python.exe -m macmarket_trader.cli agent-scheduler-check --dry-run --no-notifications
+Get-Content C:\Dashboard\MacMarket-Trader\logs\agent_scheduler.log -Tail 80
+```
+
+The foreground `-Once -DryRun -NoNotifications` check creates no paper orders
+and suppresses email/SMS digests. The loop writes heartbeat, DB diagnostic,
+scheduler check, and startup error lines to `logs\agent_scheduler.log`; launcher
+stdout/stderr goes to `logs\agent_scheduler_boot.log`.
+The `/agent-mode` Overview card should show scheduler health, last scheduler
+check, due-now state, selected watchlist, resolved symbol count, and last
+scheduled run result. Health should be `unknown` before the loop checks in,
+not a false OK state.
+
 ## 13) MFA rollout sequence
 
 The repository ships with `REQUIRE_MFA_FOR_ADMIN=false` and `ENFORCE_GLOBAL_MFA=false`

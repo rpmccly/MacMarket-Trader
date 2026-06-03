@@ -93,6 +93,13 @@ describe("AgentModeConsole", () => {
 
   it("contains performance cockpit tables and count consistency fields", () => {
     expect(source).toContain("Schedule status");
+    expect(source).toContain("Scheduler health");
+    expect(source).toContain("Last scheduler check");
+    expect(source).toContain("Due now");
+    expect(source).toContain("Last scheduled result");
+    expect(source).toContain("Resolved symbols");
+    expect(source).toContain("scheduler_due_now");
+    expect(source).toContain("scheduler_last_check_result");
     expect(source).toContain("Time until next run");
     expect(source).toContain("Your browser timezone differs from the Agent Mode timezone");
     expect(source).toContain("paper opens");

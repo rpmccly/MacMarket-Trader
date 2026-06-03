@@ -77,6 +77,14 @@ function toneForIntent(intent: string): "good" | "warn" | "bad" | "neutral" {
   return "neutral";
 }
 
+function toneForSchedulerHealth(health: unknown): "good" | "warn" | "bad" | "neutral" {
+  const value = String(health || "unknown").toLowerCase();
+  if (value === "ok") return "good";
+  if (value === "degraded") return "bad";
+  if (value === "stale") return "warn";
+  return "neutral";
+}
+
 function asText(value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   if (Array.isArray(value)) return value.join(", ");
@@ -480,12 +488,19 @@ export function AgentModeConsole() {
               <div className="op-stack">
                 <div className="op-grid op-grid-4">
                   <Metric label="Enabled" value={status.agent_enabled ? "enabled" : "disabled"} tone={status.agent_enabled ? "good" : "neutral"} />
+                  <Metric label="Scheduler health" value={formatFieldLabel(status.scheduler_health ?? "unknown")} tone={toneForSchedulerHealth(status.scheduler_health)} />
                   <Metric label="Server time" value={formatDateTime(status.current_server_time)} />
                   <Metric label="Agent timezone" value={asText(status.configured_timezone)} />
                   <Metric label="Daily run time" value={asText(status.configured_daily_run_time)} />
                   <Metric label="Next scheduled run" value={formatDateTime(status.next_scheduled_run_at)} tone={status.next_scheduled_run_at ? "good" : "neutral"} />
+                  <Metric label="Due now" value={status.scheduler_due_now ? "yes" : "no"} tone={status.scheduler_due_now ? "warn" : "neutral"} />
+                  <Metric label="Last scheduler check" value={formatDateTime(status.scheduler_last_checked_at)} tone={status.scheduler_last_checked_at ? "neutral" : "warn"} />
+                  <Metric label="Check result" value={formatFieldLabel(status.scheduler_last_check_result ?? "unknown")} tone={toneForSchedulerHealth(status.scheduler_health)} />
                   <Metric label="Time until next run" value={formatDuration(countdown ?? status.seconds_until_next_run)} />
                   <Metric label="Last result" value={formatFieldLabel(status.last_run_status)} tone={status.last_run_status === "success" ? "good" : status.last_run_status === "failed" ? "bad" : "neutral"} />
+                  <Metric label="Last scheduled result" value={formatFieldLabel(status.last_scheduled_run_status ?? "never_run")} tone={status.last_scheduled_run_status === "success" ? "good" : status.last_scheduled_run_status === "failed" ? "bad" : "neutral"} />
+                  <Metric label="Selected watchlist" value={asText(status.selected_watchlist_name ?? status.selected_watchlist_id ?? "manual symbols")} />
+                  <Metric label="Resolved symbols" value={status.resolved_symbol_count ?? 0} tone={(status.resolved_symbol_count ?? 0) > 0 ? "good" : "warn"} />
                   <Metric label="Last run trades" value={status.last_run_trade_count ?? 0} />
                   <Metric label="Position reviews" value={status.last_run_position_review_count ?? 0} />
                   <Metric label="Blocked actions" value={status.last_run_blocked_count ?? 0} tone={(status.last_run_blocked_count ?? 0) ? "warn" : "neutral"} />
@@ -493,10 +508,19 @@ export function AgentModeConsole() {
                   <Metric label="Last completed" value={formatDateTime(status.last_run_completed_at)} />
                 </div>
                 <div className="op-row">
+                  <StatusBadge tone={toneForSchedulerHealth(status.scheduler_health)}>scheduler: {formatFieldLabel(status.scheduler_health ?? "unknown")}</StatusBadge>
                   <StatusBadge tone="neutral">scheduler source: {asText(status.scheduler_source)}</StatusBadge>
                   <StatusBadge tone={status.in_progress ? "warn" : "neutral"}>{status.in_progress ? "running" : "not running"}</StatusBadge>
+                  {status.scheduler_current_window_key ? <StatusBadge tone="neutral">window {status.scheduler_current_window_key}</StatusBadge> : null}
                   {status.last_run_id ? <StatusBadge tone="neutral">run {status.last_run_id}</StatusBadge> : null}
+                  {status.last_scheduled_run_id ? <StatusBadge tone="neutral">scheduled run {status.last_scheduled_run_id}</StatusBadge> : null}
                 </div>
+                {status.scheduler_last_check_reason ? <div className="agent-paper-warning">Last scheduler check: {formatFieldLabel(status.scheduler_last_check_reason)}</div> : null}
+                {status.universe_skip_reason ? <div className="agent-paper-warning">Universe status: {formatFieldLabel(status.universe_skip_reason)}</div> : null}
+                {status.last_scheduled_skip_reason ? <div className="agent-paper-warning">Last scheduled skip/block reason: {formatFieldLabel(status.last_scheduled_skip_reason)}</div> : null}
+                {status.resolved_symbols_preview?.length ? (
+                  <div className="agent-paper-note">Resolved preview: {status.resolved_symbols_preview.join(", ")}</div>
+                ) : null}
                 {status.last_skip_reason ? <div className="agent-paper-warning">Last skip/block reason: {formatFieldLabel(status.last_skip_reason)}</div> : null}
                 {status.last_error_summary ? <div className="agent-paper-warning">Last error summary: {status.last_error_summary}</div> : null}
                 {timezoneMismatch ? (

@@ -114,6 +114,26 @@ def test_agent_operational_controls_migration_backfills_legacy_watchlists(tmp_pa
     assert row["is_default"] in (0, False)
 
 
+def test_apply_schema_updates_includes_nullable_agent_scheduler_diagnostics(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'agent-scheduler-diagnostics.db'}"
+    engine = build_engine(database_url)
+
+    apply_schema_updates(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"]: column for column in inspector.get_columns("agent_mode_settings")}
+    for column_name in (
+        "scheduler_last_checked_at",
+        "scheduler_last_check_result",
+        "scheduler_last_check_reason",
+        "scheduler_last_due_at",
+        "scheduler_last_run_id",
+        "scheduler_last_window_key",
+    ):
+        assert column_name in columns
+        assert columns[column_name]["nullable"] is True
+
+
 def test_database_diagnostics_redacts_database_url(monkeypatch) -> None:
     monkeypatch.setattr(
         settings,

@@ -164,11 +164,14 @@ set "TMP_DIR=%DST%\.tmp"
 set "WEB_DIR=%DST%\apps\web"
 set "BACKEND_LOG=%LOG_DIR%\backend.log"
 set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
+set "AGENT_SCHEDULER_LOG=%LOG_DIR%\agent_scheduler.log"
+set "AGENT_SCHEDULER_BOOT_LOG=%LOG_DIR%\agent_scheduler_boot.log"
 
 set "RC=0"
 
 set "KILLPAT_API=*%DST%\.venv\Scripts\python.exe*-m uvicorn*macmarket_trader.api.main:app*"
 set "KILLPAT_WEB=*%DST%\apps\web*next*start*"
+set "KILLPAT_AGENT=*%DST%\scripts\run-agent-mode-scheduler.ps1*"
 
 REM ---------------------------------------------------------
 REM Per-profile test-plan summary printed before any tests run.
@@ -258,6 +261,7 @@ call :StopPort "%FRONTEND_PORT%"
 call :StopPort "%BACKEND_PORT%"
 call :KillByCmdLine "%KILLPAT_API%"
 call :KillByCmdLine "%KILLPAT_WEB%"
+call :KillByCmdLine "%KILLPAT_AGENT%"
 REM Brief grace period for OS to release sockets/handles, then one retry pass.
 timeout /t 2 /nobreak >nul
 call :StopPort "%FRONTEND_PORT%"
@@ -421,6 +425,13 @@ if exist "%WEB_DIR%\package.json" (
   start "MacMarket-Trader WEB" /MIN /D "%WEB_DIR%" cmd /c "npm.cmd run start -- --hostname 0.0.0.0 --port %FRONTEND_PORT% >> "%FRONTEND_LOG%" 2>&1"
 )
 
+if exist "%DST%\scripts\run-agent-mode-scheduler.ps1" (
+  echo [INFO] Starting Agent Mode scheduler...
+  start "MacMarket-Trader Agent Scheduler" /MIN /D "%DST%" cmd /c ""%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%DST%\scripts\run-agent-mode-scheduler.ps1" -RepoPath "%DST%" -Loop >> "%AGENT_SCHEDULER_BOOT_LOG%" 2>&1"
+) else (
+  echo [WARN] Agent Mode scheduler script not found: %DST%\scripts\run-agent-mode-scheduler.ps1
+)
+
 call :STEP "health-checks"
 echo [INFO] Waiting for backend health...
 timeout /t 10 /nobreak >nul
@@ -451,6 +462,9 @@ if errorlevel 1 (
   echo [WARN] Strategy scheduler task not registered.
   echo [WARN] See runbook Section - Scheduled report runner to set it up.
 )
+
+echo [INFO] Agent Mode scheduler loop is started by deploy/restart scripts.
+echo [INFO] Verify with: "%DST%\.venv\Scripts\python.exe" -m macmarket_trader.cli agent-scheduler-diagnostics
 
 :POPD_END
 popd
@@ -725,7 +739,7 @@ exit /b 0
 :KillByCmdLine
 set "PAT=%~1"
 if "%PAT%"=="" exit /b 0
-powershell -NoProfile -Command "$pat='%PAT%'; $procs = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like $pat }); foreach($p in $procs){ Write-Host ('[INFO] taskkill /PID ' + $p.ProcessId); Start-Process -FilePath taskkill.exe -ArgumentList '/PID', $p.ProcessId, '/F', '/T' -NoNewWindow -Wait }"
+powershell -NoProfile -Command "$self=$PID; $pat='%PAT%'; $procs = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -like $pat }); foreach($p in $procs){ Write-Host ('[INFO] taskkill /PID ' + $p.ProcessId); Start-Process -FilePath taskkill.exe -ArgumentList '/PID', $p.ProcessId, '/F', '/T' -NoNewWindow -Wait }"
 exit /b 0
 
 :WaitForHttp

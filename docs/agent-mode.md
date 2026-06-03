@@ -93,9 +93,14 @@ skip/block reason instead of silently falling back to the manual text box.
 contract. It returns the Agent enablement state, configured timezone and daily
 run time, current server time in UTC, next scheduled run timestamp, seconds
 until the next run, last started/completed timestamps, last run status,
-skip/error summaries, trade/review/block counts, and a paper-only scheduler
-source marker. The frontend may animate a countdown from these values, but it
-does not calculate schedule truth independently.
+skip/error summaries, trade/review/block counts, scheduler health, last
+scheduler check, due-now state, selected watchlist, resolved symbol count, and
+a paper-only scheduler source marker. The frontend may animate a countdown
+from these values, but it does not calculate schedule truth independently.
+
+Scheduler health is `unknown` until the external CLI loop has checked in. It
+becomes `ok` after a recent check, `stale` when the last check is older than
+the expected loop interval tolerance, and `degraded` after an error check.
 
 If the browser timezone differs from the Agent Mode timezone, the UI warns the
 operator that Agent runs use the configured Agent timezone.
@@ -133,17 +138,53 @@ and UI responses. SMS requires both a phone number and confirmed consent.
 
 ## Daily Runner
 
-The CLI command below runs enabled, due Agent Mode settings once per local day
-per user:
+The CLI command below runs enabled, due Agent Mode settings for each configured
+local daily window:
 
 ```powershell
 python -m macmarket_trader.cli run-due-agent-mode
 ```
 
-The command uses each setting's `daily_run_time` and `timezone`, skips users who
-already have a run for that local date, and reports per-user skipped/error/run
-status. It skips users who are no longer locally approved before any paper
-order lifecycle path can run. It does not enable live routing.
+The Windows deployment/restart scripts start
+`scripts/run-agent-mode-scheduler.ps1`, which loops every five minutes and
+calls:
+
+```powershell
+python -m macmarket_trader.cli agent-scheduler-check
+```
+
+The scheduler uses the same deployed working directory, `.env`, virtualenv, and
+database as the backend. It records the last check result on the user-scoped
+Agent settings row and records actual runs in `agent_mode_runs` with source
+metadata:
+
+- `scheduled_agent` for real scheduled paper-only runs
+- `manual_agent` for manual UI/API runs
+- `scheduler_diagnostic` for safe diagnostic dry-runs
+
+Duplicate prevention is based on a scheduler-window claim plus the scheduled
+window key `local-date|HH:MM|timezone`, not on arbitrary manual runs. Manual
+dry-runs do not suppress a due scheduled run. The scheduler skips users who
+are no longer locally approved before any paper order lifecycle path can run.
+It does not enable live routing.
+
+Operator diagnostics:
+
+```powershell
+.\scripts\run-agent-mode-scheduler.ps1 -Once -NoNotifications -DryRun
+.\scripts\run-agent-mode-scheduler.ps1 -Loop -NoNotifications -DryRun
+python -m macmarket_trader.cli agent-scheduler-diagnostics
+python -m macmarket_trader.cli agent-scheduler-check --dry-run --no-notifications
+```
+
+The `-Once -DryRun -NoNotifications` foreground mode creates no paper orders,
+suppresses email/SMS digests, prints safe diagnostics in the current console,
+and exits. The `-Loop -DryRun -NoNotifications` mode stays alive and writes
+heartbeat/check logs without creating paper orders or sending notifications.
+Production deploy/restart starts `-Loop` without dry-run so enabled scheduled
+Agent Mode runs can use the existing paper-only lifecycle. The scheduler log
+is `logs\agent_scheduler.log`; the launcher boot log is
+`logs\agent_scheduler_boot.log`.
 
 ## Diagnostic Layers
 
