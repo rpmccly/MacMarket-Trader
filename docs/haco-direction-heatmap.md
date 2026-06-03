@@ -153,14 +153,27 @@ Report sections include:
 13. Unsupported/unavailable summary
 14. Full table
 
-Email sending is not implemented for HACO Direction Heatmap Phase 1. The
-report endpoint returns an email-not-configured status.
+HACO Direction Heatmap scheduled email delivery is available through the shared
+Scheduled Reports system with `report_type=haco_heatmap`. The schedule stores a
+static symbol snapshot, selected heatmap timeframes, and sends to the signed-in
+account email. It reuses the existing email provider boundary and
+`strategy_report_runs` audit table.
+
+The scheduled email is research-only. It does not create recommendations,
+paper orders, broker orders, approval events, sizing decisions, or live-trading
+actions.
+
+Run all due scheduled reports, including HACO heatmaps, with:
+
+```bash
+python -m macmarket_trader.cli run-due-strategy-schedules
+```
 
 ## Limitations
 
 - Phase 1 uses JSON profile payloads rather than normalized row/cell tables.
-- Scheduling preferences are not implemented for HACO Direction Heatmap.
-- Email delivery is deferred.
+- HACO scheduled delivery is configured from `/schedules` rather than from a
+  dedicated HACO Heatmap schedule-preferences panel.
 - Unsupported symbols remain in seeded universes but fail fast where the
   current market data provider does not support them.
 - HACO is a directional state model, not a Momentum Intelligence score.

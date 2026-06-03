@@ -609,6 +609,90 @@ def _analysis_packet_text(analysis_packets: list[dict] | None) -> list[str]:
     return lines
 
 
+def _true_momentum_applicability_rows(packet: dict) -> list[dict]:
+    rows = packet.get("true_momentum_applicability")
+    if not isinstance(rows, list):
+        workflow = packet.get("workflow")
+        provenance = (
+            workflow.get("ranking_provenance")
+            if isinstance(workflow, dict)
+            and isinstance(workflow.get("ranking_provenance"), dict)
+            else None
+        )
+        rows = provenance.get("true_momentum_applicability") if provenance else []
+    return [item for item in (rows or []) if isinstance(item, dict)]
+
+
+def _true_momentum_applicability_section(analysis_packets: list[dict] | None) -> str:
+    packets = [item for item in (analysis_packets or []) if isinstance(item, dict)]
+    if not packets:
+        return ""
+    rows_html: list[str] = []
+    for packet in packets[:5]:
+        symbol = str(packet.get("symbol") or "")
+        for row in _true_momentum_applicability_rows(packet)[:3]:
+            status = str(row.get("status") or "not_applicable")
+            if status == "not_applicable":
+                continue
+            label = str(row.get("label") or row.get("family_id") or "True Momentum")
+            strength = str(row.get("match_strength") or "none")
+            direction = str(row.get("direction") or "unknown")
+            reasons = row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else []
+            blockers = row.get("blockers") if isinstance(row.get("blockers"), list) else []
+            detail_parts = []
+            if reasons:
+                detail_parts.append("Reasons: " + ", ".join(_redact_packet_text(item) for item in reasons[:4]))
+            if blockers:
+                detail_parts.append("Blockers: " + ", ".join(_redact_packet_text(item) for item in blockers[:4]))
+            rows_html.append(
+                f'<tr><td style="background-color:{_BG_CARD_ALT};padding:12px 28px;border-bottom:1px solid {_BORDER};">'
+                f'<p style="margin:0 0 4px 0;font-family:Arial,sans-serif;font-size:13px;font-weight:700;color:{_TEXT_PRIMARY};">'
+                f'{_e(symbol)} {_e(label)}</p>'
+                f'<p style="margin:0 0 4px 0;font-family:Arial,sans-serif;font-size:10px;color:{_TEXT_SECONDARY};text-transform:uppercase;">'
+                f'{_e(status.replace("_", " "))} | strength {_e(strength)} | direction {_e(direction)} | non-actionable</p>'
+                f'<p style="margin:0;font-family:Arial,sans-serif;font-size:10px;color:{_TEXT_MUTED};line-height:1.5;">'
+                f'{_e("; ".join(detail_parts) or "Review context only.")}</p>'
+                f'</td></tr>'
+            )
+    if not rows_html:
+        return ""
+    return (
+        _section_label("True Momentum Applicability")
+        + "".join(rows_html)
+        + f'<tr><td style="background-color:{_BG_PAGE};padding:8px 28px 18px 28px;">'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:10px;color:{_TEXT_MUTED};line-height:1.5;">'
+        f'Research preview only. This section does not add enabled strategies, create queue candidates, approve, size, route, or create paper orders.'
+        f'</p></td></tr>'
+    )
+
+
+def _true_momentum_applicability_text(analysis_packets: list[dict] | None) -> list[str]:
+    packets = [item for item in (analysis_packets or []) if isinstance(item, dict)]
+    lines: list[str] = []
+    for packet in packets[:5]:
+        symbol = str(packet.get("symbol") or "")
+        for row in _true_momentum_applicability_rows(packet)[:3]:
+            status = str(row.get("status") or "not_applicable")
+            if status == "not_applicable":
+                continue
+            if not lines:
+                lines = ["TRUE MOMENTUM APPLICABILITY", "-" * 58]
+            label = str(row.get("label") or row.get("family_id") or "True Momentum")
+            strength = str(row.get("match_strength") or "none")
+            direction = str(row.get("direction") or "unknown")
+            reasons = row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else []
+            blockers = row.get("blockers") if isinstance(row.get("blockers"), list) else []
+            lines.append(f"{symbol} | {label} | {status} | {strength} | {direction} | non-actionable")
+            if reasons:
+                lines.append("  Reasons: " + ", ".join(_redact_packet_text(item) for item in reasons[:4]))
+            if blockers:
+                lines.append("  Blockers: " + ", ".join(_redact_packet_text(item) for item in blockers[:4]))
+    if lines:
+        lines.append("Research preview only. No enabled strategies, queue candidates, approvals, sizing, routing, or paper orders are created by this section.")
+        lines.append("")
+    return lines
+
+
 def _footer(ran_at: str) -> str:
     try:
         dt = datetime.fromisoformat(ran_at.replace("Z", "+00:00"))
@@ -735,6 +819,129 @@ def render_agent_mode_run_digest_html(
     )
 
 
+def _heatmap_failure_summary_rows(partial_summary: dict[str, object]) -> str:
+    items = [
+        ("Rows", partial_summary.get("row_count", "-")),
+        ("Usable", partial_summary.get("usable_row_count", "-")),
+        ("Unsupported", partial_summary.get("unsupported_count", "-")),
+        ("Unavailable", partial_summary.get("unavailable_count", "-")),
+    ]
+    cells = []
+    for idx, (label, value) in enumerate(items):
+        border = f'border-left:1px solid {_BORDER};' if idx else ""
+        cells.append(
+            f'<td align="center" style="{border}padding:12px 8px;">'
+            f'<p style="margin:0;font-family:Arial,sans-serif;font-size:22px;'
+            f'font-weight:700;color:{_TEXT_PRIMARY};">{_e(value)}</p>'
+            f'<p style="margin:4px 0 0 0;font-family:Arial,sans-serif;font-size:9px;'
+            f'font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;'
+            f'letter-spacing:1px;">{_e(label)}</p>'
+            f'</td>'
+        )
+    return (
+        f'<tr><td style="background-color:{_BG_DARK};padding:4px 28px;">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr>{"".join(cells)}</tr></table></td></tr>'
+    )
+
+
+def render_scheduled_heatmap_failure_html(
+    *,
+    report_type_label: str,
+    schedule_name: str,
+    ran_at: str,
+    symbol_count: int,
+    requested_symbols: list[str],
+    reason: str,
+    partial_summary: dict[str, object],
+) -> str:
+    symbols = ", ".join(requested_symbols[:40])
+    if len(requested_symbols) > 40:
+        symbols += f", +{len(requested_symbols) - 40} more"
+    body_rows = (
+        f'<tr><td style="background-color:{_BG_CARD};padding:28px 28px 22px 28px;">'
+        f'<div style="margin:0 0 12px 0;">{_logo_img(200)}</div>'
+        f'<p style="margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:10px;'
+        f'font-weight:600;letter-spacing:2px;color:{_TEXT_SECONDARY};text-transform:uppercase;">'
+        f'Scheduled Research Report Failure</p>'
+        f'<h1 style="margin:0 0 12px 0;font-family:Arial,sans-serif;font-size:23px;'
+        f'font-weight:700;color:{_TEXT_PRIMARY};line-height:1.2;">{_e(report_type_label)} failed</h1>'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:12px;color:{_TEXT_SECONDARY};">'
+        f'{_fmt_dt(ran_at)} &nbsp;&nbsp; Schedule: {_e(schedule_name)}</p>'
+        f'</td></tr>'
+        f'<tr><td style="background-color:{_RED};height:2px;font-size:0;line-height:0;">&nbsp;</td></tr>'
+        + _heatmap_failure_summary_rows(partial_summary)
+        + f'<tr><td style="background-color:{_BG_CARD};padding:22px 28px;">'
+        f'<p style="margin:0 0 12px 0;font-family:Arial,sans-serif;font-size:14px;'
+        f'color:{_TEXT_PRIMARY};line-height:1.6;">MacMarket attempted to refresh a static scheduled-symbol '
+        f'snapshot for this heatmap report, but no usable report was available to send.</p>'
+        f'<p style="margin:0 0 10px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_SECONDARY};">'
+        f'<strong style="color:{_TEXT_PRIMARY};">Safe reason:</strong> {_e(reason)}</p>'
+        f'<p style="margin:0 0 10px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_SECONDARY};">'
+        f'<strong style="color:{_TEXT_PRIMARY};">Symbol count:</strong> {_e(symbol_count)}</p>'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:12px;color:{_TEXT_MUTED};line-height:1.5;">'
+        f'{_e(symbols or "-")}</p>'
+        f'</td></tr>'
+        f'<tr><td style="background-color:{_BG_DARK};padding:18px 28px;border-top:1px solid {_BORDER};">'
+        f'<p style="margin:0;font-family:Arial,sans-serif;font-size:11px;color:{_TEXT_MUTED};line-height:1.5;">'
+        f'Research-only heatmap schedule. No recommendations, paper orders, broker routing, live trading, or '
+        f'automatic execution were created.</p>'
+        f'</td></tr>'
+        + _footer(ran_at)
+    )
+    return (
+        "<!DOCTYPE html>"
+        '<html lang="en">'
+        "<head>"
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        f"<title>MacMarket Trader - {_e(report_type_label)} failed</title>"
+        "</head>"
+        f'<body style="margin:0;padding:0;background-color:{_BG_PAGE};">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background-color:{_BG_PAGE};">'
+        f'<tr><td align="center" style="padding:20px 12px;">'
+        f'<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" '
+        f'style="max-width:600px;width:100%;border:1px solid {_BORDER};border-radius:6px;overflow:hidden;">'
+        + body_rows
+        + "</table></td></tr></table></body></html>"
+    )
+
+
+def render_scheduled_heatmap_failure_text(
+    *,
+    report_type_label: str,
+    schedule_name: str,
+    ran_at: str,
+    symbol_count: int,
+    requested_symbols: list[str],
+    reason: str,
+    partial_summary: dict[str, object],
+) -> str:
+    try:
+        dt = datetime.fromisoformat(ran_at.replace("Z", "+00:00"))
+        date_str = dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:  # noqa: BLE001
+        date_str = ran_at
+    return "\n".join(
+        [
+            f"MacMarket Trader - {report_type_label} schedule failed",
+            schedule_name,
+            date_str,
+            "",
+            f"Safe reason: {reason}",
+            f"Symbols requested ({symbol_count}): {', '.join(requested_symbols)}",
+            "",
+            f"Rows: {partial_summary.get('row_count', '-')}",
+            f"Usable rows: {partial_summary.get('usable_row_count', '-')}",
+            f"Unsupported: {partial_summary.get('unsupported_count', '-')}",
+            f"Unavailable: {partial_summary.get('unavailable_count', '-')}",
+            "",
+            "Research-only heatmap schedule. No recommendations, paper orders, broker routing, live trading, or automatic execution were created.",
+        ]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -780,6 +987,7 @@ def render_strategy_report_html(
         + _section_label("Top Candidates")
         + candidate_rows
         + _analysis_packet_section(analysis_packets)
+        + _true_momentum_applicability_section(analysis_packets)
         + _watchlist_section(watchlist_only)
         + _no_trade_section(no_trade)
         + _footer(ran_at)
@@ -874,6 +1082,7 @@ def render_strategy_report_text(
         lines.append("")
 
     lines.extend(_analysis_packet_text(analysis_packets))
+    lines.extend(_true_momentum_applicability_text(analysis_packets))
 
     if no_trade:
         syms = ", ".join(str(c.get("symbol", "")) for c in no_trade if c.get("symbol"))

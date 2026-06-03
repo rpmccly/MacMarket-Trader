@@ -2022,6 +2022,46 @@ class TrueMomentumStrategyPreviewCandidatePayload(BaseModel):
     non_actionable: bool = True
 
 
+class TrueMomentumApplicabilityPayload(BaseModel):
+    """Phase C6 non-actionable True Momentum applicability row.
+
+    This is review metadata only. It does not generate queue candidates,
+    approve, reject, size, route, open, close, or settle trades.
+    """
+
+    family_id: Literal[
+        "true_momentum_continuation",
+        "true_momentum_pullback",
+        "true_momentum_reversal_watch",
+    ]
+    label: str
+    status: Literal[
+        "applicable_research_preview",
+        "watch_only",
+        "blocked_by_warning",
+        "blocked_by_parity",
+        "blocked_by_composite_mismatch",
+        "insufficient_evidence",
+        "not_applicable",
+    ]
+    match_strength: str = "none"
+    direction: str = "unknown"
+    reason_codes: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    non_actionable: bool = True
+    symbol: str | None = None
+    strategy: str | None = None
+    rank: int | None = None
+    preview_id: str | None = None
+    research_notes: list[str] = Field(default_factory=list)
+    source_phase: str = "C6"
+    implementation_status: str = "research_applicability_only"
+    deterministic_note: str = (
+        "True Momentum applicability is non-actionable review context. It "
+        "does not create queue candidates, approve, size, route, or create orders."
+    )
+
+
 class TrueMomentumStrategyPreviewSummaryPayload(BaseModel):
     """Phase C1 — per-family / per-strength preview counts."""
 

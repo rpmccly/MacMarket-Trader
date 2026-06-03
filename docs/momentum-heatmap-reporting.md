@@ -256,12 +256,18 @@ Momentum Heatmap report endpoint uses that existing boundary for explicit
 operator-triggered report emails when recipients are supplied.
 
 There is no live-trading, broker-routing, or execution content in the email
-payload. Scheduled delivery still requires a runner to be installed.
+payload. Scheduled Momentum Heatmap delivery now runs through the shared
+Scheduled Reports system with `report_type=momentum_heatmap`; it still requires
+the operator to install the CLI runner through cron, Windows Task Scheduler, or
+another approved worker.
 
 ## Schedule behavior
 
-User schedule preferences are persisted in
-`momentum_heatmap_schedule_preferences`.
+Momentum Heatmap page preferences are still persisted in
+`momentum_heatmap_schedule_preferences` for the heatmap workspace itself.
+Recurring email delivery is configured from `/schedules`, where a schedule
+stores a static symbol snapshot and `report_type=momentum_heatmap` in
+`strategy_report_schedules`.
 
 Stored settings include:
 
@@ -275,6 +281,11 @@ Stored settings include:
 - include CSV attachment
 - include full table
 
+For scheduled report delivery, `/schedules` uses the saved schedule symbols,
+selected heatmap timeframes, and the signed-in account email as the recipient.
+It does not use strategy-scan ranking fields, does not create recommendation
+queue candidates, and does not create paper/broker/live orders.
+
 The UI shows helper suggestions:
 
 - 7:00 AM ET: premarket read using prior completed session/intraday bars
@@ -282,10 +293,14 @@ The UI shows helper suggestions:
 - 3:30 PM ET: late-session review before close
 - 4:30 PM ET: post-close summary
 
-Current status: preferences are stored and the documented runner hook is
-reserved for a future scheduler pass, but no always-on Momentum Heatmap
-schedule is claimed active unless due-time execution and audit logging are
-wired to cron, Windows Task Scheduler, or another approved worker:
+Run all due scheduled reports, including Momentum Heatmap schedules, with:
+
+```bash
+python -m macmarket_trader.cli run-due-strategy-schedules
+```
+
+The legacy Momentum-only runner remains available for targeted operational
+checks:
 
 ```bash
 python -m macmarket_trader.cli run-due-momentum-heatmap-reports
@@ -310,11 +325,11 @@ Implemented:
 - CSV export
 - explicit email-now path through the existing email provider boundary
 - persisted schedule preferences
+- scheduled email delivery through `/schedules` and `strategy_report_runs`
 - localStorage migration/fallback
 
 Deferred:
 
-- automatic installed Momentum Heatmap scheduler execution
 - user-editable stale threshold enforcement beyond stored profile settings
 - provider support mapping for composite, futures, `$` index, currency-pair,
   and FRED-style workbook labels

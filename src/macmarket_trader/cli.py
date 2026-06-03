@@ -18,7 +18,7 @@ from macmarket_trader.service import RecommendationService
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import EmailLogRepository, StrategyReportRepository
 from macmarket_trader.data.providers.registry import build_email_provider
-from macmarket_trader.strategy_reports import StrategyReportService
+from macmarket_trader.strategy_reports import REPORT_TYPE_MOMENTUM_HEATMAP, StrategyReportService
 from macmarket_trader.storage.db import init_db
 
 
@@ -124,13 +124,9 @@ def main() -> None:
     elif args.command == "run-due-momentum-heatmap-reports":
         init_db()
         payload = {
-            "runs": [],
-            "status": "momentum_heatmap_schedule_preferences_persisted_runner_not_active",
-            "detail": (
-                "Momentum Heatmap schedule preferences are persisted, but "
-                "automatic scheduled delivery is deferred until an approved "
-                "runner pass wires due-time execution and audit logging."
-            ),
+            "runs": strategy_report_service.run_due_schedules(report_types={REPORT_TYPE_MOMENTUM_HEATMAP}),
+            "status": "momentum_heatmap_due_schedule_run_complete",
+            "detail": "Delegates to strategy_report_schedules entries with report_type=momentum_heatmap.",
         }
     else:
         init_db()

@@ -660,8 +660,11 @@ To restore access, use **Unsuspend**.
 
 ## 10) Scheduled report runner (Windows Task Scheduler)
 
-Strategy schedules are triggered by `python -m macmarket_trader.cli run-due-strategy-schedules`.
+Scheduled reports are triggered by `python -m macmarket_trader.cli run-due-strategy-schedules`.
 On Windows deployments, this should be run on a recurring schedule via Task Scheduler.
+The command dispatches due strategy scans plus research-only Momentum Heatmap
+and HACO Direction Heatmap emails; heatmap schedules do not create
+recommendations, paper orders, broker orders, or live-trading actions.
 
 ### Register the task
 
@@ -701,11 +704,12 @@ schtasks /delete /tn "MacMarket-StrategyScheduler" /f
 
 The `/f` flag suppresses the confirmation prompt.
 
-## 12) Strategy scheduler task registration
+## 12) Scheduled report task registration
 
 The CLI command `python -m macmarket_trader.cli run-due-strategy-schedules` only fires
 when invoked. Without a Task Scheduler entry pointing at it, scheduled report times
-configured by operators in `/schedules` are silently dropped. The runner script that
+configured by operators in `/schedules` are silently dropped, including
+research-only heatmap email schedules. The runner script that
 wraps the CLI with a log file lives at `scripts/run-due-schedules.ps1` and is the
 recommended invocation target — it appends a timestamped line plus the CLI output to
 `C:\Dashboard\MacMarket-Trader\logs\scheduler.log` on every run.

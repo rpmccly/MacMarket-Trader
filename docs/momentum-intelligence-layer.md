@@ -2860,6 +2860,11 @@ Under these values:
 - **Phase C is not active.**
 - **Phase C strategies are not generating queue candidates.**
 - **Phase C does not approve, reject, size, or route trades.**
+- **Phase C6 applicability is review metadata only.** Symbol Snapshot,
+  Recommendations, and scheduled strategy reports can show True Momentum
+  family applicability rows, but those rows are `non_actionable: true`
+  and never enter ranking, enabled strategies, queue generation, approval,
+  sizing, routing, or paper-order behavior.
 
 The Phase C0 scaffold module is read-only: it exposes specs and a
 resolved status, gated behind both

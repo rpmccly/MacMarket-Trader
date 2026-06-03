@@ -38,6 +38,34 @@ export type MomentumRankingContribution = {
   applied_score_delta?: number | null;
 };
 
+export type TrueMomentumApplicabilityStatus =
+  | "applicable_research_preview"
+  | "watch_only"
+  | "blocked_by_warning"
+  | "blocked_by_parity"
+  | "blocked_by_composite_mismatch"
+  | "insufficient_evidence"
+  | "not_applicable";
+
+export type TrueMomentumApplicability = {
+  family_id: "true_momentum_continuation" | "true_momentum_pullback" | "true_momentum_reversal_watch" | string;
+  label: string;
+  status: TrueMomentumApplicabilityStatus | string;
+  match_strength: string;
+  direction: string;
+  reason_codes: string[];
+  blockers: string[];
+  non_actionable: boolean;
+  symbol?: string | null;
+  strategy?: string | null;
+  rank?: number | null;
+  preview_id?: string | null;
+  research_notes?: string[];
+  source_phase?: string;
+  implementation_status?: string;
+  deterministic_note?: string;
+};
+
 export type QueueCandidate = {
   recommendation_id?: string;
   rank: number;
@@ -54,6 +82,7 @@ export type QueueCandidate = {
   score: number;
   score_breakdown?: Record<string, number>;
   momentum_contribution?: MomentumRankingContribution | null;
+  true_momentum_applicability?: TrueMomentumApplicability[] | null;
   // Phase B6 / B6.2 — before/after visibility for the active-mode Momentum
   // delta. Always optional/nullable so older API payloads stay valid; the
   // backend (Phase B6) ships these on every queue row.
@@ -237,6 +266,7 @@ export type AnalysisPacket = {
   provider_context?: Record<string, unknown> | null;
   risk_calendar?: Record<string, unknown> | null;
   paper_lifecycle?: Record<string, unknown> | null;
+  true_momentum_applicability?: TrueMomentumApplicability[];
   equity?: Record<string, unknown> | null;
   options?: {
     strategy_type?: string | null;

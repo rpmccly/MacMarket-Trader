@@ -395,6 +395,16 @@ The following should **not** be carried over:
 - protected frontend page inside the operator console
 - tests for indicator math, state transitions, and API payload shape
 
+## True Momentum review posture
+
+True Momentum is a research-review layer in the current private-alpha
+scope. It may appear in Symbol Snapshot, Recommendations, and scheduled
+strategy reports as non-actionable applicability context, but it must
+not become an enabled strategy, generate recommendation queue
+candidates, change ranking/scoring, approve, size, route, or create
+paper/live orders without a later explicit activation phase. See
+[`docs/true-momentum-strategy-families.md`](docs/true-momentum-strategy-families.md).
+
 ## Repository philosophy
 
 The new repository is intentionally narrow.
@@ -649,15 +659,16 @@ The charting layer now includes an **indicator registry/config framework** so in
 
 Default chart state remains intentionally sparse to keep workstation readability high.
 
-## Scheduled strategy reports (foundation)
+## Scheduled reports (foundation)
 
-MacMarket-Trader includes a production-minded recurring strategy report foundation:
+MacMarket-Trader includes a production-minded recurring report foundation:
 
 - watchlists/symbol lists
 - per-user report schedules (daily / weekdays / weekly)
 - timezone + runtime settings
 - strategy set and ranking preferences
 - deterministic ranking output with top-N candidates
+- research-only Momentum Heatmap and HACO Direction Heatmap email report types
 - latest run status + run history/audit rows
 - explicit CLI runner for due schedules
 
@@ -709,7 +720,7 @@ Current manual entry now shows clearer separator guidance, parsed uppercase
 previews, duplicate feedback, and ETF/index substitute copy, but remains a
 temporary manual universe until richer watchlist management is implemented.
 This is
-recommendation-universe management only: provider support labels, options
+recommendation-universe and research-report management only: provider support labels, options
 eligibility, and ETF/index substitution guidance such as `SPX` / `NDX` versus
 `SPY` / `QQQ` must not imply live routing or brokerage execution support.
 
@@ -729,6 +740,10 @@ python -m macmarket_trader.cli run-due-strategy-schedules
 ```
 
 to execute due schedules locally, from cron, or from Windows Task Scheduler.
+The same runner dispatches strategy scans plus scheduled Momentum Heatmap and
+HACO Direction Heatmap research emails. Heatmap schedules do not generate
+recommendation queue candidates, paper orders, broker orders, or live-trading
+actions.
 
 With `EMAIL_PROVIDER=console`, strategy report payloads are printed clearly in console logs for local testing.
 

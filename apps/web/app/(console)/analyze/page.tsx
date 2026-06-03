@@ -5,6 +5,7 @@ import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTab
 import { fetchWorkflowApi } from "@/lib/api-client";
 import { buildIndicatorProvenance, strategyFitText } from "@/lib/analyze-helpers";
 import { fetchMomentumChart, type MomentumChartPayload } from "@/lib/momentum-api";
+import type { TrueMomentumApplicability } from "@/lib/recommendations";
 import { readChartHistoryRangeFromStorage } from "@/lib/chart-history-range";
 import { MomentumSummaryPanel } from "@/components/charts/momentum-summary-panel";
 
@@ -18,6 +19,7 @@ type ScoreboardEntry = {
   reason_text: string;
   thesis?: string;
   score_breakdown?: Record<string, number>;
+  true_momentum_applicability?: TrueMomentumApplicability[] | null;
 };
 
 type AnalyzePayload = {
@@ -28,6 +30,12 @@ type AnalyzePayload = {
   market_regime: string;
   technical_summary: string;
   strategy_scoreboard: ScoreboardEntry[];
+  true_momentum_applicability?: Array<{
+    symbol?: string | null;
+    strategy?: string | null;
+    rank?: number | null;
+    rows?: TrueMomentumApplicability[];
+  }>;
   levels: { support: number[]; resistance: number[]; pivot: number };
   indicator_snapshot: Record<string, string | number>;
   catalyst_summary: string;
@@ -35,6 +43,82 @@ type AnalyzePayload = {
   operator_note: string;
   next_actions: Array<{ label: string; path: string }>;
 };
+
+function applicabilityTone(status: string): "good" | "warn" | "bad" | "neutral" {
+  if (status === "applicable_research_preview" || status === "watch_only") return "good";
+  if (status === "blocked_by_warning" || status === "blocked_by_parity" || status === "blocked_by_composite_mismatch") return "warn";
+  if (status === "insufficient_evidence") return "bad";
+  return "neutral";
+}
+
+function formatStatus(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function meaningfulApplicability(rows: TrueMomentumApplicability[] | null | undefined): TrueMomentumApplicability[] {
+  const safeRows = rows ?? [];
+  const visible = safeRows.filter((row) => row.status !== "not_applicable");
+  return visible.length > 0 ? visible : safeRows.slice(0, 1);
+}
+
+function StrategyApplicabilityCard({ payload }: { payload: AnalyzePayload }) {
+  const entries = payload.strategy_scoreboard.map((row) => ({
+    key: `${row.rank}-${row.strategy}`,
+    rank: row.rank,
+    strategy: row.strategy,
+    rows: meaningfulApplicability(row.true_momentum_applicability),
+  }));
+  const anyRows = entries.some((entry) => entry.rows.length > 0);
+  return (
+    <Card title="Strategy Applicability">
+      {!anyRows ? (
+        <EmptyState title="No True Momentum applicability yet" hint="No Momentum contribution evidence was available for this symbol snapshot." />
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {entries.map((entry) => entry.rows.length ? (
+            <div
+              key={entry.key}
+              style={{
+                border: "1px solid var(--op-border, #1e2d3d)",
+                borderRadius: 8,
+                padding: 10,
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div className="op-row" style={{ gap: 8, alignItems: "center" }}>
+                <strong>#{entry.rank} {entry.strategy}</strong>
+                <StatusBadge tone="neutral">True Momentum</StatusBadge>
+                <StatusBadge tone="neutral">non-actionable</StatusBadge>
+              </div>
+              {entry.rows.map((row) => (
+                <div key={`${entry.key}-${row.family_id}`} style={{ display: "grid", gap: 4 }}>
+                  <div className="op-row" style={{ gap: 6, flexWrap: "wrap" }}>
+                    <StatusBadge tone={applicabilityTone(row.status)}>{formatStatus(row.status)}</StatusBadge>
+                    <span>{row.label}</span>
+                    <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.82rem" }}>
+                      {row.match_strength} / {row.direction}
+                    </span>
+                  </div>
+                  {row.reason_codes?.length ? (
+                    <div style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.78rem" }}>
+                      reasons: {row.reason_codes.slice(0, 4).join(", ")}
+                    </div>
+                  ) : null}
+                  {row.blockers?.length ? (
+                    <div style={{ color: "var(--op-warn, #f2a03f)", fontSize: "0.78rem" }}>
+                      blockers: {row.blockers.slice(0, 4).join(", ")}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null)}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 export default function AnalyzePage() {
   const [symbol, setSymbol] = useState("SPY");
@@ -111,6 +195,7 @@ export default function AnalyzePage() {
         </table>
         </ResponsiveTable>
       </Card>
+      <StrategyApplicabilityCard payload={payload} />
       <div className="op-grid-2">
         <Card title="Scenarios">{Object.entries(payload.scenarios).map(([key, value]) => <div key={key}><strong>{key}:</strong> {value}</div>)}</Card>
         <Card title="What to do next"><div>{payload.operator_note}</div><div className="op-row" style={{ marginTop: 8 }}>{payload.next_actions.map((action) => {

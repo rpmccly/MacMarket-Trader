@@ -208,6 +208,11 @@ Under these values:
 - Phase C is **not active**.
 - Phase C strategies do **not** generate queue candidates.
 - Phase C does **not** approve, reject, size, or route trades.
+- Phase C6 True Momentum applicability now appears in Symbol Snapshot,
+  Recommendations, and scheduled strategy reports as non-actionable
+  research-preview review metadata only. It does not enter ranking,
+  enabled strategies, queue generation, approval, sizing, routing, or
+  paper-order behavior.
 
 The Phase C0 scaffold module exposes a read-only status endpoint and
 planned family specs only. With defaults the resolved effective mode is

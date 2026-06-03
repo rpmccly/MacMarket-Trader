@@ -32,7 +32,7 @@ import { TrueMomentumStrategyPreviewPanel } from "@/components/recommendations/t
 import { TrueMomentumStrategyContextCard } from "@/components/recommendations/true-momentum-strategy-context-card";
 import { TrueMomentumPhaseCCloseoutCard } from "@/components/recommendations/true-momentum-phase-c-closeout-card";
 import { TrueMomentumResearchCandidatesPanel } from "@/components/recommendations/true-momentum-research-candidates-panel";
-import type { MomentumRankingContribution } from "@/lib/recommendations";
+import type { MomentumRankingContribution, TrueMomentumApplicability } from "@/lib/recommendations";
 import { GuidedStepRail } from "@/components/guided-step-rail";
 import { buildGuidedQuery, parseGuidedFlowState } from "@/lib/guided-workflow";
 import { parseManualSymbolEntry, SYMBOL_ENTRY_HELP_COPY } from "@/lib/symbol-entry";
@@ -99,6 +99,103 @@ function asText(value: unknown): string {
   if (value === null || value === undefined) return "-";
   if (typeof value === "string") return value;
   return JSON.stringify(value);
+}
+
+function trueMomentumTone(status: string): "good" | "warn" | "bad" | "neutral" {
+  if (status === "applicable_research_preview" || status === "watch_only") return "good";
+  if (status === "blocked_by_warning" || status === "blocked_by_parity" || status === "blocked_by_composite_mismatch") return "warn";
+  if (status === "insufficient_evidence") return "bad";
+  return "neutral";
+}
+
+function trueMomentumStatusLabel(status: string): string {
+  return status.replace(/_/g, " ");
+}
+
+function primaryTrueMomentumApplicability(rows?: TrueMomentumApplicability[] | null): TrueMomentumApplicability | null {
+  const safeRows = rows ?? [];
+  return safeRows.find((row) => row.status !== "not_applicable" && row.status !== "insufficient_evidence")
+    ?? safeRows.find((row) => row.status === "insufficient_evidence")
+    ?? null;
+}
+
+function trueMomentumApplicabilityFromStored(
+  rec?: StoredRecommendation | null,
+): TrueMomentumApplicability[] {
+  if (!rec) return [];
+  const packetRows = rec.analysis_packet?.true_momentum_applicability;
+  if (Array.isArray(packetRows) && packetRows.length) return packetRows;
+  const payload = rec.payload as Record<string, unknown>;
+  const direct = payload.true_momentum_applicability;
+  if (Array.isArray(direct)) return direct as TrueMomentumApplicability[];
+  const workflow = payload.workflow as Record<string, unknown> | undefined;
+  const provenance = workflow?.ranking_provenance as Record<string, unknown> | undefined;
+  const provenanceRows = provenance?.true_momentum_applicability;
+  if (Array.isArray(provenanceRows)) return provenanceRows as TrueMomentumApplicability[];
+  return [];
+}
+
+function TrueMomentumApplicabilityMini({ rows }: { rows?: TrueMomentumApplicability[] | null }) {
+  const row = primaryTrueMomentumApplicability(rows);
+  if (!row) return <span style={{ color: "var(--op-muted, #7a8999)" }}>-</span>;
+  return (
+    <div style={{ display: "grid", gap: 3 }}>
+      <StatusBadge tone={trueMomentumTone(row.status)}>{trueMomentumStatusLabel(row.status)}</StatusBadge>
+      <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.74rem" }}>
+        {row.label.replace("True Momentum ", "")} / non-actionable
+      </span>
+    </div>
+  );
+}
+
+function TrueMomentumApplicabilityDetail({ rows }: { rows?: TrueMomentumApplicability[] | null }) {
+  const visibleRows = (rows ?? []).filter((row) => row.status !== "not_applicable");
+  if (!visibleRows.length) {
+    return (
+      <div style={{ color: "var(--op-muted, #7a8999)" }}>
+        <strong>True Momentum applicability:</strong> No applicable research-preview family for this candidate.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div className="op-row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <strong>True Momentum applicability</strong>
+        <StatusBadge tone="neutral">research preview</StatusBadge>
+        <StatusBadge tone="neutral">non-actionable</StatusBadge>
+      </div>
+      {visibleRows.map((row) => (
+        <div
+          key={`${row.family_id}-${row.status}`}
+          style={{
+            border: "1px solid var(--op-border, #1e2d3d)",
+            borderRadius: 8,
+            padding: 8,
+            display: "grid",
+            gap: 4,
+          }}
+        >
+          <div className="op-row" style={{ gap: 6, flexWrap: "wrap" }}>
+            <StatusBadge tone={trueMomentumTone(row.status)}>{trueMomentumStatusLabel(row.status)}</StatusBadge>
+            <span>{row.label}</span>
+            <span style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.8rem" }}>
+              {row.match_strength} / {row.direction}
+            </span>
+          </div>
+          {row.reason_codes?.length ? (
+            <div style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.8rem" }}>
+              reasons: {row.reason_codes.slice(0, 5).join(", ")}
+            </div>
+          ) : null}
+          {row.blockers?.length ? (
+            <div style={{ color: "var(--op-warn, #f2a03f)", fontSize: "0.8rem" }}>
+              blockers: {row.blockers.slice(0, 5).join(", ")}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function AnalysisPacketContext({ packet }: { packet?: AnalysisPacket | null }) {
@@ -1541,7 +1638,7 @@ export default function RecommendationsPage() {
               }}
             >
             <table className="op-table">
-              <thead><tr><th>compare</th><th>rank</th><th>symbol</th><th>strategy</th><th>status</th><th>risk calendar</th><th><MetricLabel label="score" term="score" /></th><th><MetricLabel label="rr" term="rr" /></th><th><MetricLabel label="conf" term="confidence" /></th><th></th></tr></thead>
+              <thead><tr><th>compare</th><th>rank</th><th>symbol</th><th>strategy</th><th>status</th><th>risk calendar</th><th>True Momentum</th><th><MetricLabel label="score" term="score" /></th><th><MetricLabel label="rr" term="rr" /></th><th><MetricLabel label="conf" term="confidence" /></th><th></th></tr></thead>
               <tbody>
                 {queue.map((row) => {
                   const key = `${row.symbol}-${row.strategy}-${row.rank}`;
@@ -1577,6 +1674,7 @@ export default function RecommendationsPage() {
                           ) : null}
                         </div>
                       </td>
+                      <td><TrueMomentumApplicabilityMini rows={row.true_momentum_applicability} /></td>
                       <td>{row.score}</td>
                       <td>{row.expected_rr}</td>
                       <td>{row.confidence}</td>
@@ -1674,6 +1772,9 @@ export default function RecommendationsPage() {
                       <strong>index risk:</strong> {selectedQueue.risk_calendar.index_risk_signals.reasons.slice(0, 3).join("; ")}
                     </div>
                   ) : null}
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--op-border, #1e2d3d)" }}>
+                    <TrueMomentumApplicabilityDetail rows={selectedQueue.true_momentum_applicability} />
+                  </div>
                   <div><strong><MetricLabel label="score" term="score" />:</strong> {selectedQueue.score}</div>
                   <div><strong><MetricLabel label="expected rr" term="rr" />:</strong> {selectedQueue.expected_rr} &nbsp; <strong><MetricLabel label="confidence" term="confidence" />:</strong> {selectedQueue.confidence}</div>
                   <div><strong>thesis:</strong> {selectedQueue.thesis}</div>
@@ -1733,6 +1834,7 @@ export default function RecommendationsPage() {
             const aiExplanation = p.ai_explanation as AIExplanationPayload | undefined;
             const llmProvenance = p.llm_provenance as LLMProvenancePayload | undefined;
             const riskCalendar = p.risk_calendar as RiskCalendarPayload | undefined;
+            const storedTrueMomentumApplicability = trueMomentumApplicabilityFromStored(selectedRecommendation);
             const sep = { marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--op-border, #1e2d3d)" } as const;
             const label = { fontSize: "0.78rem", color: "var(--op-muted, #7a8999)", marginBottom: 2 } as const;
             return (
@@ -1747,6 +1849,9 @@ export default function RecommendationsPage() {
                   <button onClick={() => void setApproval(false)} disabled={loading.approve || p.approved === false} style={{ padding: "2px 10px", fontSize: "0.8rem" }}>Reject</button>
                 </div>
                 <div><strong>source:</strong> {selectedRecommendation.market_data_source ?? "-"}{selectedRecommendation.fallback_mode ? " (fallback)" : ""}</div>
+                <div style={sep}>
+                  <TrueMomentumApplicabilityDetail rows={storedTrueMomentumApplicability} />
+                </div>
                 <div style={sep}>
                   <AnalysisPacketContext packet={analysisPacket} />
                 </div>

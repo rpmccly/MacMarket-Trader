@@ -89,6 +89,26 @@ Phase C5 is now shipped as a research-only proposal surface:
 C5 proposals do not enter the ranked queue, and do not approve, reject,
 size, or route trades. They never create paper orders.
 
+## Phase C6 - strategy-review applicability annotations (shipped, research-only)
+
+Phase C6 is shipped as a non-actionable review annotation layer:
+
+- `src/macmarket_trader/recommendation/true_momentum_applicability.py`
+  reuses the existing C1 family classifier to annotate already-built
+  Symbol Snapshot, Recommendations, stored recommendation lineage, and
+  scheduled report analysis-packet payloads.
+- Applicability rows use the three planned families and C6 statuses:
+  `applicable_research_preview`, `watch_only`, `blocked_by_warning`,
+  `blocked_by_parity`, `blocked_by_composite_mismatch`,
+  `insufficient_evidence`, and `not_applicable`.
+- Each row carries `non_actionable: true`; the UI and report sections
+  label the rows as research preview context.
+
+C6 does not add True Momentum to `enabled_strategies`, does not enter
+`DeterministicRankingEngine`, does not generate queue candidates, and
+does not change approval, sizing, routing, replay, paper-order, provider,
+or live-trading behavior.
+
 ## Behavior guarantees
 
 - Ranking math: **unchanged**.

@@ -86,12 +86,21 @@ from macmarket_trader.options.payoff import OptionLegInput, analyze_option_struc
 from macmarket_trader.options.replay_preview import build_options_replay_preview
 from macmarket_trader.ranking_engine import DeterministicRankingEngine
 from macmarket_trader.recommendation import apply_queue_response_consistency
+from macmarket_trader.recommendation.true_momentum_applicability import (
+    attach_true_momentum_applicability,
+)
 from macmarket_trader.replay.engine import ReplayEngine
 from macmarket_trader.risk_calendar.registry import build_risk_calendar_service
 from macmarket_trader.risk_calendar.service import RiskCalendarBlocked, RiskCalendarRestricted
 from macmarket_trader.service import RecommendationService
 from macmarket_trader.email_templates import render_approval_html, render_invite_html, render_rejection_html
-from macmarket_trader.strategy_reports import StrategyReportService
+from macmarket_trader.strategy_reports import (
+    HEATMAP_REPORT_TYPES,
+    REPORT_TYPE_STRATEGY_SCAN,
+    REPORT_TYPE_LABELS,
+    StrategyReportService,
+    normalize_schedule_report_type,
+)
 from macmarket_trader.strategy_registry import get_strategy_by_display_name, list_strategies
 from macmarket_trader.symbols.starter_watchlists import STARTER_MARKET_WATCHLIST_NAME
 from macmarket_trader.storage.db import SessionLocal
@@ -1401,6 +1410,7 @@ def ranked_recommendation_queue(req: dict[str, object], _user=Depends(require_ap
                 item["rejection_reason"] = risk.decision.block_reason or risk.decision.warning_summary
         item["recommendation_id"] = _queue_candidate_id(item)
         item.update(_already_open_context(symbol, already_open_by_symbol))
+    attach_true_momentum_applicability(ranking["queue"])
     # Phase B6.4 — last-boundary queue-response consistency guard.
     # Re-stamp every active+applied row's score / score_after_momentum /
     # momentum_score_delta / momentum_realized_score_delta from the
@@ -1439,6 +1449,7 @@ def ranked_recommendation_queue(req: dict[str, object], _user=Depends(require_ap
                 "momentum_rank_mode",
                 "momentum_contribution",
                 "score_consistency_status",
+                "true_momentum_applicability",
             ):
                 if field in canonical:
                     entry[field] = canonical[field]
@@ -1510,6 +1521,7 @@ def promote_queue_candidate(req: dict[str, object], _user=Depends(require_approv
         "invalidation": req.get("invalidation") or {},
         "targets": req.get("targets") or [],
         "reason_text": req.get("reason_text") or "",
+        "true_momentum_applicability": req.get("true_momentum_applicability") or [],
         "session_policy": session_metadata.get("session_policy"),
         "data_quality": {
             "session_policy": session_metadata.get("session_policy"),
@@ -5536,6 +5548,17 @@ def analyze_symbol(symbol: str, market_mode: MarketMode = MarketMode.EQUITIES, _
         timeframe="1D",
         top_n=5,
     )
+    attach_true_momentum_applicability(ranking["queue"])
+    strategy_scoreboard = ranking["queue"][:6]
+    true_momentum_applicability = [
+        {
+            "symbol": item.get("symbol"),
+            "strategy": item.get("strategy"),
+            "rank": item.get("rank"),
+            "rows": item.get("true_momentum_applicability") or [],
+        }
+        for item in strategy_scoreboard
+    ]
     return {
         "symbol": symbol.upper(),
         "market_mode": market_mode.value,
@@ -5543,7 +5566,8 @@ def analyze_symbol(symbol: str, market_mode: MarketMode = MarketMode.EQUITIES, _
         "source": f"fallback ({source})" if fallback_mode else source,
         "market_regime": "trend" if latest.close >= bars[-5].close else "chop",
         "technical_summary": f"Close {latest.close:.2f}, 20D range {low20:.2f}-{high20:.2f}",
-        "strategy_scoreboard": ranking["queue"][:6],
+        "strategy_scoreboard": strategy_scoreboard,
+        "true_momentum_applicability": true_momentum_applicability,
         "levels": {
             "support": [round(low20, 2), round(min(item.low for item in bars[-5:]), 2)],
             "resistance": [round(high20, 2), round(max(item.high for item in bars[-5:]), 2)],
@@ -5808,21 +5832,119 @@ def strategy_registry(market_mode: MarketMode | None = None, _user=Depends(requi
     return [entry.model_dump(mode="json") for entry in list_strategies(market_mode)]
 
 
+def _schedule_report_type_from_payload(payload: dict[str, object] | None) -> str:
+    try:
+        return normalize_schedule_report_type((payload or {}).get("report_type"))
+    except ValueError:
+        return REPORT_TYPE_STRATEGY_SCAN
+
+
+def _strategy_schedule_summary(payload: dict[str, object]) -> dict[str, object]:
+    report_type = _schedule_report_type_from_payload(payload)
+    return {
+        "report_type": report_type,
+        "report_type_label": REPORT_TYPE_LABELS[report_type],
+        "market_mode": payload.get("market_mode", "equities"),
+        "symbols_count": len(payload.get("symbols") or []),
+        "strategy_count": len(payload.get("enabled_strategies") or []),
+        "top_n": payload.get("top_n", 5),
+    }
+
+
+def _run_payload_summary(payload: dict[str, object] | None) -> dict[str, object] | None:
+    if not payload:
+        return None
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    report_type = _schedule_report_type_from_payload(payload)
+    output: dict[str, object] = {
+        "report_type": report_type,
+        "report_type_label": REPORT_TYPE_LABELS[report_type],
+        **dict(summary),
+    }
+    if report_type == REPORT_TYPE_STRATEGY_SCAN:
+        output.setdefault("top_candidate_count", summary.get("top_candidate_count", 0))
+        output.setdefault("watchlist_count", summary.get("watchlist_count", 0))
+        output.setdefault("no_trade_count", summary.get("no_trade_count", 0))
+    return output
+
+
+def _normalize_schedule_timeframes(raw: object) -> list[str]:
+    allowed = ["1W", "1D", "4H", "1H", "30M"]
+    if not isinstance(raw, list):
+        return allowed
+    output: list[str] = []
+    for item in raw:
+        value = str(item or "").strip().upper()
+        if value in allowed and value not in output:
+            output.append(value)
+    return output or allowed
+
+
+def _user_email_or_400(user) -> str:  # noqa: ANN001
+    email = str(getattr(user, "email", "") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="account email is required for scheduled report delivery")
+    return email
+
+
+def _build_strategy_schedule_payload(req: dict[str, object], user, *, existing_payload: dict[str, object] | None = None) -> dict[str, object]:  # noqa: ANN001
+    incoming = dict(req.get("payload") or {}) if isinstance(req.get("payload"), dict) else dict(req)
+    existing = dict(existing_payload or {})
+    report_type = normalize_schedule_report_type(incoming.get("report_type") or existing.get("report_type"))
+    watchlist_id = int(req["watchlist_id"]) if str(req.get("watchlist_id") or "").strip().isdigit() else None
+    watchlist_name: str | None = None
+    if watchlist_id is not None:
+        watchlist = watchlist_repo.get_for_user(watchlist_id=watchlist_id, app_user_id=user.id)
+        if watchlist is None:
+            raise HTTPException(status_code=404, detail="watchlist not found")
+        watchlist_name = watchlist.name
+        raw_symbols = incoming.get("symbols") or req.get("symbols") or watchlist.symbols
+    else:
+        raw_symbols = incoming.get("symbols") or req.get("symbols") or existing.get("symbols") or ["SPY", "MSFT", "NVDA"]
+    symbols = normalize_symbol_list(raw_symbols, max_items=MAX_BULK_SYMBOLS, field_name="symbols")
+    if report_type in HEATMAP_REPORT_TYPES:
+        if not symbols:
+            raise HTTPException(status_code=400, detail="heatmap schedules require at least one symbol")
+        payload: dict[str, object] = {
+            "report_type": report_type,
+            "market_mode": MarketMode.EQUITIES.value,
+            "symbols": symbols,
+            "timeframes": _normalize_schedule_timeframes(incoming.get("timeframes") or existing.get("timeframes")),
+            "email_delivery_target": _user_email_or_400(user),
+            "scheduled_symbols_static_snapshot": True,
+            "ranking_preferences": [],
+            "enabled_strategies": [],
+            "top_n": 0,
+        }
+    else:
+        market_mode = MarketMode(str(incoming.get("market_mode") or existing.get("market_mode") or MarketMode.EQUITIES.value))
+        default_strategies = [entry.display_name for entry in list_strategies(market_mode)[:3]]
+        top_n = capped_int(incoming.get("top_n"), default=int(existing.get("top_n") or 5), minimum=1, maximum=MAX_QUEUE_TOP_N, field_name="top_n")
+        payload = {
+            "report_type": REPORT_TYPE_STRATEGY_SCAN,
+            "market_mode": market_mode.value,
+            "enabled_strategies": incoming.get("enabled_strategies") or existing.get("enabled_strategies") or default_strategies,
+            "symbols": symbols,
+            "ranking_preferences": incoming.get("ranking_preferences") or existing.get("ranking_preferences") or ["strategy_fit", "expected_rr", "liquidity"],
+            "top_n": top_n,
+            "email_delivery_target": str(incoming.get("email_delivery_target") or existing.get("email_delivery_target") or user.email),
+        }
+    if watchlist_id is not None:
+        payload["watchlist_id"] = watchlist_id
+        payload["watchlist_name"] = watchlist_name or ""
+        payload["watchlist_static_snapshot"] = True
+    return payload
+
+
 @user_router.get("/strategy-schedules")
 def list_strategy_schedules(user=Depends(require_approved_user)):
     schedules = strategy_report_repo.list_schedules_for_user(user.id)
     output = []
     for row in schedules:
         runs = strategy_report_repo.list_runs(schedule_id=row.id, limit=5)
-        latest_payload_summary = None
-        if runs and runs[0].payload:
-            summary = (runs[0].payload or {}).get("summary") or {}
-            latest_payload_summary = {
-                "top_candidate_count": summary.get("top_candidate_count", 0),
-                "watchlist_count": summary.get("watchlist_count", 0),
-                "no_trade_count": summary.get("no_trade_count", 0),
-            }
+        latest_payload_summary = _run_payload_summary(runs[0].payload if runs else None)
         payload = row.payload or {}
+        report_type = _schedule_report_type_from_payload(payload)
         watchlist_reference = None
         raw_watchlist_id = payload.get("watchlist_id")
         if raw_watchlist_id is not None:
@@ -5848,12 +5970,11 @@ def list_strategy_schedules(user=Depends(require_approved_user)):
                 "latest_run_at": row.latest_run_at,
                 "next_run_at": row.next_run_at,
                 "payload": payload,
+                "report_type": report_type,
+                "report_type_label": REPORT_TYPE_LABELS[report_type],
                 "watchlist_reference": watchlist_reference,
                 "config_summary": {
-                    "market_mode": payload.get("market_mode", "equities"),
-                    "symbols_count": len(payload.get("symbols") or []),
-                    "strategy_count": len(payload.get("enabled_strategies") or []),
-                    "top_n": payload.get("top_n", 5),
+                    **_strategy_schedule_summary(payload),
                     "delivery_target": payload.get("email_delivery_target") or row.email_target,
                 },
                 "latest_payload_summary": latest_payload_summary,
@@ -5864,7 +5985,9 @@ def list_strategy_schedules(user=Depends(require_approved_user)):
                         "delivered_to": run.delivered_to,
                         "created_at": run.created_at,
                         "email_provider": (run.payload or {}).get("email_provider", "console"),
-                        "summary": (run.payload or {}).get("summary"),
+                        "report_type": _schedule_report_type_from_payload(run.payload or payload),
+                        "report_type_label": REPORT_TYPE_LABELS[_schedule_report_type_from_payload(run.payload or payload)],
+                        "summary": _run_payload_summary(run.payload),
                     }
                     for run in runs
                 ],
@@ -5880,32 +6003,10 @@ def create_strategy_schedule(req: dict[str, object], user=Depends(require_approv
     timezone_name = str(req.get("timezone") or "America/New_York")
     now = datetime.now(timezone.utc)
     next_run = strategy_report_service._next_run_at(now=now, frequency=frequency, run_time=run_time, timezone_name=timezone_name)
-    market_mode = MarketMode(str(req.get("market_mode") or MarketMode.EQUITIES.value))
-    default_strategies = [entry.display_name for entry in list_strategies(market_mode)[:3]]
-    watchlist_id = int(req["watchlist_id"]) if str(req.get("watchlist_id") or "").strip().isdigit() else None
-    watchlist_name: str | None = None
-    if watchlist_id is not None:
-        watchlist = watchlist_repo.get_for_user(watchlist_id=watchlist_id, app_user_id=user.id)
-        if watchlist is None:
-            raise HTTPException(status_code=404, detail="watchlist not found")
-        watchlist_name = watchlist.name
-        raw_symbols = req.get("symbols") or watchlist.symbols
-    else:
-        raw_symbols = req.get("symbols") or ["SPY", "MSFT", "NVDA"]
-    symbols = normalize_symbol_list(raw_symbols, max_items=MAX_BULK_SYMBOLS, field_name="symbols")
-    top_n = capped_int(req.get("top_n"), default=5, minimum=1, maximum=MAX_QUEUE_TOP_N, field_name="top_n")
-    payload = {
-        "market_mode": market_mode.value,
-        "enabled_strategies": req.get("enabled_strategies") or default_strategies,
-        "symbols": symbols,
-        "ranking_preferences": req.get("ranking_preferences") or ["strategy_fit", "expected_rr", "liquidity"],
-        "top_n": top_n,
-        "email_delivery_target": str(req.get("email_delivery_target") or user.email),
-    }
-    if watchlist_id is not None:
-        payload["watchlist_id"] = watchlist_id
-        payload["watchlist_name"] = watchlist_name or ""
-        payload["watchlist_static_snapshot"] = True
+    try:
+        payload = _build_strategy_schedule_payload(req, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     row = strategy_report_repo.create_schedule(
         app_user_id=user.id,
         name=str(req.get("name") or "Morning strategy scan"),
@@ -5922,10 +6023,23 @@ def create_strategy_schedule(req: dict[str, object], user=Depends(require_approv
 
 @user_router.put("/strategy-schedules/{schedule_id}")
 def update_strategy_schedule(schedule_id: int, req: dict[str, object], user=Depends(require_approved_user)):
+    existing = strategy_report_repo.get_schedule(schedule_id)
+    if existing is None or existing.app_user_id != user.id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
     updates: dict[str, object] = {}
-    for key in ["name", "frequency", "run_time", "timezone", "email_target", "enabled", "payload"]:
+    for key in ["name", "frequency", "run_time", "timezone", "enabled"]:
         if key in req:
             updates[key] = req[key]
+    if "payload" in req:
+        try:
+            payload = _build_strategy_schedule_payload(req, user, existing_payload=existing.payload or {})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updates["payload"] = payload
+        updates["email_target"] = payload["email_delivery_target"]
+    elif "email_target" in req:
+        report_type = _schedule_report_type_from_payload(existing.payload or {})
+        updates["email_target"] = _user_email_or_400(user) if report_type in HEATMAP_REPORT_TYPES else req["email_target"]
     row = strategy_report_repo.update_schedule(schedule_id, app_user_id=user.id, updates=updates)
     if row is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -5953,11 +6067,14 @@ def get_strategy_schedule_run(schedule_id: int, run_id: int, user=Depends(requir
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     p = run.payload or {}
+    report_type = _schedule_report_type_from_payload(p)
     return {
         "id": run.id,
         "schedule_id": run.schedule_id,
         "status": run.status,
         "delivered_to": run.delivered_to,
+        "report_type": report_type,
+        "report_type_label": REPORT_TYPE_LABELS[report_type],
         "created_at": run.created_at,
         "trigger": p.get("trigger"),
         "ran_at": p.get("ran_at"),
@@ -5966,6 +6083,10 @@ def get_strategy_schedule_run(schedule_id: int, run_id: int, user=Depends(requir
         "watchlist_only": p.get("watchlist_only", []),
         "no_trade": p.get("no_trade", []),
         "summary": p.get("summary", {}),
+        "report": p.get("report", {}),
+        "heatmap": p.get("heatmap", {}),
+        "failure": p.get("failure"),
+        "warnings": p.get("warnings", []),
     }
 
 

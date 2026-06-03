@@ -1,6 +1,39 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
+
+## 2026-06-03 Update - Scheduled Heatmap Email Reports
+
+Completed in the current Phase 1 operator-reporting track:
+- Added `momentum_heatmap` and `haco_heatmap` report types to the existing
+  `/schedules` workflow, backed by the existing strategy report schedule/run
+  audit tables and shared CLI runner.
+- Scheduled heatmap reports use static symbol snapshots, account-scoped email
+  delivery, safe failure emails, and run-history/detail summaries without
+  entering the deterministic recommendation queue.
+- Updated the Schedules UI so strategy scans, Momentum Heatmap reports, and
+  HACO Direction Heatmap reports are clearly selectable and type-labeled.
+
+No recommendation scoring, strategy math, provider defaults, risk-calendar
+decisions, queue generation, approval, sizing, paper-order behavior, replay,
+broker routing, live trading, HACO, or Momentum indicator math changed.
+
+## 2026-06-03 Update - True Momentum Strategy Applicability in Reviews
+
+Completed in the current Phase 1 review-trust track:
+- Added a pure backend True Momentum applicability evaluator that reuses the
+  existing research-preview family classifier and annotates already-built
+  review payloads with `true_momentum_continuation`,
+  `true_momentum_pullback`, and `true_momentum_reversal_watch` rows.
+- Surfaced non-actionable applicability context in Symbol Snapshot,
+  Recommendations queue/detail, stored recommendation lineage, analysis
+  packets, and scheduled strategy report output.
+- Kept every applicability row `non_actionable: true` with explicit
+  research-preview/watch/blocked/insufficient/not-applicable statuses.
+
+No recommendation scoring, strategy math, provider defaults, risk-calendar
+decisions, queue generation, approval, sizing, paper-order behavior, replay,
+broker routing, live trading, HACO, or Momentum indicator math changed.
 
 ## 2026-06-02 Update - Agent Mode Post-Deploy Hardening
 

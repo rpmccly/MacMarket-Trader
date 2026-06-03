@@ -14,10 +14,28 @@ from macmarket_trader.domain.time import calendar_days_to_expiration
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import EmailLogRepository, StrategyReportRepository
 from macmarket_trader.ranking_engine import DeterministicRankingEngine
-from macmarket_trader.strategy_reports import StrategyReportService
+from macmarket_trader.strategy_reports import (
+    REPORT_TYPE_HACO_HEATMAP,
+    REPORT_TYPE_MOMENTUM_HEATMAP,
+    StrategyReportService,
+)
 from macmarket_trader.data.providers.mock import ConsoleEmailProvider
 
 client = TestClient(app)
+
+
+class RecordingEmailProvider(ConsoleEmailProvider):
+    def __init__(self) -> None:
+        self.messages = []
+
+    def send(self, message):  # noqa: ANN001
+        self.messages.append(message)
+        return f"recorded-{len(self.messages)}"
+
+
+class EmptyBarsMarketDataService:
+    def historical_bars(self, *, symbol: str, timeframe: str, limit: int):  # noqa: ANN001
+        return [], "empty-test", False
 
 
 def _quote_snapshot(option_symbol: str, mark: float) -> OptionContractSnapshot:
@@ -84,6 +102,7 @@ def test_strategy_schedule_create_and_run_now() -> None:
     run_now = client.post(f'/user/strategy-schedules/{schedule_id}/run', headers={'Authorization': 'Bearer user-token'})
     assert run_now.status_code == 200
     payload = run_now.json()
+    assert payload['report_type'] == 'strategy_scan'
     assert 'top_candidates' in payload
     assert 'analysis_packets' in payload
     assert 'watchlist_only' in payload
@@ -150,6 +169,179 @@ def test_strategy_report_due_runner_selects_due_schedules() -> None:
     output = service.run_due_schedules(now=datetime.now(timezone.utc))
     assert output
     assert output[0]['schedule_id'] == schedule.id
+
+
+def test_heatmap_schedule_create_forces_account_email_and_static_symbols() -> None:
+    _seed_and_approve_user()
+    create = client.post(
+        '/user/strategy-schedules',
+        headers={'Authorization': 'Bearer user-token'},
+        json={
+            'name': 'Momentum desk heatmap',
+            'frequency': 'weekdays',
+            'run_time': '10:15',
+            'timezone': 'America/New_York',
+            'report_type': 'momentum_heatmap',
+            'symbols': ['SPY', 'QQQ', 'SPY'],
+            'email_delivery_target': 'other@example.com',
+            'top_n': 20,
+        },
+    )
+    assert create.status_code == 200, create.text
+    listing = client.get('/user/strategy-schedules', headers={'Authorization': 'Bearer user-token'})
+    row = next(item for item in listing.json() if item['id'] == create.json()['id'])
+    assert row['report_type'] == 'momentum_heatmap'
+    assert row['report_type_label'] == 'Momentum Heatmap'
+    assert row['payload']['symbols'] == ['SPY', 'QQQ']
+    assert row['payload']['email_delivery_target'] == 'user@example.com'
+    assert row['payload']['scheduled_symbols_static_snapshot'] is True
+    assert row['payload']['enabled_strategies'] == []
+    assert row['config_summary']['delivery_target'] == 'user@example.com'
+
+
+def test_haco_heatmap_schedule_run_sends_research_email_without_ranked_queue() -> None:
+    repo = StrategyReportRepository(SessionLocal)
+    email_repo = EmailLogRepository(SessionLocal)
+    provider = RecordingEmailProvider()
+    service = StrategyReportService(report_repo=repo, email_provider=provider, email_log_repo=email_repo)
+    with SessionLocal() as session:
+        user = AppUserModel(
+            external_auth_user_id='haco_scheduler_user',
+            email='haco@example.com',
+            display_name='HACO Scheduler',
+            approval_status='approved',
+            app_role='user',
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        schedule = repo.create_schedule(
+            app_user_id=user.id,
+            name='HACO scheduled symbols',
+            frequency='daily',
+            run_time='08:30',
+            timezone_name='America/New_York',
+            email_target='haco@example.com',
+            enabled=True,
+            next_run_at=datetime.now(timezone.utc),
+            payload={
+                'report_type': REPORT_TYPE_HACO_HEATMAP,
+                'symbols': ['SPY', 'QQQ'],
+                'timeframes': ['1W', '1D', '4H', '1H', '30M'],
+                'email_delivery_target': 'haco@example.com',
+            },
+        )
+
+    payload = service.run_schedule(schedule.id, trigger='test')
+    assert payload['report_type'] == REPORT_TYPE_HACO_HEATMAP
+    assert payload['summary']['usable_row_count'] > 0
+    assert 'heatmap' in payload
+    assert 'top_candidates' not in payload
+    assert provider.messages
+    assert provider.messages[0].template_name == 'haco_heatmap_scheduled_report'
+    assert 'HACO Heatmap' in provider.messages[0].subject
+
+
+def test_momentum_heatmap_schedule_failure_sends_failure_email_and_advances() -> None:
+    repo = StrategyReportRepository(SessionLocal)
+    email_repo = EmailLogRepository(SessionLocal)
+    provider = RecordingEmailProvider()
+    service = StrategyReportService(report_repo=repo, email_provider=provider, email_log_repo=email_repo)
+    service.market_data_service = EmptyBarsMarketDataService()
+    with SessionLocal() as session:
+        user = AppUserModel(
+            external_auth_user_id='momentum_failed_user',
+            email='momentum@example.com',
+            display_name='Momentum Scheduler',
+            approval_status='approved',
+            app_role='user',
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        schedule = repo.create_schedule(
+            app_user_id=user.id,
+            name='Momentum failure schedule',
+            frequency='daily',
+            run_time='08:30',
+            timezone_name='America/New_York',
+            email_target='momentum@example.com',
+            enabled=True,
+            next_run_at=datetime.now(timezone.utc),
+            payload={
+                'report_type': REPORT_TYPE_MOMENTUM_HEATMAP,
+                'symbols': ['SPY'],
+                'timeframes': ['1D'],
+                'email_delivery_target': 'momentum@example.com',
+            },
+        )
+
+    payload = service.run_schedule(schedule.id, trigger='test')
+    assert payload['status'] == 'failed'
+    assert payload['report_type'] == REPORT_TYPE_MOMENTUM_HEATMAP
+    assert payload['failure']['reason'] == 'no_usable_momentum_heatmap_rows'
+    assert provider.messages
+    assert provider.messages[0].template_name == 'momentum_heatmap_scheduled_failure'
+    assert 'Failure' in provider.messages[0].subject
+    with SessionLocal() as session:
+        row = session.get(type(schedule), schedule.id)
+        run = session.execute(select(StrategyReportRunModel).where(StrategyReportRunModel.schedule_id == schedule.id)).scalar_one()
+        assert row.latest_status == 'failed'
+        assert row.next_run_at is not None
+        assert run.status == 'failed'
+
+
+def test_due_runner_can_filter_mixed_report_types() -> None:
+    repo = StrategyReportRepository(SessionLocal)
+    email_repo = EmailLogRepository(SessionLocal)
+    provider = RecordingEmailProvider()
+    service = StrategyReportService(report_repo=repo, email_provider=provider, email_log_repo=email_repo)
+    with SessionLocal() as session:
+        user = AppUserModel(
+            external_auth_user_id='mixed_report_user',
+            email='mixed@example.com',
+            display_name='Mixed Scheduler',
+            approval_status='approved',
+            app_role='user',
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        strategy_schedule = repo.create_schedule(
+            app_user_id=user.id,
+            name='Strategy due',
+            frequency='daily',
+            run_time='08:30',
+            timezone_name='America/New_York',
+            email_target='mixed@example.com',
+            enabled=True,
+            next_run_at=datetime.now(timezone.utc),
+            payload={'symbols': ['AAPL'], 'enabled_strategies': ['Event Continuation'], 'top_n': 2},
+        )
+        heatmap_schedule = repo.create_schedule(
+            app_user_id=user.id,
+            name='Momentum due',
+            frequency='daily',
+            run_time='08:30',
+            timezone_name='America/New_York',
+            email_target='mixed@example.com',
+            enabled=True,
+            next_run_at=datetime.now(timezone.utc),
+            payload={
+                'report_type': REPORT_TYPE_MOMENTUM_HEATMAP,
+                'symbols': ['SPY'],
+                'email_delivery_target': 'mixed@example.com',
+            },
+        )
+
+    output = service.run_due_schedules(now=datetime.now(timezone.utc), report_types={REPORT_TYPE_MOMENTUM_HEATMAP})
+    assert len(output) == 1
+    assert output[0]['schedule_id'] == heatmap_schedule.id
+    with SessionLocal() as session:
+        strategy_runs = session.execute(select(StrategyReportRunModel).where(StrategyReportRunModel.schedule_id == strategy_schedule.id)).scalars().all()
+        heatmap_runs = session.execute(select(StrategyReportRunModel).where(StrategyReportRunModel.schedule_id == heatmap_schedule.id)).scalars().all()
+        assert strategy_runs == []
+        assert len(heatmap_runs) == 1
 
 
 def test_symbol_analyze_response_shape() -> None:

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import { SymbolEntryPreview } from "@/components/symbol-entry-preview";
@@ -111,14 +111,16 @@ type Schedule = {
   run_time: string;
   timezone: string;
   enabled: boolean;
+  report_type?: ReportType | string;
+  report_type_label?: string;
   latest_status: string;
   latest_run_at?: string;
   next_run_at?: string;
-  payload?: { symbols?: string[]; enabled_strategies?: string[]; top_n?: number; email_delivery_target?: string; market_mode?: string };
+  payload?: { report_type?: ReportType | string; symbols?: string[]; enabled_strategies?: string[]; top_n?: number; email_delivery_target?: string; market_mode?: string; timeframes?: string[] };
   watchlist_reference?: { id?: number | null; name?: string | null; exists: boolean; warning?: string | null } | null;
-  config_summary?: { market_mode: string; symbols_count: number; strategy_count: number; top_n: number; delivery_target: string };
-  latest_payload_summary?: { top_candidate_count: number; watchlist_count: number; no_trade_count: number } | null;
-  history?: Array<{ id: number; status: string; delivered_to: string; created_at: string; email_provider?: string; summary?: { top_candidate_count?: number; watchlist_count?: number; no_trade_count?: number } }>;
+  config_summary?: { report_type?: ReportType | string; report_type_label?: string; market_mode: string; symbols_count: number; strategy_count: number; top_n: number; delivery_target: string };
+  latest_payload_summary?: ScheduleRunSummary | null;
+  history?: Array<{ id: number; status: string; delivered_to: string; created_at: string; email_provider?: string; report_type?: ReportType | string; report_type_label?: string; summary?: ScheduleRunSummary }>;
 };
 
 type RunCandidate = {
@@ -138,6 +140,8 @@ type RunDetail = {
   schedule_id: number;
   status: string;
   delivered_to: string;
+  report_type?: ReportType | string;
+  report_type_label?: string;
   created_at: string;
   trigger?: string;
   ran_at?: string;
@@ -145,13 +149,35 @@ type RunDetail = {
   top_candidates: RunCandidate[];
   watchlist_only: RunCandidate[];
   no_trade: Array<{ symbol: string; strategy: string; reason_text: string }>;
-  summary: { top_candidate_count?: number; watchlist_count?: number; no_trade_count?: number };
+  summary: ScheduleRunSummary;
+  report?: Record<string, unknown>;
+  heatmap?: { categories?: Array<{ categoryLabel?: string; rows?: Array<Record<string, unknown>> }> };
+  failure?: { reason?: string; requested_symbols?: string[]; symbol_count?: number } | null;
+  warnings?: string[];
 };
 
 type Watchlist = { id: number; name: string; symbols: string[]; created_at: string };
 type WatchlistSort = "name" | "symbol_count";
 type WatchlistSaveMode = "replace" | "merge";
 type ScheduleUniverseSourceType = "manual" | "watchlist" | "watchlist_plus_manual" | "all_active";
+type ReportType = "strategy_scan" | "momentum_heatmap" | "haco_heatmap";
+type ScheduleRunSummary = {
+  report_type?: ReportType | string;
+  report_type_label?: string;
+  top_candidate_count?: number;
+  watchlist_count?: number;
+  no_trade_count?: number;
+  row_count?: number;
+  usable_row_count?: number;
+  unsupported_count?: number;
+  unavailable_count?: number;
+  all_long_count?: number;
+  all_short_count?: number;
+  mixed_chop_count?: number;
+  bullish_alignment_count?: number;
+  bearish_alignment_count?: number;
+  top_strongest_count?: number;
+};
 
 type SymbolUniversePreviewResponse = {
   resolved_symbols: string[];
@@ -188,6 +214,53 @@ function formatUniverseWarning(value: string): string {
     default:
       return value.replace(/_/g, " ");
   }
+}
+
+const REPORT_TYPES: { value: ReportType; label: string; description: string }[] = [
+  { value: "strategy_scan", label: "Strategy Candidate Scan", description: "Ranked deterministic recommendation candidates." },
+  { value: "momentum_heatmap", label: "Momentum Heatmap", description: "Research-only Momentum Heatmap table email." },
+  { value: "haco_heatmap", label: "HACO Heatmap", description: "Research-only HACO Direction Heatmap table email." },
+];
+
+function normalizeReportType(value: string | undefined | null): ReportType {
+  if (value === "momentum_heatmap" || value === "haco_heatmap") return value;
+  return "strategy_scan";
+}
+
+function reportTypeLabel(value: string | undefined | null): string {
+  return REPORT_TYPES.find((item) => item.value === normalizeReportType(value))?.label ?? "Strategy Candidate Scan";
+}
+
+function isHeatmapReport(value: string | undefined | null): boolean {
+  return normalizeReportType(value) !== "strategy_scan";
+}
+
+function formatRunSummary(summary: ScheduleRunSummary | undefined | null): string {
+  if (!summary) return "—";
+  const type = normalizeReportType(String(summary.report_type ?? ""));
+  if (type === "strategy_scan") {
+    return `${summary.top_candidate_count ?? 0} top · ${summary.watchlist_count ?? 0} watch · ${summary.no_trade_count ?? 0} no-trade`;
+  }
+  if (type === "momentum_heatmap") {
+    return `${summary.usable_row_count ?? 0}/${summary.row_count ?? 0} usable · ${summary.top_strongest_count ?? 0} strongest · ${summary.unsupported_count ?? 0} unsupported`;
+  }
+  return `${summary.usable_row_count ?? 0}/${summary.row_count ?? 0} usable · ${summary.all_long_count ?? 0} long · ${summary.all_short_count ?? 0} short`;
+}
+
+function heatmapCellValue(row: Record<string, unknown>, timeframe: string, type: string | undefined | null): string {
+  if (normalizeReportType(type ?? "") === "momentum_heatmap") {
+    const scores = row.scores && typeof row.scores === "object" ? row.scores as Record<string, unknown> : {};
+    const cell = scores[timeframe] && typeof scores[timeframe] === "object" ? scores[timeframe] as Record<string, unknown> : null;
+    if (!cell) return "-";
+    if (cell.status !== "ok") return String(cell.status ?? cell.reason ?? "-");
+    const value = cell.value;
+    return typeof value === "number" ? value.toFixed(1) : String(value ?? "-");
+  }
+  const states = row.states && typeof row.states === "object" ? row.states as Record<string, unknown> : {};
+  const cell = states[timeframe] && typeof states[timeframe] === "object" ? states[timeframe] as Record<string, unknown> : null;
+  if (!cell) return "-";
+  if (cell.status !== "ok") return String(cell.status ?? cell.reason ?? "-");
+  return String(cell.label ?? cell.value ?? "-");
 }
 
 const TIMEZONES: { value: string; label: string }[] = [
@@ -229,6 +302,7 @@ export default function SchedulesPage() {
 
   // Form state
   const [name, setName] = useState("Morning strategy scan");
+  const [reportType, setReportType] = useState<ReportType>("strategy_scan");
   const [symbols, setSymbols] = useState("SPY,MSFT,NVDA");
   const [marketMode, setMarketMode] = useState<MarketMode>("equities");
   const [frequency, setFrequency] = useState("weekdays");
@@ -260,6 +334,7 @@ export default function SchedulesPage() {
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [runDetailFeedback, setRunDetailFeedback] = useState<{ state: "idle" | "loading" | "error"; message: string }>({ state: "idle", message: "" });
   const parsedScheduleSymbols = useMemo(() => parseManualSymbolEntry(symbols), [symbols]);
+  const selectedReportIsHeatmap = isHeatmapReport(reportType);
   const parsedScheduleManualAdditions = useMemo(() => parseManualSymbolEntry(scheduleManualAdditions), [scheduleManualAdditions]);
   const parsedSchedulePinnedSymbols = useMemo(() => parseManualSymbolEntry(schedulePinnedSymbols), [schedulePinnedSymbols]);
   const parsedScheduleExcludedSymbols = useMemo(() => parseManualSymbolEntry(scheduleExcludedSymbols), [scheduleExcludedSymbols]);
@@ -396,6 +471,7 @@ export default function SchedulesPage() {
       setSymbols((selected.payload?.symbols ?? []).join(","));
       setMarketMode((selected.payload?.market_mode ?? "equities") as MarketMode);
     }
+    setReportType(normalizeReportType(String(selected.report_type ?? selected.payload?.report_type ?? "strategy_scan")));
     setFrequency(selected.frequency);
     setRunTime(selected.run_time);
     setTimezone(selected.timezone);
@@ -463,13 +539,17 @@ export default function SchedulesPage() {
   }
 
   async function createOrUpdateSchedule(scheduleId?: number) {
-    const scheduleConfig = {
+    const scheduleConfig: Record<string, unknown> = {
+      report_type: reportType,
       symbols: parsedScheduleSymbols.symbols,
-      enabled_strategies: ["Event Continuation", "Breakout / Prior-Day High", "Pullback / Trend Continuation"],
-      top_n: topN,
-      market_mode: marketMode,
-      ...(emailTarget.trim() ? { email_delivery_target: emailTarget.trim() } : {}),
+      timeframes: ["1W", "1D", "4H", "1H", "30M"],
     };
+    if (!selectedReportIsHeatmap) {
+      scheduleConfig.enabled_strategies = ["Event Continuation", "Breakout / Prior-Day High", "Pullback / Trend Continuation"];
+      scheduleConfig.top_n = topN;
+      scheduleConfig.market_mode = marketMode;
+      if (emailTarget.trim()) scheduleConfig.email_delivery_target = emailTarget.trim();
+    }
     // Backend PUT only updates fields in ["name","frequency","run_time","timezone","email_target","enabled","payload"].
     // Symbols/config must be nested under "payload" for updates; POST reads them flat.
     const payload = scheduleId
@@ -537,8 +617,8 @@ export default function SchedulesPage() {
   return (
     <section className="op-stack">
       <PageHeader
-        title="Scheduled Strategy Reports"
-        subtitle="Recurring ranked strategy scans with run history and payload summaries."
+        title="Scheduled Reports"
+        subtitle="Recurring strategy scans and research-only heatmap emails with run history and payload summaries."
         actions={<StatusBadge tone="neutral">EMAIL_PROVIDER=console/local is explicit</StatusBadge>}
       />
 
@@ -547,6 +627,28 @@ export default function SchedulesPage() {
           <div>Schedules use a static symbol snapshot. Preview and apply the symbols you want saved into this schedule.</div>
           <div>Later watchlist edits do not automatically change existing schedules. Dynamic watchlist refresh is deferred and not enabled.</div>
           <div>This is recommendation-universe schedule setup, not order flow. Provider metadata may be unavailable.</div>
+        </div>
+        <div style={{ marginBottom: 12, padding: 12, border: "1px solid var(--op-border, #1e2d3d)", borderRadius: 8 }}>
+          <label style={{ display: "grid", gap: 6, maxWidth: 420 }}>
+            <span style={{ fontWeight: 700 }}>Report type</span>
+            <select
+              value={reportType}
+              onChange={(e) => setReportType(e.target.value as ReportType)}
+              style={{ minHeight: 38 }}
+            >
+              {REPORT_TYPES.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <div style={{ marginTop: 8, color: "var(--op-muted, #7a8999)", fontSize: "0.86rem", lineHeight: 1.5 }}>
+            {REPORT_TYPES.find((option) => option.value === reportType)?.description}
+            {selectedReportIsHeatmap ? (
+              <div>Recipient: your signed-in account email. Custom recipients, market mode, and Top N are disabled for heatmap reports.</div>
+            ) : (
+              <div>Strategy scans use deterministic ranking and can keep the existing custom delivery target.</div>
+            )}
+          </div>
         </div>
         <div className="op-row" style={{ alignItems: "flex-end", flexWrap: "wrap", marginBottom: 10 }}>
           <label style={{ display: "grid", gap: 4, minWidth: 220 }}>
@@ -695,11 +797,15 @@ export default function SchedulesPage() {
               ))}
             </select>
           )}
-          <select value={marketMode} onChange={(e) => setMarketMode(e.target.value as MarketMode)}>
-            <option value="equities">equities</option>
-            <option value="options">options (research preview)</option>
-            <option value="crypto">crypto (research preview)</option>
-          </select>
+          {!selectedReportIsHeatmap ? (
+            <select value={marketMode} onChange={(e) => setMarketMode(e.target.value as MarketMode)}>
+              <option value="equities">equities</option>
+              <option value="options">options (research preview)</option>
+              <option value="crypto">crypto (research preview)</option>
+            </select>
+          ) : (
+            <StatusBadge tone="neutral">equities research heatmap</StatusBadge>
+          )}
         </div>
         <div style={{ marginTop: 6, color: "var(--op-muted, #7a8999)", fontSize: "0.85rem", lineHeight: 1.5 }}>
           <div>{SYMBOL_ENTRY_HELP_COPY.separators}</div>
@@ -730,23 +836,31 @@ export default function SchedulesPage() {
           </label>
         </div>
         <div className="op-row">
-          <input
-            value={emailTarget}
-            onChange={(e) => setEmailTarget(e.target.value)}
-            placeholder="Email delivery target (defaults to account email)"
-            style={{ minWidth: 300 }}
-          />
-          <label>
-            Top N&nbsp;
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={topN}
-              onChange={(e) => setTopN(Math.max(1, Math.min(20, Number(e.target.value))))}
-              style={{ width: 60 }}
-            />
-          </label>
+          {!selectedReportIsHeatmap ? (
+            <>
+              <input
+                value={emailTarget}
+                onChange={(e) => setEmailTarget(e.target.value)}
+                placeholder="Email delivery target (defaults to account email)"
+                style={{ minWidth: 300 }}
+              />
+              <label>
+                Top N&nbsp;
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={topN}
+                  onChange={(e) => setTopN(Math.max(1, Math.min(20, Number(e.target.value))))}
+                  style={{ width: 60 }}
+                />
+              </label>
+            </>
+          ) : (
+            <div style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.86rem" }}>
+              Recipient: your signed-in account email. Heatmap reports send a full inline research table and no CSV attachment.
+            </div>
+          )}
           <button onClick={() => void createOrUpdateSchedule()}>Create</button>
           <button onClick={() => selected ? void createOrUpdateSchedule(selected.id) : null} disabled={!selected}>
             Update selected
@@ -936,7 +1050,7 @@ export default function SchedulesPage() {
             <div>
               <EmptyState
                 title="No scheduled reports yet"
-                hint="Scheduled reports rank your watchlist daily and surface top candidates with explicit entry levels, stops, and targets. Create a schedule to get a ranked candidate list on a recurring basis."
+                hint="Create a strategy scan or research-only heatmap email schedule from a static symbol snapshot."
               />
               <div className="op-row" style={{ marginTop: 8 }}>
                 <button onClick={() => createFormRef.current?.scrollIntoView({ behavior: "smooth" })}>Create your first schedule</button>
@@ -946,7 +1060,7 @@ export default function SchedulesPage() {
             <ResponsiveTable label="Active schedules">
             <table className="op-table">
               <thead>
-                <tr><th>Name</th><th>Config</th><th>Last / Next</th><th>Latest summary</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Type</th><th>Config</th><th>Last / Next</th><th>Latest summary</th><th>Actions</th></tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
@@ -960,8 +1074,16 @@ export default function SchedulesPage() {
                       <StatusBadge tone={row.enabled ? "good" : "warn"}>{row.latest_status}</StatusBadge>
                     </td>
                     <td>
+                      <StatusBadge tone={isHeatmapReport(row.report_type ?? row.payload?.report_type) ? "neutral" : "good"}>
+                        {row.report_type_label ?? reportTypeLabel(String(row.report_type ?? row.payload?.report_type ?? ""))}
+                      </StatusBadge>
+                    </td>
+                    <td>
                       {row.frequency} @ {formatScheduleTime(row.run_time, row.timezone)}<br />
-                      {row.config_summary?.market_mode ?? row.payload?.market_mode} · {(row.payload?.symbols ?? []).join(", ")}
+                      {isHeatmapReport(row.report_type ?? row.payload?.report_type)
+                        ? `research heatmap · ${row.payload?.timeframes?.join(", ") ?? "1W, 1D, 4H, 1H, 30M"}`
+                        : `${row.config_summary?.market_mode ?? row.payload?.market_mode} · top ${row.config_summary?.top_n ?? row.payload?.top_n ?? 5}`}<br />
+                      {(row.payload?.symbols ?? []).join(", ")}
                     </td>
                     <td>
                       {toRelativeTime(row.latest_run_at ?? row.history?.[0]?.created_at)}<br />
@@ -969,8 +1091,8 @@ export default function SchedulesPage() {
                     </td>
                     <td>
                       {(row.latest_run_at ?? row.history?.[0]?.created_at)
-                        ? <StatusBadge tone={(row.latest_payload_summary?.top_candidate_count ?? 0) > 0 ? "good" : "warn"}>
-                            {row.latest_payload_summary?.top_candidate_count ?? 0} top candidate{(row.latest_payload_summary?.top_candidate_count ?? 0) === 1 ? "" : "s"}
+                        ? <StatusBadge tone={(row.latest_payload_summary?.usable_row_count ?? row.latest_payload_summary?.top_candidate_count ?? 0) > 0 ? "good" : "warn"}>
+                            {formatRunSummary(row.latest_payload_summary)}
                           </StatusBadge>
                         : <span style={{ color: "var(--text-muted, #8b9cb3)" }}>—</span>}
                     </td>
@@ -995,12 +1117,17 @@ export default function SchedulesPage() {
             <EmptyState title="Select a schedule" hint="Click a schedule row to inspect recent run outcomes." />
           ) : (
             <>
-              <div><strong>delivery target:</strong> {selected.config_summary?.delivery_target ?? selected.payload?.email_delivery_target ?? "-"}</div>
-              <div><strong>top_n:</strong> {selected.config_summary?.top_n ?? selected.payload?.top_n ?? 5}</div>
+              <div><strong>report type:</strong> {selected.report_type_label ?? reportTypeLabel(String(selected.report_type ?? selected.payload?.report_type ?? ""))}</div>
+              <div><strong>delivery target:</strong> {isHeatmapReport(selected.report_type ?? selected.payload?.report_type) ? "signed-in account email" : (selected.config_summary?.delivery_target ?? selected.payload?.email_delivery_target ?? "-")}</div>
+              {!isHeatmapReport(selected.report_type ?? selected.payload?.report_type) ? (
+                <div><strong>top_n:</strong> {selected.config_summary?.top_n ?? selected.payload?.top_n ?? 5}</div>
+              ) : (
+                <div><strong>timeframes:</strong> {selected.payload?.timeframes?.join(", ") ?? "1W, 1D, 4H, 1H, 30M"}</div>
+              )}
               <ResponsiveTable label="Selected schedule run history">
               <table className="op-table">
                 <thead>
-                  <tr><th>Run</th><th>Status</th><th>Delivery</th><th>Delivered to</th><th>Summary</th></tr>
+                  <tr><th>Run</th><th>Type</th><th>Status</th><th>Delivery</th><th>Delivered to</th><th>Summary</th></tr>
                 </thead>
                 <tbody>
                   {(selected.history ?? []).map((run) => (
@@ -1008,13 +1135,14 @@ export default function SchedulesPage() {
                       key={run.id}
                       className={`is-selectable ${selectedRunId === run.id ? "is-active" : ""}`}
                       onClick={() => void loadRunDetail(run.id)}
-                      title="Click to view run candidates"
+                      title="Click to view run detail"
                     >
                       <td>{run.created_at}</td>
+                      <td>{run.report_type_label ?? reportTypeLabel(String(run.report_type ?? ""))}</td>
                       <td>{run.status}</td>
                       <td><StatusBadge tone={run.email_provider === "resend" ? "good" : "neutral"}>{run.email_provider ?? "console"}</StatusBadge></td>
                       <td>{run.delivered_to}</td>
-                      <td>{run.summary?.top_candidate_count ?? 0} top · {run.summary?.watchlist_count ?? 0} watch · {run.summary?.no_trade_count ?? 0} no-trade</td>
+                      <td>{formatRunSummary(run.summary)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1032,7 +1160,46 @@ export default function SchedulesPage() {
       </div>
 
       {runDetail && (
-        <Card title={`Run #${runDetail.id} · ${runDetail.trigger ?? "manual"} · ${runDetail.source ?? "-"} · ${runDetail.ran_at ?? runDetail.created_at}`}>
+        <Card title={`Run #${runDetail.id} · ${runDetail.report_type_label ?? reportTypeLabel(String(runDetail.report_type ?? ""))} · ${runDetail.trigger ?? "manual"} · ${runDetail.source ?? "-"} · ${runDetail.ran_at ?? runDetail.created_at}`}>
+          {isHeatmapReport(runDetail.report_type) && (
+            <>
+              <div className="op-row" style={{ flexWrap: "wrap", marginBottom: 10 }}>
+                <StatusBadge tone="neutral">{formatRunSummary(runDetail.summary)}</StatusBadge>
+                <StatusBadge tone={runDetail.status === "sent" ? "good" : "warn"}>{runDetail.status}</StatusBadge>
+                <StatusBadge tone="neutral">research-only email</StatusBadge>
+              </div>
+              {runDetail.failure ? (
+                <div className="agent-paper-warning" style={{ marginBottom: 10 }}>
+                  Failure reason: {runDetail.failure.reason ?? "heatmap report failed"}
+                </div>
+              ) : null}
+              <ResponsiveTable label="Scheduled heatmap run rows">
+                <table className="op-table">
+                  <thead>
+                    <tr><th>Category</th><th>Symbol</th><th>1W</th><th>1D</th><th>4H</th><th>1H</th><th>30M</th><th>Summary</th></tr>
+                  </thead>
+                  <tbody>
+                    {(runDetail.heatmap?.categories ?? []).flatMap((category) =>
+                      (category.rows ?? []).map((row) => (
+                        <tr key={`${category.categoryLabel ?? "scheduled"}-${String(row.id ?? row.symbol ?? row.providerSymbol)}`}>
+                          <td>{category.categoryLabel ?? "Scheduled Symbols"}</td>
+                          <td><strong>{String(row.displayName ?? row.symbol ?? row.providerSymbol ?? "-")}</strong></td>
+                          {["1W", "1D", "4H", "1H", "30M"].map((timeframe) => (
+                            <td key={timeframe}>{heatmapCellValue(row, timeframe, String(runDetail.report_type ?? ""))}</td>
+                          ))}
+                          <td>
+                            {normalizeReportType(String(runDetail.report_type ?? "")) === "momentum_heatmap"
+                              ? `Strength ${String(row.strength_percent ?? "-")}`
+                              : `${String(row.overall_bias ?? "-")} ${String(row.overall_alignment_percent ?? "-")}`}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </ResponsiveTable>
+            </>
+          )}
           {runDetail.top_candidates.length > 0 && (
             <>
               <div><strong>Top candidates ({runDetail.top_candidates.length})</strong></div>
@@ -1102,7 +1269,7 @@ export default function SchedulesPage() {
               </ResponsiveTable>
             </>
           )}
-          {runDetail.top_candidates.length === 0 && runDetail.watchlist_only.length === 0 && runDetail.no_trade.length === 0 && (
+          {!isHeatmapReport(runDetail.report_type) && runDetail.top_candidates.length === 0 && runDetail.watchlist_only.length === 0 && runDetail.no_trade.length === 0 && (
             <EmptyState title="No candidates" hint="This run produced no scored symbols." />
           )}
         </Card>

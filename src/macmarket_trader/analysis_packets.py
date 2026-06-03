@@ -238,6 +238,7 @@ class AnalysisPacket(BaseModel):
     risk_calendar: RiskCalendarSummary | None = None
     llm_explanation: LlmExplanationSummary | None = None
     paper_lifecycle: PaperLifecycleSummary | None = None
+    true_momentum_applicability: list[dict[str, Any]] = Field(default_factory=list)
     equity: EquityAnalysisPacket | None = None
     options: OptionsAnalysisPacket | None = None
 
@@ -540,6 +541,38 @@ def render_analysis_packet_markdown(packet: AnalysisPacket | dict[str, Any]) -> 
             "",
         ]
     )
+
+    applicability = [
+        item
+        for item in (safe.get("true_momentum_applicability") or [])
+        if isinstance(item, dict)
+    ]
+    if applicability:
+        rows: list[str] = []
+        for item in applicability[:9]:
+            label = _format_packet_value(item.get("label") or item.get("family_id"))
+            status = _format_packet_value(item.get("status"))
+            strength = _format_packet_value(item.get("match_strength"))
+            direction = _format_packet_value(item.get("direction"))
+            reasons = item.get("reason_codes") if isinstance(item.get("reason_codes"), list) else []
+            blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+            suffix = []
+            if reasons:
+                suffix.append("reasons " + ", ".join(_format_packet_value(reason) for reason in reasons[:4]))
+            if blockers:
+                suffix.append("blockers " + ", ".join(_format_packet_value(blocker) for blocker in blockers[:4]))
+            rows.append(
+                f"{label}: {status} | strength {strength} | direction {direction}"
+                + (f" | {'; '.join(suffix)}" if suffix else "")
+            )
+        lines.extend(
+            [
+                "## True Momentum Applicability",
+                _markdown_list(rows),
+                "- Non-actionable research preview only. Does not generate queue candidates, approve, size, route, or create orders.",
+                "",
+            ]
+        )
 
     llm = safe.get("llm_explanation") if isinstance(safe.get("llm_explanation"), dict) else None
     if llm:
@@ -995,6 +1028,30 @@ def equity_packet_from_payload(
     )
 
 
+def _true_momentum_applicability_from_payload(
+    source_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = source_payload.get("true_momentum_applicability")
+    if not isinstance(raw, list):
+        workflow = source_payload.get("workflow")
+        provenance = (
+            workflow.get("ranking_provenance")
+            if isinstance(workflow, dict)
+            and isinstance(workflow.get("ranking_provenance"), dict)
+            else None
+        )
+        raw = provenance.get("true_momentum_applicability") if provenance else []
+    rows: list[dict[str, Any]] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        cleaned = _redact_packet_value(item)
+        if isinstance(cleaned, dict):
+            cleaned["non_actionable"] = bool(cleaned.get("non_actionable", True))
+            rows.append(cleaned)
+    return rows[:9]
+
+
 def build_analysis_packet(
     *,
     symbol: str,
@@ -1065,6 +1122,7 @@ def build_analysis_packet(
         risk_calendar=risk_calendar_summary_from_payload(risk_calendar),
         llm_explanation=_llm_summary_from_payload(source_payload),
         paper_lifecycle=paper_lifecycle,
+        true_momentum_applicability=_true_momentum_applicability_from_payload(source_payload),
         equity=equity,
         options=options,
     )

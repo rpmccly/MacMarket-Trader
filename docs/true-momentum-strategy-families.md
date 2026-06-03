@@ -777,6 +777,40 @@ Recommended operator workflow:
    (expand the research evidence collapsible).
 5. Approval and paper orders remain manual.
 
+## Phase C6 - strategy-review applicability annotations
+
+Phase C6 adds a backend-only applicability annotation layer for the
+normal review surfaces:
+
+- Symbol Snapshot / Analyze receives a `Strategy Applicability` section.
+- Recommendations queue rows receive `true_momentum_applicability`
+  metadata and a compact True Momentum review badge.
+- Promoted/stored recommendation lineage and scheduled strategy report
+  analysis packets carry a separate True Momentum Applicability section.
+
+The evaluator lives in
+`src/macmarket_trader/recommendation/true_momentum_applicability.py`.
+It reuses the existing Phase C1 classifier output and maps already-built
+symbol/recommendation context into:
+
+- `true_momentum_continuation`
+- `true_momentum_pullback`
+- `true_momentum_reversal_watch`
+
+Supported C6 statuses are `applicable_research_preview`, `watch_only`,
+`blocked_by_warning`, `blocked_by_parity`,
+`blocked_by_composite_mismatch`, `insufficient_evidence`, and
+`not_applicable`. Every row has `non_actionable: true`.
+
+Phase C6 does **not**:
+
+- add True Momentum to `enabled_strategies`,
+- pass True Momentum into `DeterministicRankingEngine`,
+- create queue candidates,
+- change recommendation scoring, queue sorting, approval, sizing,
+  paper-order, replay, provider, broker-routing, or live-trading
+  behavior.
+
 ## Related documents
 
 - [`momentum-intelligence-layer.md`](momentum-intelligence-layer.md) —

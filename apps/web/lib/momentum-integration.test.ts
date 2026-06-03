@@ -52,6 +52,19 @@ describe("Momentum Intelligence wiring", () => {
     expect(source).toContain("/charts/momentum");
     expect(source).toContain("Momentum Intelligence");
   });
+
+  it("Phase C6 exposes True Momentum applicability in Analyze and Recommendations review surfaces", () => {
+    const analyze = read("app/(console)/analyze/page.tsx");
+    const recommendations = read("app/(console)/recommendations/page.tsx");
+    const types = read("lib/recommendations.ts");
+
+    expect(types).toContain("TrueMomentumApplicability");
+    expect(analyze).toContain("Strategy Applicability");
+    expect(analyze).toContain("true_momentum_applicability");
+    expect(recommendations).toContain("TrueMomentumApplicabilityMini");
+    expect(recommendations).toContain("TrueMomentumApplicabilityDetail");
+    expect(recommendations).toContain("non-actionable");
+  });
 });
 
 describe("Momentum Intelligence ranking-influence guard", () => {
