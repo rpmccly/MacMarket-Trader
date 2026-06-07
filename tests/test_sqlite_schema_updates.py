@@ -134,6 +134,110 @@ def test_apply_schema_updates_includes_nullable_agent_scheduler_diagnostics(tmp_
         assert columns[column_name]["nullable"] is True
 
 
+def test_agent_profiles_schema_and_migration_against_legacy_db(tmp_path) -> None:
+    """Guardrail: a pre-Phase-11 deployed DB upgrades and migrates safely.
+
+    Simulates an existing DB that has app_users + agent_mode_settings + an OLD
+    agent_mode_runs (no profile columns) and NO agent_profiles table. Proves
+    apply_schema_updates creates agent_profiles and adds the run profile columns,
+    legacy agent_mode_settings stays intact, and migration backfills runs onto the
+    new default Standard Strategy Agent profile.
+    """
+    from macmarket_trader.domain.models import AgentModeSettingsModel, AppUserModel
+    from macmarket_trader.storage.db import build_session_factory
+    from macmarket_trader.storage.repositories import AgentProfileRepository
+
+    database_url = f"sqlite:///{tmp_path / 'legacy-agent.db'}"
+    engine = build_engine(database_url)
+    AppUserModel.__table__.create(engine)
+    AgentModeSettingsModel.__table__.create(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE agent_mode_runs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id VARCHAR(80), app_user_id INTEGER, "
+                "status VARCHAR(32), execution_mode VARCHAR(16), dry_run BOOLEAN, "
+                "intent_count INTEGER, executed_order_count INTEGER, request_json JSON, "
+                "response_json JSON, created_at DATETIME, completed_at DATETIME)"
+            )
+        )
+
+    factory = build_session_factory(engine)
+    with factory() as session:
+        user = AppUserModel(
+            external_auth_user_id="legacy-sub",
+            email="legacy@example.com",
+            display_name="Legacy",
+            approval_status="approved",
+        )
+        session.add(user)
+        session.flush()
+        uid = user.id
+        session.add(
+            AgentModeSettingsModel(
+                app_user_id=uid, enabled=True, daily_run_time="09:30", timezone="UTC", manual_symbols=["SPY"]
+            )
+        )
+        session.commit()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_mode_runs (run_id, app_user_id, status, execution_mode, dry_run, "
+                "intent_count, executed_order_count, request_json, response_json, created_at) "
+                "VALUES ('legacy_run_1', :uid, 'completed', 'paper', 0, 0, 0, '{}', '{}', '2026-06-01 00:00:00')"
+            ),
+            {"uid": uid},
+        )
+
+    inspector0 = inspect(engine)
+    assert not inspector0.has_table("agent_profiles")
+    assert "agent_profile_id" not in {c["name"] for c in inspector0.get_columns("agent_mode_runs")}
+
+    applied = apply_schema_updates(engine)
+
+    inspector = inspect(engine)
+    assert inspector.has_table("agent_profiles")
+    run_cols = {c["name"] for c in inspector.get_columns("agent_mode_runs")}
+    assert {"agent_profile_id", "agent_profile_name", "agent_type"}.issubset(run_cols)
+    assert "agent_mode_runs.agent_profile_id" in applied
+    with engine.connect() as conn:
+        legacy = conn.execute(
+            text("SELECT enabled, daily_run_time, timezone FROM agent_mode_settings WHERE app_user_id = :uid"),
+            {"uid": uid},
+        ).mappings().one()
+    assert legacy["daily_run_time"] == "09:30"
+
+    repo = AgentProfileRepository(factory)
+    result = repo.migrate_legacy_settings_to_profiles()
+    assert result["profiles_created"] == 1
+    assert result["runs_backfilled"] == 1
+
+    profiles = repo.list_profiles(app_user_id=uid)
+    assert len(profiles) == 1
+    default = profiles[0]
+    assert default.name == "Standard Strategy Agent"
+    assert default.agent_type == "standard"
+    assert bool(default.is_default) is True
+    assert bool(default.enabled) is True  # copied from legacy settings
+    assert default.daily_run_time == "09:30"
+
+    with engine.connect() as conn:
+        run_row = conn.execute(
+            text(
+                "SELECT agent_profile_id, agent_profile_name, agent_type "
+                "FROM agent_mode_runs WHERE run_id = 'legacy_run_1'"
+            )
+        ).mappings().one()
+    assert run_row["agent_profile_id"] == default.id
+    assert run_row["agent_profile_name"] == "Standard Strategy Agent"
+    assert run_row["agent_type"] == "standard"
+
+    # Idempotent: a second migration creates nothing new.
+    again = repo.migrate_legacy_settings_to_profiles()
+    assert again["profiles_created"] == 0
+    assert len(repo.list_profiles(app_user_id=uid)) == 1
+
+
 def test_database_diagnostics_redacts_database_url(monkeypatch) -> None:
     monkeypatch.setattr(
         settings,

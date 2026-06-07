@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from macmarket_trader.agent_mode import triggers as agent_triggers
 from macmarket_trader.api.routes import admin as workflow
 from macmarket_trader.config import settings
 from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
@@ -17,9 +18,12 @@ from macmarket_trader.domain.schemas import PortfolioSnapshot, TradeRecommendati
 from macmarket_trader.domain.time import utc_now
 from macmarket_trader.email_templates import render_agent_mode_run_digest_html
 from macmarket_trader.notifications import NotificationService
+from macmarket_trader.strategy_registry import get_strategy_by_id
 from macmarket_trader.storage.db import SessionLocal
 from macmarket_trader.storage.repositories import (
+    DEFAULT_STANDARD_STRATEGY_IDS,
     AgentModeRepository,
+    AgentProfileRepository,
     NotificationAttemptRepository,
     PaperPortfolioRepository,
     RecommendationRepository,
@@ -52,6 +56,7 @@ class AgentModeService:
         self,
         *,
         agent_repo: AgentModeRepository | None = None,
+        profile_repo: AgentProfileRepository | None = None,
         paper_repo: PaperPortfolioRepository | None = None,
         recommendation_repo: RecommendationRepository | None = None,
         symbol_universe_repo: SymbolUniverseRepository | None = None,
@@ -59,6 +64,7 @@ class AgentModeService:
         notification_service: NotificationService | None = None,
     ) -> None:
         self.agent_repo = agent_repo or AgentModeRepository(SessionLocal)
+        self.profile_repo = profile_repo or AgentProfileRepository(SessionLocal)
         self.paper_repo = paper_repo or PaperPortfolioRepository(SessionLocal)
         self.recommendation_repo = recommendation_repo or RecommendationRepository(SessionLocal)
         self.symbol_universe_repo = symbol_universe_repo or SymbolUniverseRepository(SessionLocal)
@@ -106,9 +112,26 @@ class AgentModeService:
             "scheduler_last_run_id": getattr(row, "scheduler_last_run_id", None),
             "scheduler_last_window_key": getattr(row, "scheduler_last_window_key", None),
             "sms_provider_status": NotificationService.sms_readiness(),
+            # Phase 11 — Agent Profile identity + agent-type config (absent on
+            # legacy settings rows, where these getattr defaults apply).
+            "profile_uid": getattr(row, "profile_uid", None),
+            "agent_profile_id": getattr(row, "id", None),
+            "name": getattr(row, "name", None),
+            "agent_type": str(getattr(row, "agent_type", "standard") or "standard"),
+            "is_default": bool(getattr(row, "is_default", False)),
+            "strategy_families": list(getattr(row, "strategy_families", None) or []),
+            "haco_direction_mode": str(getattr(row, "haco_direction_mode", "long_only") or "long_only"),
+            "true_momentum_trigger_mode": str(getattr(row, "true_momentum_trigger_mode", "review_only") or "review_only"),
+            "use_haco_filter": bool(getattr(row, "use_haco_filter", False)),
+            "use_true_momentum_confirmation": bool(getattr(row, "use_true_momentum_confirmation", False)),
             "paper_only": True,
             "execution_mode": "paper",
         }
+
+    @staticmethod
+    def serialize_profile(row) -> dict[str, object]:
+        """Strict superset of :meth:`serialize_settings` for an Agent Profile row."""
+        return AgentModeService.serialize_settings(row)
 
     @staticmethod
     def serialize_run(row) -> dict[str, object]:
@@ -182,6 +205,8 @@ class AgentModeService:
             "sms_consent_confirmed",
             "email_notifications_enabled",
             "sms_notifications_enabled",
+            "use_haco_filter",
+            "use_true_momentum_confirmation",
         ):
             if key in payload:
                 updates[key] = self._coerce_bool(payload.get(key), default=False)
@@ -250,20 +275,219 @@ class AgentModeService:
         if "notification_phone_number" in payload:
             phone = str(payload.get("notification_phone_number") or "").strip()
             updates["notification_phone_number"] = phone[:32] or None
+        # Phase 11 — Agent Profile identity + agent-type configuration.
+        if "name" in payload:
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="name must not be empty.")
+            updates["name"] = name[:128]
+        if "strategy_families" in payload:
+            raw_families = payload.get("strategy_families") or []
+            if not isinstance(raw_families, list):
+                raise HTTPException(status_code=400, detail="strategy_families must be a list.")
+            valid_ids = {entry.strategy_id for entry in workflow.list_strategies(MarketMode.EQUITIES)}
+            cleaned_families: list[str] = []
+            for item in raw_families:
+                strategy_id = str(item).strip()
+                if strategy_id and strategy_id not in valid_ids:
+                    raise HTTPException(status_code=400, detail=f"unknown_strategy_id:{strategy_id}")
+                if strategy_id and strategy_id not in cleaned_families:
+                    cleaned_families.append(strategy_id)
+            updates["strategy_families"] = cleaned_families
+        if "haco_direction_mode" in payload:
+            mode = str(payload.get("haco_direction_mode") or "long_only").strip().lower()
+            if mode not in {"long_only", "short_only", "long_and_short"}:
+                raise HTTPException(status_code=400, detail="unsupported_haco_direction_mode")
+            updates["haco_direction_mode"] = mode
+        if "true_momentum_trigger_mode" in payload:
+            mode = str(payload.get("true_momentum_trigger_mode") or "review_only").strip().lower()
+            if mode not in {"conservative", "balanced", "aggressive", "review_only"}:
+                raise HTTPException(status_code=400, detail="unsupported_true_momentum_trigger_mode")
+            updates["true_momentum_trigger_mode"] = mode
         return updates
 
-    def update_settings(self, *, user, payload: dict[str, object]) -> dict[str, object]:
-        mode = str(payload.get("mode") or payload.get("execution_mode") or "paper").strip().lower()
-        if mode not in {"paper", "paper_only"}:
-            raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
-        updates = self.normalize_settings_update(payload)
+    def _resolve_profile_or_404(self, *, user, profile_uid=None, profile_id=None):
+        raw_id = profile_id
+        parsed_id = int(raw_id) if str(raw_id or "").strip().isdigit() else None
+        profile = self.profile_repo.resolve_profile(
+            app_user_id=user.id,
+            profile_uid=str(profile_uid) if profile_uid else None,
+            profile_id=parsed_id,
+        )
+        if profile is None:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        return profile
+
+    def _optional_profile_id(self, *, user, profile_uid=None, profile_id=None) -> int | None:
+        """Resolve a profile id when a filter is supplied; None means 'all agents'.
+
+        An explicit-but-unknown profile id/uid is a 404 (user scoping enforced).
+        """
+        if not profile_uid and not str(profile_id or "").strip().isdigit():
+            return None
+        return int(self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id).id)
+
+    def _validate_default_watchlist(self, *, user, updates: dict[str, object]) -> None:
         default_watchlist_id = updates.get("default_watchlist_id")
         if default_watchlist_id is not None:
             row = self.watchlist_repo.get_for_user(watchlist_id=int(default_watchlist_id), app_user_id=user.id)
             if row is None:
                 raise HTTPException(status_code=404, detail="default_watchlist_id not found for user")
-        row = self.agent_repo.update_settings(app_user_id=user.id, updates=updates)
-        return self.serialize_settings(row)
+
+    def get_settings(self, *, user, profile_uid=None, profile_id=None) -> dict[str, object]:
+        return self.serialize_profile(
+            self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        )
+
+    def latest_run_response(self, *, user, profile_uid=None, profile_id=None) -> dict[str, object]:
+        profile = self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        latest = self.profile_repo.latest_run(app_user_id=user.id, agent_profile_id=profile.id)
+        return {
+            "settings": self.serialize_profile(profile),
+            "latestRun": self.serialize_run(latest) if latest else None,
+            "empty": latest is None,
+            "paperOnly": True,
+            "executionMode": "paper",
+        }
+
+    def update_settings(self, *, user, payload: dict[str, object]) -> dict[str, object]:
+        mode = str(payload.get("mode") or payload.get("execution_mode") or "paper").strip().lower()
+        if mode not in {"paper", "paper_only"}:
+            raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
+        profile = self._resolve_profile_or_404(
+            user=user,
+            profile_uid=payload.get("profile_uid") or payload.get("profile"),
+            profile_id=payload.get("profile_id") or payload.get("agent_profile_id"),
+        )
+        updates = self.normalize_settings_update(payload)
+        self._validate_default_watchlist(user=user, updates=updates)
+        row = self.profile_repo.update_profile(app_user_id=user.id, profile_uid=profile.profile_uid, updates=updates)
+        if row is None:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        return self.serialize_profile(row)
+
+    def list_profiles(self, *, user) -> dict[str, object]:
+        rows = self.profile_repo.list_profiles(app_user_id=user.id)
+        now = utc_now()
+        return {
+            "profiles": [self._profile_overview(row, user=user, now=now) for row in rows],
+            "paperOnly": True,
+            "executionMode": "paper",
+        }
+
+    def agents_overview(self, *, user) -> dict[str, object]:
+        return self.list_profiles(user=user)
+
+    def create_profile(self, *, user, payload: dict[str, object]) -> dict[str, object]:
+        mode = str(payload.get("mode") or payload.get("execution_mode") or "paper").strip().lower()
+        if mode not in {"paper", "paper_only"}:
+            raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
+        agent_type = str(payload.get("agent_type") or payload.get("template") or "standard").strip().lower()
+        if agent_type not in {"standard", "haco_direction", "true_momentum", "hybrid"}:
+            raise HTTPException(status_code=400, detail="unsupported_agent_type")
+        # Validate the config fields, then merge onto an agent-type default payload.
+        updates = self.normalize_settings_update(payload)
+        self._validate_default_watchlist(user=user, updates=updates)
+        create_payload: dict[str, object] = {
+            "agent_type": agent_type,
+            "name": str(payload.get("name") or "").strip() or self._default_profile_name(agent_type),
+        }
+        create_payload.update(updates)
+        # Identity fields are controlled here, never by arbitrary update keys.
+        create_payload["agent_type"] = agent_type
+        create_payload["name"] = create_payload.get("name") or self._default_profile_name(agent_type)
+        row = self.profile_repo.create_profile(app_user_id=user.id, payload=create_payload)
+        return self.serialize_profile(row)
+
+    @staticmethod
+    def _default_profile_name(agent_type: str) -> str:
+        return {
+            "standard": "Standard Strategy Agent",
+            "haco_direction": "HACO Direction Agent",
+            "true_momentum": "True Momentum Agent",
+            "hybrid": "Hybrid Agent",
+        }.get(agent_type, "Agent Profile")
+
+    def delete_profile(self, *, user, profile_uid: str) -> dict[str, object]:
+        status, _row = self.profile_repo.delete_profile(app_user_id=user.id, profile_uid=profile_uid)
+        if status == "not_found":
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        if status == "blocked_default":
+            raise HTTPException(status_code=409, detail="cannot_delete_default_profile")
+        if status == "blocked_last":
+            raise HTTPException(status_code=409, detail="cannot_delete_last_profile")
+        return {"status": "deleted", "profile_uid": profile_uid, "paperOnly": True}
+
+    def set_default_profile(self, *, user, profile_uid: str) -> dict[str, object]:
+        row = self.profile_repo.set_default_profile(app_user_id=user.id, profile_uid=profile_uid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        return self.serialize_profile(row)
+
+    def _profile_overview(self, row, *, user, now: datetime | None = None) -> dict[str, object]:
+        now = now or utc_now()
+        settings_payload = self.serialize_profile(row)
+        try:
+            universe = self.resolve_universe(app_user_id=user.id, settings_payload=settings_payload, overrides={})
+        except Exception:  # noqa: BLE001 - overview must stay available if universe diagnostics fail.
+            universe = {"symbols": [], "watchlist_name": None}
+        window = self._scheduler_window(settings_payload=settings_payload, now=now)
+        already_ran = self.profile_repo.scheduled_run_for_window(
+            app_user_id=user.id, agent_profile_id=row.id, window_key=str(window.get("window_key") or "")
+        ) is not None
+        next_run = self._next_scheduled_candidate(settings_payload=settings_payload, now=now, already_ran_window=already_ran)
+        latest = self.profile_repo.latest_run(app_user_id=user.id, agent_profile_id=row.id)
+        last_status = (
+            "never_run"
+            if latest is None
+            else "running"
+            if latest.status == "running"
+            else "failed"
+            if latest.status in {"error", "failed"}
+            else "success"
+            if latest.status == "completed"
+            else str(latest.status)
+        )
+        run_rows = self.profile_repo.list_runs(app_user_id=user.id, agent_profile_id=row.id, limit=100)
+        links = self._agent_links_from_runs(run_rows)
+        trades = [
+            trade
+            for trade in self.paper_repo.list_trades(app_user_id=user.id, limit=500)
+            if self._is_agent_trade(trade, links=links)
+        ]
+        realized = round(sum(self._safe_float(getattr(trade, "realized_pnl", 0.0)) or 0.0 for trade in trades), 2)
+        open_positions = [
+            position
+            for position in self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
+            if self._is_agent_position(position, links=links)
+        ]
+        agent_type = str(settings_payload.get("agent_type") or "standard")
+        return {
+            "profile_uid": row.profile_uid,
+            "agent_profile_id": row.id,
+            "name": row.name,
+            "agent_type": agent_type,
+            "is_default": bool(row.is_default),
+            "enabled": bool(row.enabled) and not bool(row.paused) and not bool(row.kill_switch_enabled),
+            "enabled_setting": bool(row.enabled),
+            "paused": bool(row.paused),
+            "kill_switch_enabled": bool(row.kill_switch_enabled),
+            "daily_run_time": settings_payload.get("daily_run_time"),
+            "timezone": settings_payload.get("timezone"),
+            "next_scheduled_run_at": next_run.isoformat() if next_run else None,
+            "last_run_status": last_status,
+            "last_run_at": latest.created_at.isoformat() if latest and latest.created_at else None,
+            "universe_source": settings_payload.get("universe_source"),
+            "watchlist_name": universe.get("watchlist_name"),
+            "resolved_symbol_count": len(universe.get("symbols") or []),
+            "strategy_count": len(settings_payload.get("strategy_families") or []) if agent_type in {"standard", "hybrid"} else None,
+            "haco_direction_mode": settings_payload.get("haco_direction_mode") if agent_type in {"haco_direction", "hybrid"} else None,
+            "true_momentum_trigger_mode": settings_payload.get("true_momentum_trigger_mode") if agent_type in {"true_momentum", "hybrid"} else None,
+            "open_position_count": len(open_positions),
+            "realized_pnl": realized,
+            "trade_count": len(trades),
+            "paperOnly": True,
+        }
 
     def resolve_universe(self, *, app_user_id: int, settings_payload: dict[str, object], overrides: dict[str, object]) -> dict[str, object]:
         explicit_source = overrides.get("universe_source")
@@ -452,6 +676,11 @@ class AgentModeService:
         due_local = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         due_utc = due_local.astimezone(timezone.utc)
         window_key = f"{local_now.date().isoformat()}|{hour:02d}:{minute:02d}|{zone_name}"
+        # Phase 11 — qualify the window by profile so two profiles of the same user
+        # at the same daily time get independent scheduler claims and dedup keys.
+        profile_uid = settings_payload.get("profile_uid")
+        if profile_uid:
+            window_key = f"{window_key}|{profile_uid}"
         return {
             "timezone": zone_name,
             "local_date": local_now.date().isoformat(),
@@ -506,15 +735,16 @@ class AgentModeService:
             candidate = candidate + timedelta(days=1)
         return candidate.astimezone(timezone.utc)
 
-    def schedule_status(self, *, user) -> dict[str, object]:
-        row = self.agent_repo.get_or_create_settings(app_user_id=user.id)
-        settings_payload = self.serialize_settings(row)
-        latest = self.agent_repo.latest_run(app_user_id=user.id)
-        latest_scheduled = self.agent_repo.latest_scheduled_run(app_user_id=user.id)
+    def schedule_status(self, *, user, profile_uid=None, profile_id=None) -> dict[str, object]:
+        row = self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        settings_payload = self.serialize_profile(row)
+        latest = self.profile_repo.latest_run(app_user_id=user.id, agent_profile_id=row.id)
+        latest_scheduled = self.profile_repo.latest_scheduled_run(app_user_id=user.id, agent_profile_id=row.id)
         now = utc_now()
         window = self._scheduler_window(settings_payload=settings_payload, now=now)
-        already_ran_window = self.agent_repo.scheduled_run_for_window(
+        already_ran_window = self.profile_repo.scheduled_run_for_window(
             app_user_id=user.id,
+            agent_profile_id=row.id,
             window_key=str(window.get("window_key") or ""),
         ) is not None
         next_run = self._next_scheduled_candidate(
@@ -575,6 +805,11 @@ class AgentModeService:
         due_now = bool(window.get("due_now")) and not already_ran_window and bool(settings_payload.get("enabled")) and not bool(settings_payload.get("paused")) and not bool(settings_payload.get("kill_switch_enabled"))
         return {
             "agent_enabled": bool(settings_payload.get("enabled")) and not bool(settings_payload.get("paused")) and not bool(settings_payload.get("kill_switch_enabled")),
+            "agent_profile_id": row.id,
+            "agent_profile_uid": row.profile_uid,
+            "agent_profile_name": row.name,
+            "agent_type": settings_payload.get("agent_type"),
+            "is_default": bool(getattr(row, "is_default", False)),
             "configured_timezone": settings_payload.get("timezone"),
             "configured_daily_run_time": settings_payload.get("daily_run_time"),
             "current_server_time": now.isoformat(),
@@ -660,7 +895,11 @@ class AgentModeService:
         ]
         blocked_actions = [
             intent for intent in final_intents
-            if intent.get("intent") != "CASH_NO_TRADE" and intent.get("status") in {"blocked", "skipped", "review_only"}
+            if intent.get("intent") != "CASH_NO_TRADE" and intent.get("status") in {"blocked", "skipped"}
+        ]
+        trigger_reviews = [
+            intent for intent in final_intents
+            if intent.get("intent") == "CASH_NO_TRADE" and intent.get("status") == "review_only"
         ]
         linked_order_ids = sorted(
             {
@@ -694,6 +933,7 @@ class AgentModeService:
             "paperClosesExecuted": len(paper_closes),
             "holds": sum(1 for intent in final_intents if intent.get("intent") == "HOLD"),
             "blockedActions": len(blocked_actions),
+            "triggerReviewOnly": len(trigger_reviews),
             "cashNoTrade": sum(1 for intent in final_intents if intent.get("intent") == "CASH_NO_TRADE"),
             "totalExecutedActions": len(paper_opens) + len(paper_closes),
             "realizedPnlFromClosedPositions": cls._round_money(realized_from_closes),
@@ -771,6 +1011,8 @@ class AgentModeService:
         final_intents: list[dict[str, object]],
         candidates: list[dict[str, object]],
         universe: dict[str, object],
+        profile_name: str | None = None,
+        agent_type: str | None = None,
     ) -> dict[str, object]:
         summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
         event_type, status_label = self._digest_status(summary=summary, final_intents=final_intents)
@@ -781,10 +1023,16 @@ class AgentModeService:
             for intent in final_intents
             if intent.get("intent") in {"HOLD", "REPLACE_PAPER", "SCALE_IN_PAPER", "REDUCE_PAPER"}
         ]
+        reviewed = [
+            self._digest_item(intent)
+            for intent in final_intents
+            if intent.get("intent") == "CASH_NO_TRADE" and intent.get("status") == "review_only"
+        ]
         blocked = [
             self._digest_item(intent)
             for intent in final_intents
-            if intent.get("intent") == "CASH_NO_TRADE" or intent.get("status") in {"blocked", "skipped"}
+            if (intent.get("intent") == "CASH_NO_TRADE" and intent.get("status") != "review_only")
+            or intent.get("status") in {"blocked", "skipped"}
         ]
         digest_summary = {
             **summary,
@@ -792,14 +1040,18 @@ class AgentModeService:
         }
         link = f"{settings.app_base_url.rstrip('/')}/agent-mode?tab=Trades"
         watchlist_name = str(universe.get("watchlist_name") or universe.get("source_label") or "manual symbols")
+        type_label = str(agent_type or "standard").replace("_", " ")
+        profile_label = f"{profile_name} ({type_label})" if profile_name else "Agent Mode"
         notable = [
             str(item.get("symbol") or "").upper()
             for item in opened + closed + blocked
             if str(item.get("symbol") or "").strip()
         ][:3]
         sms = (
-            f"MacMarket Agent {status_label}: opened {summary.get('paperOpensExecuted', 0)}, "
-            f"closed {summary.get('paperClosesExecuted', 0)}, blocked {summary.get('blockedActions', 0)}."
+            f"MacMarket Agent [{profile_name or 'Agent'}/{type_label}] {status_label}: "
+            f"opened {summary.get('paperOpensExecuted', 0)}, "
+            f"closed {summary.get('paperClosesExecuted', 0)}, blocked {summary.get('blockedActions', 0)}, "
+            f"reviewed {summary.get('triggerReviewOnly', 0)}."
         )
         if notable:
             sms += f" Notable: {', '.join(notable)}."
@@ -808,6 +1060,8 @@ class AgentModeService:
             sms = sms[:282].rstrip() + " See Agent Mode for details."
         text_lines = [
             "MacMarket Trader - Agent Mode Run Summary",
+            f"Agent: {profile_name or 'Agent Mode'}",
+            f"Type: {type_label}",
             f"Run: {run_id}",
             f"Status: {status_label}",
             f"Timestamp: {response.get('asOf')}",
@@ -817,6 +1071,7 @@ class AgentModeService:
             f"Opened: {summary.get('paperOpensExecuted', 0)}",
             f"Closed: {summary.get('paperClosesExecuted', 0)}",
             f"Held/reviewed: {summary.get('holds', 0)}",
+            f"Reviewed (no trade): {summary.get('triggerReviewOnly', 0)}",
             f"Blocked/skipped: {summary.get('blockedActions', 0)}",
             f"Open Agent Mode: {link}",
             "",
@@ -832,12 +1087,15 @@ class AgentModeService:
             closed=closed,
             held=held,
             blocked=blocked,
+            reviewed=reviewed,
+            profile_name=profile_name,
+            agent_type=agent_type,
             app_url=settings.app_base_url,
         )
         return {
             "event_type": event_type,
             "status": status_label,
-            "title": f"MacMarket Agent Mode {status_label} summary",
+            "title": f"MacMarket Agent · {profile_label} — {status_label} summary",
             "text": "\n".join(text_lines),
             "sms": sms,
             "html": html,
@@ -847,6 +1105,9 @@ class AgentModeService:
                 "digest": True,
                 "runId": run_id,
                 "status": status_label,
+                "agentProfileId": response.get("agentProfileId"),
+                "agentProfileName": profile_name,
+                "agentType": agent_type,
                 "watchlistId": universe.get("watchlist_id"),
                 "watchlistName": universe.get("watchlist_name"),
                 "resolvedSymbolsSnapshot": universe.get("resolved_symbols_snapshot") or universe.get("symbols"),
@@ -963,11 +1224,11 @@ class AgentModeService:
             "estimated_notional": self._round_money(final * limit_price),
         }
 
-    def _paper_opens_today(self, *, app_user_id: int, timezone_name: str, now: datetime) -> int:
+    def _paper_opens_today(self, *, app_user_id: int, agent_profile_id: int | None, timezone_name: str, now: datetime) -> int:
         zone = self._setting_zone(timezone_name)
         local_today = now.astimezone(zone).date()
         count = 0
-        for row in self.agent_repo.list_runs(app_user_id=app_user_id, limit=100, dry_run=False):
+        for row in self.profile_repo.list_runs(app_user_id=app_user_id, agent_profile_id=agent_profile_id, limit=100, dry_run=False):
             created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
             if created.astimezone(zone).date() != local_today:
                 continue
@@ -1012,6 +1273,27 @@ class AgentModeService:
             "candidate": candidate,
             "paper_only": True,
             "no_live_routing": True,
+        }
+
+    def _review_intent(self, *, symbol: str | None, verdict, candidate: dict[str, object] | None = None) -> dict[str, object]:
+        """Review-only (no-order) intent for an agent trigger that did not authorize a long.
+
+        Modeled as CASH_NO_TRADE with status ``review_only`` so it never reaches the
+        paper lifecycle, is excluded from ``blockedActions``, and surfaces in the
+        digest's separate 'Reviewed (no trade)' bucket. Used for bearish/short-bias
+        and exit-caution reads — paper shorting is never created.
+        """
+        return {
+            "intent": "CASH_NO_TRADE",
+            "symbol": symbol,
+            "status": "review_only",
+            "reason": verdict.reason,
+            "summary": verdict.summary,
+            "primary_trigger": verdict.primary_trigger,
+            "candidate": candidate,
+            "paper_only": True,
+            "no_live_routing": True,
+            "review_only": True,
         }
 
     def _execute_close(self, *, intent: dict[str, object], user) -> dict[str, object]:
@@ -1099,6 +1381,28 @@ class AgentModeService:
         )
         if not rec.approved:
             return {**intent, "status": "skipped", "execution_error": rec.rejection_reason or "recommendation_no_trade"}
+        # Paper-long-only guard: Agent Mode never routes a paper short. The
+        # deterministic setup engine can resolve Direction.SHORT (e.g. a failed-
+        # event fade in a risk-off regime), and the user-approval override would
+        # otherwise approve it. If the resolved side is not long, surface a
+        # review-only no-order intent instead of building/routing a short order.
+        resolved_side = str(getattr(rec.side, "value", rec.side) or "").lower()
+        if resolved_side != "long":
+            return {
+                **intent,
+                "intent": "CASH_NO_TRADE",
+                "status": "review_only",
+                "review_only": True,
+                "side": resolved_side or None,
+                "reason": "short_recommendation_review_only",
+                "summary": (
+                    "Review only: deterministic recommendation resolved "
+                    f"{resolved_side or 'non-long'}; Agent Mode never routes paper shorts."
+                ),
+                "recommendation_id": rec.recommendation_id,
+                "paper_only": True,
+                "no_live_routing": True,
+            }
         workflow.recommendation_repo.attach_workflow_metadata(
             rec.recommendation_id,
             market_data_source=source,
@@ -1246,6 +1550,10 @@ class AgentModeService:
         paper_closes = int(summary.get("paperClosesExecuted", 0) or 0)
         return {
             "runId": row.run_id,
+            "agentProfileId": getattr(row, "agent_profile_id", None),
+            "agentProfileName": getattr(row, "agent_profile_name", None),
+            "agentType": getattr(row, "agent_type", None),
+            "triggerReviewOnly": int(summary.get("triggerReviewOnly", 0) or 0),
             "run_id": row.run_id,
             "generatedAt": generated_at,
             "generated_at": generated_at,
@@ -1281,7 +1589,14 @@ class AgentModeService:
             "linkedTradeIds": list(summary.get("linkedTradeIds") or []),
         }
 
-    def _agent_links_from_runs(self, rows: list[object]) -> dict[str, dict[object, dict[str, object]]]:
+    def _agent_links_from_runs(self, rows: list[object], *, opens_only: bool = False) -> dict[str, dict[object, dict[str, object]]]:
+        """Map order/position/trade ids to the run that referenced them.
+
+        With ``opens_only`` only OPEN_PAPER intents contribute, so ownership follows
+        the open: a paper trade/position attributes to the profile whose run opened
+        it even if a different profile's run later closed it (a paper trade's
+        ``order_id`` equals its opening order's id).
+        """
         links: dict[str, dict[object, dict[str, object]]] = {
             "orders": {},
             "positions": {},
@@ -1292,6 +1607,8 @@ class AgentModeService:
             run_id = str(result.get("runId") or getattr(row, "run_id", ""))
             for intent in list(result.get("intents") or []):
                 if not isinstance(intent, dict):
+                    continue
+                if opens_only and intent.get("intent") != "OPEN_PAPER":
                     continue
                 link = {
                     "runId": run_id,
@@ -1347,10 +1664,13 @@ class AgentModeService:
         }
 
     @staticmethod
-    def _is_agent_trade(row, *, links: dict[str, dict[object, dict[str, object]]]) -> bool:
-        close_reason = str(getattr(row, "close_reason", "") or "")
-        if close_reason.startswith("agent_mode:"):
-            return True
+    def _is_agent_trade(row, *, links: dict[str, dict[object, dict[str, object]]], strict: bool = False) -> bool:
+        # strict (profile-scoped) ownership ignores the global close_reason marker so
+        # a trade attributes only to the profile whose OPEN links contain it.
+        if not strict:
+            close_reason = str(getattr(row, "close_reason", "") or "")
+            if close_reason.startswith("agent_mode:"):
+                return True
         if getattr(row, "id", None) in links["trades"]:
             return True
         if getattr(row, "position_id", None) in links["positions"]:
@@ -1359,7 +1679,7 @@ class AgentModeService:
         return bool(order_id and order_id in links["orders"])
 
     @staticmethod
-    def _is_agent_position(row, *, links: dict[str, dict[object, dict[str, object]]]) -> bool:
+    def _is_agent_position(row, *, links: dict[str, dict[object, dict[str, object]]], strict: bool = False) -> bool:
         if getattr(row, "id", None) in links["positions"]:
             return True
         order_id = str(getattr(row, "order_id", "") or "")
@@ -1424,19 +1744,23 @@ class AgentModeService:
         status: str | None = None,
         dry_run: bool | None = None,
         timeframe: str | None = None,
+        profile_uid=None,
+        profile_id=None,
     ) -> dict[str, object]:
         limit = self._coerce_limit(limit, default=50, maximum=100)
         now = utc_now()
         start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
+        agent_profile_id = self._optional_profile_id(user=user, profile_uid=profile_uid, profile_id=profile_id)
         rows = [
             row
-            for row in self.agent_repo.list_runs(app_user_id=user.id, limit=100, status=status, dry_run=dry_run)
+            for row in self.profile_repo.list_runs(app_user_id=user.id, agent_profile_id=agent_profile_id, limit=100, status=status, dry_run=dry_run)
             if self._in_range(row.created_at, start=start, end=end)
         ][:limit]
         return {
             "items": [self._serialize_run_history_row(row) for row in rows],
             "limit": limit,
             "timeframe": timeframe_key,
+            "agentProfileId": agent_profile_id,
             "paperOnly": True,
             "executionMode": "paper",
         }
@@ -1451,19 +1775,23 @@ class AgentModeService:
         status: str | None = None,
         run_id: str | None = None,
         source: str | None = "agent_mode",
+        profile_uid=None,
+        profile_id=None,
     ) -> dict[str, object]:
         limit = self._coerce_limit(limit, default=100, maximum=250)
         if source and source != "agent_mode":
             return {"items": [], "limit": limit, "timeframe": timeframe or "all_time", "source": source, "paperOnly": True, "executionMode": "paper"}
         now = utc_now()
         start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
-        run_rows = self.agent_repo.list_runs(app_user_id=user.id, limit=100)
-        links = self._agent_links_from_runs(run_rows)
+        agent_profile_id = self._optional_profile_id(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        scoped = agent_profile_id is not None
+        run_rows = self.profile_repo.list_runs(app_user_id=user.id, agent_profile_id=agent_profile_id, limit=200 if scoped else 100)
+        links = self._agent_links_from_runs(run_rows, opens_only=scoped)
         rows = self.paper_repo.list_trades(app_user_id=user.id, limit=limit)
         items = [
             self._serialize_agent_trade(row, links=links)
             for row in rows
-            if self._is_agent_trade(row, links=links)
+            if self._is_agent_trade(row, links=links, strict=scoped)
             and self._in_range(row.closed_at or row.opened_at, start=start, end=end)
             and (not symbol or str(row.symbol).upper() == symbol.upper())
         ]
@@ -1476,12 +1804,20 @@ class AgentModeService:
             "limit": limit,
             "timeframe": timeframe_key,
             "source": "agent_mode",
+            "agentProfileId": agent_profile_id,
             "paperOnly": True,
             "executionMode": "paper",
         }
 
-    def performance(self, *, user, timeframe: str | None = None, source: str | None = "agent_mode") -> dict[str, object]:
-        settings_payload = self.serialize_settings(self.agent_repo.get_or_create_settings(app_user_id=user.id))
+    def performance(self, *, user, timeframe: str | None = None, source: str | None = "agent_mode", profile_uid=None, profile_id=None) -> dict[str, object]:
+        agent_profile_id = self._optional_profile_id(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        scoped = agent_profile_id is not None
+        profile = (
+            self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id)
+            if scoped
+            else self.profile_repo.get_default_profile(app_user_id=user.id)
+        )
+        settings_payload = self.serialize_profile(profile)
         now = utc_now()
         start, end, timeframe_key = self._range_for_timeframe(timeframe, now=now)
         if source and source != "agent_mode":
@@ -1489,14 +1825,14 @@ class AgentModeService:
         else:
             run_rows = [
                 row
-                for row in self.agent_repo.list_runs(app_user_id=user.id, limit=100)
+                for row in self.profile_repo.list_runs(app_user_id=user.id, agent_profile_id=agent_profile_id, limit=100)
                 if self._in_range(row.created_at, start=start, end=end)
             ]
-        links = self._agent_links_from_runs(run_rows)
+        links = self._agent_links_from_runs(run_rows, opens_only=scoped)
         trade_rows = [
             row
             for row in self.paper_repo.list_trades(app_user_id=user.id, limit=500)
-            if self._is_agent_trade(row, links=links)
+            if self._is_agent_trade(row, links=links, strict=scoped)
             and self._in_range(row.closed_at or row.opened_at, start=start, end=end)
         ]
         trade_items = [self._serialize_agent_trade(row, links=links) for row in trade_rows]
@@ -1504,7 +1840,7 @@ class AgentModeService:
         open_positions = [
             row
             for row in all_open_positions
-            if (source or "agent_mode") == "agent_mode" and self._is_agent_position(row, links=links)
+            if (source or "agent_mode") == "agent_mode" and self._is_agent_position(row, links=links, strict=scoped)
         ]
         recent_rows = self.recommendation_repo.list_recent(limit=100, app_user_id=user.id)
         reviews: list[dict[str, object]] = []
@@ -1559,6 +1895,9 @@ class AgentModeService:
             "asOf": now.isoformat(),
             "timeframe": timeframe_key,
             "source": source or "agent_mode",
+            "agentProfileId": agent_profile_id,
+            "agentProfileName": getattr(profile, "name", None),
+            "agentType": settings_payload.get("agent_type"),
             "settings": settings_payload,
             "latestRun": summary,
             "openPositions": open_items,
@@ -1621,8 +1960,9 @@ class AgentModeService:
             },
         }
 
-    def send_test_notification(self, *, user, channel: str | None = None) -> dict[str, object]:
-        settings_payload = self.serialize_settings(self.agent_repo.get_or_create_settings(app_user_id=user.id))
+    def send_test_notification(self, *, user, channel: str | None = None, profile_uid=None, profile_id=None) -> dict[str, object]:
+        profile = self._resolve_profile_or_404(user=user, profile_uid=profile_uid, profile_id=profile_id)
+        settings_payload = self.serialize_profile(profile)
         requested = str(channel or settings_payload.get("notification_preference") or "none").strip().lower()
         if requested in {"email", "sms", "both", "none"}:
             settings_payload = {**settings_payload, "notification_preference": requested}
@@ -1647,6 +1987,57 @@ class AgentModeService:
             "attempts": attempts,
         }
 
+    @staticmethod
+    def _equities_strategy_names() -> list[str]:
+        return [entry.display_name for entry in workflow.list_strategies(MarketMode.EQUITIES)]
+
+    def _ranking_strategies_for_profile(self, settings_payload: dict[str, object]) -> list[str]:
+        """Resolve the strategy display names passed to the ranking engine.
+
+        Standard/Hybrid use the profile's selected ``strategy_families`` (stored as
+        stable strategy_ids), falling back to the legacy first-three behavior when
+        none are selected. HACO/True Momentum rank across all equities strategies so
+        every universe symbol gets a sized candidate for the indicator gate to act
+        on. Ranking/scoring itself is unchanged — this only chooses which strategies
+        are scored.
+        """
+        agent_type = str(settings_payload.get("agent_type") or "standard").strip().lower()
+        all_names = self._equities_strategy_names()
+        if agent_type in {"standard", "hybrid"}:
+            names: list[str] = []
+            for raw_id in list(settings_payload.get("strategy_families") or []):
+                entry = get_strategy_by_id(str(raw_id), market_mode=MarketMode.EQUITIES)
+                if entry is not None and entry.display_name not in names:
+                    names.append(entry.display_name)
+            if names:
+                return names
+            # Legacy parity: the pre-Phase-11 call used list_strategies(EQUITIES)[:3].
+            legacy: list[str] = []
+            for raw_id in DEFAULT_STANDARD_STRATEGY_IDS:
+                entry = get_strategy_by_id(raw_id, market_mode=MarketMode.EQUITIES)
+                if entry is not None:
+                    legacy.append(entry.display_name)
+            return legacy or all_names[:3]
+        return all_names or self._equities_strategy_names()
+
+    def _resolve_run_profile(self, *, user, request: dict[str, object]):
+        """Resolve the Agent Profile for a run, defaulting to the user's default.
+
+        An explicit-but-unknown profile id/uid is a 404 (never a silent fallback);
+        user scoping is enforced by the repository.
+        """
+        profile_uid = request.get("profile_uid") or request.get("profile")
+        raw_id = request.get("profile_id") or request.get("agent_profile_id")
+        profile_id = int(raw_id) if str(raw_id or "").strip().isdigit() else None
+        profile = self.profile_repo.resolve_profile(
+            app_user_id=user.id,
+            profile_uid=str(profile_uid) if profile_uid else None,
+            profile_id=profile_id,
+        )
+        if profile is None:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        return profile
+
     def run(self, *, user, request: dict[str, object] | None = None) -> dict[str, object]:
         request = dict(request or {})
         run_source = self._run_source_from_request(request)
@@ -1657,8 +2048,12 @@ class AgentModeService:
         mode = str(request.get("mode") or request.get("execution_mode") or "paper").strip().lower()
         if mode not in {"paper", "paper_only"}:
             raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
-        settings_row = self.agent_repo.get_or_create_settings(app_user_id=user.id)
-        settings_payload = self.serialize_settings(settings_row)
+        profile = self._resolve_run_profile(user=user, request=request)
+        settings_row = profile
+        settings_payload = self.serialize_profile(profile)
+        agent_profile_id = int(getattr(profile, "id"))
+        agent_profile_name = str(getattr(profile, "name", None) or "Agent Profile")
+        agent_type = str(settings_payload.get("agent_type") or "standard")
         dry_run = self._coerce_bool(request.get("dry_run"), default=not bool(settings_payload["enabled"]))
         run_guard_reason: str | None = None
         if not bool(settings_payload["enabled"]):
@@ -1741,7 +2136,7 @@ class AgentModeService:
                 data_quality.append({"symbol": symbol, "status": "error", "reason": exc.detail})
                 intents.append(self._cash_intent(symbol=symbol, reason="market_data_unavailable", summary="cash/no trade because market data was unavailable."))
 
-        strategies = [entry.display_name for entry in workflow.list_strategies(MarketMode.EQUITIES)[:3]]
+        strategies = self._ranking_strategies_for_profile(settings_payload)
         ranking = workflow.ranking_engine.rank_candidates(
             bars_by_symbol=bars_by_symbol,
             strategies=strategies,
@@ -1752,7 +2147,7 @@ class AgentModeService:
         candidates = list(ranking.get("queue") or [])
         planned_open_symbols: set[str] = set()
         index_context = workflow._current_index_context_for_risk()
-        paper_opens_today = self._paper_opens_today(app_user_id=user.id, timezone_name=str(settings_payload.get("timezone") or "America/New_York"), now=now)
+        paper_opens_today = self._paper_opens_today(app_user_id=user.id, agent_profile_id=agent_profile_id, timezone_name=str(settings_payload.get("timezone") or "America/New_York"), now=now)
         for candidate in candidates:
             symbol = str(candidate.get("symbol") or "").upper()
             bars_tuple = bars_by_symbol.get(symbol)
@@ -1787,7 +2182,24 @@ class AgentModeService:
                 continue
             risk = candidate.get("risk_calendar") if isinstance(candidate.get("risk_calendar"), dict) else {}
             decision = risk.get("decision") if isinstance(risk.get("decision"), dict) else {}
-            if candidate.get("status") != "top_candidate":
+            # Phase 11 — agent-type eligibility gate. Applied AFTER deterministic
+            # ranking and BEFORE any open is planned, so scoring is untouched and the
+            # recommendation/sizing/risk pipeline still has the final say on opens.
+            verdict = agent_triggers.evaluate_agent_eligibility(
+                agent_type=agent_type,
+                profile=settings_payload,
+                bars=bars_tuple[0] if bars_tuple else [],
+                candidate=candidate,
+                timeframe=timeframe,
+            )
+            candidate["primary_trigger"] = verdict.primary_trigger
+            candidate["agent_trigger_reason"] = verdict.reason
+            candidate["agent_trigger_detail"] = verdict.detail
+            if not verdict.eligible_long:
+                # Bearish/short or exit-caution reads surface as review-only intents
+                # (no order, never a paper short). Neutral/no-signal symbols skip silently.
+                if verdict.emit_review:
+                    intents.append(self._review_intent(symbol=symbol, verdict=verdict, candidate=candidate))
                 continue
             if decision and decision.get("allow_new_entries") is False:
                 intents.append(self._cash_intent(symbol=symbol, reason="risk_calendar_blocks_new_entries", summary="cash/no trade because risk calendar blocks new paper opens.", candidate=candidate))
@@ -1812,8 +2224,10 @@ class AgentModeService:
                     "symbol": symbol,
                     "side": "long",
                     "status": "dry_run" if dry_run else "pending",
-                    "reason": "ranked_top_candidate",
-                    "summary": "paper open candidate from deterministic ranking.",
+                    "reason": verdict.reason,
+                    "summary": verdict.summary,
+                    "primary_trigger": verdict.primary_trigger,
+                    "agent_type": agent_type,
                     "candidate": candidate,
                     "paper_only": True,
                     "no_live_routing": True,
@@ -1827,7 +2241,13 @@ class AgentModeService:
         final_intents: list[dict[str, object]] = []
         for intent in intents:
             if not enabled_for_execution:
-                final_intents.append({**intent, "status": "dry_run" if intent.get("status") != "blocked" else "blocked"})
+                # Preserve blocked + review_only statuses through dry-run so the
+                # trigger-review and blocked buckets stay honest; everything else
+                # becomes a review-only dry-run intent.
+                if intent.get("status") in {"blocked", "review_only"}:
+                    final_intents.append(intent)
+                else:
+                    final_intents.append({**intent, "status": "dry_run"})
                 continue
             if intent.get("intent") == "CLOSE_PAPER":
                 final_intents.append(self._execute_close(intent=intent, user=user))
@@ -1904,6 +2324,10 @@ class AgentModeService:
             "dryRun": dry_run,
             "source": run_source,
             "schedulerDiagnostic": run_source == AGENT_MODE_SOURCE_DIAGNOSTIC,
+            "agentProfileId": agent_profile_id,
+            "agentProfileName": agent_profile_name,
+            "agentProfileUid": settings_payload.get("profile_uid"),
+            "agentType": agent_type,
             "enabled": bool(settings_payload["enabled"]),
             "paused": bool(settings_payload["paused"]),
             "killSwitchEnabled": bool(settings_payload["kill_switch_enabled"]),
@@ -1939,6 +2363,10 @@ class AgentModeService:
             "asOf": datetime.now(timezone.utc).isoformat(),
             "status": "completed",
             "source": run_source,
+            "agentProfileId": agent_profile_id,
+            "agentProfileName": agent_profile_name,
+            "agentProfileUid": settings_payload.get("profile_uid"),
+            "agentType": agent_type,
             "scheduler": scheduler_payload,
             "settings": settings_payload,
             "universe": universe,
@@ -1979,6 +2407,8 @@ class AgentModeService:
                 final_intents=final_intents,
                 candidates=candidates,
                 universe=universe,
+                profile_name=agent_profile_name,
+                agent_type=agent_type,
             )
             notification_attempts.extend(
                 self.notification_service.send_event(
@@ -1994,8 +2424,11 @@ class AgentModeService:
                 )
             )
         response["notificationAttempts"] = notification_attempts
-        self.agent_repo.create_run(
+        self.profile_repo.create_run(
             app_user_id=user.id,
+            agent_profile_id=agent_profile_id,
+            agent_profile_name=agent_profile_name,
+            agent_type=agent_type,
             run_id=run_id,
             status="completed",
             execution_mode="paper",
@@ -2040,28 +2473,35 @@ class AgentModeService:
 
     def scheduler_diagnostics(self, *, now: datetime | None = None) -> dict[str, object]:
         current_utc = now or datetime.now(timezone.utc)
-        settings_rows = self.agent_repo.list_settings()
+        self.profile_repo.migrate_legacy_settings_to_profiles()
+        profiles = self.profile_repo.list_all_profiles()
         rows: list[dict[str, object]] = []
-        for setting in settings_rows:
-            payload = self.serialize_settings(setting)
+        for profile in profiles:
+            payload = self.serialize_profile(profile)
             window = self._scheduler_window(settings_payload=payload, now=current_utc)
-            already_ran = self.agent_repo.scheduled_run_for_window(
-                app_user_id=setting.app_user_id,
+            already_ran = self.profile_repo.scheduled_run_for_window(
+                app_user_id=profile.app_user_id,
+                agent_profile_id=profile.id,
                 window_key=str(window.get("window_key") or ""),
             ) is not None
             try:
-                universe = self.resolve_universe(app_user_id=setting.app_user_id, settings_payload=payload, overrides={})
-            except Exception as exc:  # noqa: BLE001 - diagnostics should keep reporting other users.
+                universe = self.resolve_universe(app_user_id=profile.app_user_id, settings_payload=payload, overrides={})
+            except Exception as exc:  # noqa: BLE001 - diagnostics should keep reporting other profiles.
                 universe = {"symbols": [], "reason": self._safe_error_summary(exc), "source_status": "error"}
-            enabled = bool(setting.enabled) and not bool(setting.paused) and not bool(setting.kill_switch_enabled)
+            enabled = bool(profile.enabled) and not bool(profile.paused) and not bool(profile.kill_switch_enabled)
             rows.append(
                 {
-                    "app_user_id": setting.app_user_id,
+                    "app_user_id": profile.app_user_id,
+                    "agent_profile_id": profile.id,
+                    "agent_profile_uid": profile.profile_uid,
+                    "agent_profile_name": profile.name,
+                    "agent_type": profile.agent_type,
+                    "is_default": bool(profile.is_default),
                     "enabled": enabled,
-                    "paused": bool(setting.paused),
-                    "kill_switch_enabled": bool(setting.kill_switch_enabled),
-                    "timezone": setting.timezone,
-                    "daily_run_time": setting.daily_run_time,
+                    "paused": bool(profile.paused),
+                    "kill_switch_enabled": bool(profile.kill_switch_enabled),
+                    "timezone": profile.timezone,
+                    "daily_run_time": profile.daily_run_time,
                     "due_now": bool(window.get("due_now")) and enabled and not already_ran,
                     "already_ran_current_window": already_ran,
                     "current_window_key": window.get("window_key"),
@@ -2077,6 +2517,7 @@ class AgentModeService:
                     "universe_reason": universe.get("reason"),
                 }
             )
+        user_ids = {row["app_user_id"] for row in rows}
         return {
             "status": "ok",
             "paper_only": True,
@@ -2086,16 +2527,21 @@ class AgentModeService:
                 "entrypoint": "python -m macmarket_trader.cli agent-scheduler-check",
                 "loop_script": "scripts/run-agent-mode-scheduler.ps1",
                 "wake_interval_seconds": 300,
-                "duplicate_guard": "scheduled_window_key_plus_scheduler_claim",
+                "duplicate_guard": "scheduled_window_key_plus_scheduler_claim_per_profile",
                 "source_for_scheduled_runs": AGENT_MODE_SOURCE_SCHEDULED,
                 "source_for_diagnostics": AGENT_MODE_SOURCE_DIAGNOSTIC,
             },
             "counts": {
-                "settings_rows": len(settings_rows),
-                "enabled_rows": sum(1 for row in rows if row.get("enabled")),
+                "profiles": len(profiles),
+                "users": len(user_ids),
+                "enabled_profiles": sum(1 for row in rows if row.get("enabled")),
                 "due_now": sum(1 for row in rows if row.get("due_now")),
                 "unknown_scheduler_health": sum(1 for row in rows if not row.get("last_checked_at")),
+                # Back-compat aliases (previously per-user settings rows).
+                "settings_rows": len(profiles),
+                "enabled_rows": sum(1 for row in rows if row.get("enabled")),
             },
+            "profiles": rows,
             "users": rows,
         }
 
@@ -2109,96 +2555,75 @@ class AgentModeService:
         app_user_id: int | None = None,
     ) -> list[dict[str, object]]:
         current_utc = now or datetime.now(timezone.utc)
+        # Self-heal + migrate legacy single-agent settings into profiles so every
+        # enabled profile (incl. users who never opened the new UI) is evaluated.
+        self.profile_repo.migrate_legacy_settings_to_profiles()
         output: list[dict[str, object]] = []
-        for setting in self.agent_repo.list_settings():
-            if app_user_id is not None and int(setting.app_user_id) != int(app_user_id):
+        run_source = AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED
+        for profile in self.profile_repo.list_all_profiles():
+            if app_user_id is not None and int(profile.app_user_id) != int(app_user_id):
                 continue
-            settings_payload = self.serialize_settings(setting)
+            settings_payload = self.serialize_profile(profile)
             window = self._scheduler_window(settings_payload=settings_payload, now=current_utc)
             due_at = window.get("due_at") if isinstance(window.get("due_at"), datetime) else None
             window_key = str(window.get("window_key") or "")
-            enabled = bool(setting.enabled) and not bool(setting.paused) and not bool(setting.kill_switch_enabled)
+            base = {
+                "app_user_id": profile.app_user_id,
+                "agent_profile_id": profile.id,
+                "agent_profile_uid": profile.profile_uid,
+                "agent_type": profile.agent_type,
+            }
+            enabled = bool(profile.enabled) and not bool(profile.paused) and not bool(profile.kill_switch_enabled)
             if not enabled:
-                reason = "agent_paused" if setting.paused else "kill_switch_enabled" if setting.kill_switch_enabled else "agent_disabled"
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="skipped",
-                    reason=reason,
-                    due_at=due_at,
-                    run_id=None,
-                    window_key=window_key,
+                reason = "agent_paused" if profile.paused else "kill_switch_enabled" if profile.kill_switch_enabled else "agent_disabled"
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason=reason, due_at=due_at, run_id=None, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": reason, "due_now": False})
+                output.append({**base, "status": "skipped", "reason": reason, "due_now": False})
                 continue
             due_now = bool(window.get("due_now"))
             if not due_now and not force:
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="skipped",
-                    reason="not_due_yet",
-                    due_at=due_at,
-                    run_id=None,
-                    window_key=window_key,
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason="not_due_yet", due_at=due_at, run_id=None, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "not_due_yet", "due_now": False, "window_key": window_key})
+                output.append({**base, "status": "skipped", "reason": "not_due_yet", "due_now": False, "window_key": window_key})
                 continue
-            existing = self.agent_repo.scheduled_run_for_window(app_user_id=setting.app_user_id, window_key=window_key)
+            existing = self.profile_repo.scheduled_run_for_window(
+                app_user_id=profile.app_user_id, agent_profile_id=profile.id, window_key=window_key
+            )
             if existing is not None and not force:
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="skipped",
-                    reason="already_ran_for_window",
-                    due_at=due_at,
-                    run_id=existing.run_id,
-                    window_key=window_key,
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason="already_ran_for_window", due_at=due_at, run_id=existing.run_id, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "already_ran_for_window", "runId": existing.run_id, "window_key": window_key})
+                output.append({**base, "status": "skipped", "reason": "already_ran_for_window", "runId": existing.run_id, "window_key": window_key})
                 continue
-            if not force and not self.agent_repo.claim_scheduler_window(
-                app_user_id=setting.app_user_id,
+            if not force and not self.profile_repo.claim_scheduler_window(
+                profile_id=profile.id,
                 checked_at=current_utc,
                 due_at=due_at,
                 window_key=window_key,
                 stale_after_seconds=AGENT_SCHEDULER_HEALTH_STALE_SECONDS,
             ):
-                output.append(
-                    {
-                        "app_user_id": setting.app_user_id,
-                        "status": "skipped",
-                        "reason": "scheduler_window_already_claimed",
-                        "due_now": True,
-                        "window_key": window_key,
-                    }
-                )
+                output.append({**base, "status": "skipped", "reason": "scheduler_window_already_claimed", "due_now": True, "window_key": window_key})
                 continue
             with SessionLocal() as session:
-                user = session.execute(select(AppUserModel).where(AppUserModel.id == setting.app_user_id)).scalar_one_or_none()
+                user = session.execute(select(AppUserModel).where(AppUserModel.id == profile.app_user_id)).scalar_one_or_none()
             if user is None:
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="skipped",
-                    reason="user_not_found",
-                    due_at=due_at,
-                    run_id=None,
-                    window_key=window_key,
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason="user_not_found", due_at=due_at, run_id=None, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_found", "window_key": window_key})
+                output.append({**base, "status": "skipped", "reason": "user_not_found", "window_key": window_key})
                 continue
             if not self._user_is_approved(user):
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="skipped",
-                    reason="user_not_approved",
-                    due_at=due_at,
-                    run_id=None,
-                    window_key=window_key,
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason="user_not_approved", due_at=due_at, run_id=None, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "skipped", "reason": "user_not_approved", "window_key": window_key})
+                output.append({**base, "status": "skipped", "reason": "user_not_approved", "window_key": window_key})
                 continue
             try:
                 result = self.run(
@@ -2207,34 +2632,45 @@ class AgentModeService:
                         "mode": "paper",
                         "dry_run": bool(dry_run),
                         "trigger": "scheduler_diagnostic" if dry_run else "daily_scheduler",
-                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "source": run_source,
+                        "profile_id": profile.id,
+                        "profile_uid": profile.profile_uid,
                         "scheduler": self._scheduler_request_metadata(window),
                         "scheduled_window_key": window_key,
                         "no_notifications": bool(no_notifications),
                     },
                 )
-            except Exception as exc:  # noqa: BLE001 - scheduler reports per-user failure and continues.
+            except Exception as exc:  # noqa: BLE001 - scheduler reports per-profile failure and continues.
                 reason = self._safe_error_summary(exc)
                 run_id = f"agent_error_{uuid4().hex[:16]}"
                 response_json = {
                     "runId": run_id,
                     "status": "error",
-                    "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                    "source": run_source,
+                    "agentProfileId": profile.id,
+                    "agentProfileName": profile.name,
+                    "agentType": profile.agent_type,
                     "scheduler": self._scheduler_request_metadata(window),
                     "summary": {
                         "paperOnly": True,
                         "executionMode": "paper",
                         "dryRun": bool(dry_run),
-                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "source": run_source,
                         "skipReason": reason,
                         "scheduledWindowKey": window_key,
+                        "agentProfileId": profile.id,
+                        "agentProfileName": profile.name,
+                        "agentType": profile.agent_type,
                     },
                     "warnings": [reason],
                     "notificationAttempts": [],
                     "notificationDigestSuppressed": True,
                 }
-                self.agent_repo.create_run(
-                    app_user_id=setting.app_user_id,
+                self.profile_repo.create_run(
+                    app_user_id=profile.app_user_id,
+                    agent_profile_id=profile.id,
+                    agent_profile_name=profile.name,
+                    agent_type=profile.agent_type,
                     run_id=run_id,
                     status="error",
                     execution_mode="paper",
@@ -2244,7 +2680,8 @@ class AgentModeService:
                     request_json={
                         "mode": "paper",
                         "dry_run": bool(dry_run),
-                        "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                        "source": run_source,
+                        "profile_id": profile.id,
                         "scheduler": self._scheduler_request_metadata(window),
                         "scheduled_window_key": window_key,
                         "no_notifications": True,
@@ -2252,20 +2689,15 @@ class AgentModeService:
                     response_json=response_json,
                     completed_at=utc_now(),
                 )
-                self.agent_repo.update_scheduler_check(
-                    app_user_id=setting.app_user_id,
-                    checked_at=current_utc,
-                    result="error",
-                    reason=reason,
-                    due_at=due_at,
-                    run_id=run_id,
-                    window_key=window_key,
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="error",
+                    reason=reason, due_at=due_at, run_id=run_id, window_key=window_key,
                 )
-                output.append({"app_user_id": setting.app_user_id, "status": "error", "reason": reason, "runId": run_id, "window_key": window_key})
+                output.append({**base, "status": "error", "reason": reason, "runId": run_id, "window_key": window_key})
                 continue
             run_id = str(result.get("runId") or "")
-            self.agent_repo.update_scheduler_check(
-                app_user_id=setting.app_user_id,
+            self.profile_repo.update_scheduler_check(
+                profile_id=profile.id,
                 checked_at=current_utc,
                 result="completed",
                 reason=str((result.get("summary") if isinstance(result.get("summary"), dict) else {}).get("skipReason") or "") or None,
@@ -2275,10 +2707,10 @@ class AgentModeService:
             )
             output.append(
                 {
-                    "app_user_id": setting.app_user_id,
+                    **base,
                     "status": "completed",
                     "runId": run_id,
-                    "source": AGENT_MODE_SOURCE_DIAGNOSTIC if dry_run else AGENT_MODE_SOURCE_SCHEDULED,
+                    "source": run_source,
                     "dry_run": bool(dry_run),
                     "no_notifications": bool(no_notifications),
                     "window_key": window_key,

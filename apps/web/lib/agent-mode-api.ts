@@ -1,6 +1,21 @@
 import { fetchWorkflowApi } from "@/lib/api-client";
 
+export type AgentType = "standard" | "haco_direction" | "true_momentum" | "hybrid";
+export type HacoDirectionMode = "long_only" | "short_only" | "long_and_short";
+export type TrueMomentumTriggerMode = "conservative" | "balanced" | "aggressive" | "review_only";
+
 export type AgentModeSettings = {
+  // Phase 11 — Agent Profile identity + agent-type configuration.
+  profile_uid?: string | null;
+  agent_profile_id?: number | null;
+  name?: string | null;
+  agent_type?: AgentType | string;
+  is_default?: boolean;
+  strategy_families?: string[];
+  haco_direction_mode?: HacoDirectionMode | string;
+  true_momentum_trigger_mode?: TrueMomentumTriggerMode | string;
+  use_haco_filter?: boolean;
+  use_true_momentum_confirmation?: boolean;
   enabled: boolean;
   paused: boolean;
   kill_switch_enabled: boolean;
@@ -301,12 +316,84 @@ export type AgentModeNotificationTestResponse = {
   attempts: Array<Record<string, unknown>>;
 };
 
-export async function fetchAgentModeSettings() {
-  return fetchWorkflowApi<AgentModeSettings>("/api/user/agent-mode/settings");
+export type AgentProfileOverview = {
+  profile_uid: string;
+  agent_profile_id: number;
+  name: string;
+  agent_type: AgentType | string;
+  is_default: boolean;
+  enabled: boolean;
+  enabled_setting?: boolean;
+  paused?: boolean;
+  kill_switch_enabled?: boolean;
+  daily_run_time?: string | null;
+  timezone?: string | null;
+  next_scheduled_run_at?: string | null;
+  last_run_status?: string | null;
+  last_run_at?: string | null;
+  universe_source?: string | null;
+  watchlist_name?: string | null;
+  resolved_symbol_count?: number;
+  strategy_count?: number | null;
+  haco_direction_mode?: string | null;
+  true_momentum_trigger_mode?: string | null;
+  open_position_count?: number;
+  realized_pnl?: number | null;
+  trade_count?: number;
+};
+
+export type AgentProfilesResponse = {
+  profiles: AgentProfileOverview[];
+  paperOnly: boolean;
+  executionMode: string;
+};
+
+function withProfile(path: string, profileId?: number | null): string {
+  if (profileId === undefined || profileId === null) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}profile_id=${encodeURIComponent(String(profileId))}`;
 }
 
-export async function fetchAgentModeStatus() {
-  return fetchWorkflowApi<AgentModeStatus>("/api/user/agent-mode/status");
+export async function fetchAgentProfiles() {
+  return fetchWorkflowApi<AgentProfilesResponse>("/api/user/agent-mode/profiles");
+}
+
+export async function createAgentProfile(payload: Partial<AgentModeSettings> & { agent_type: AgentType }) {
+  return fetchWorkflowApi<AgentModeSettings>("/api/user/agent-mode/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, mode: "paper" }),
+  });
+}
+
+export async function updateAgentProfile(profileUid: string, settings: Partial<AgentModeSettings>) {
+  return fetchWorkflowApi<AgentModeSettings>(`/api/user/agent-mode/profiles/${encodeURIComponent(profileUid)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...settings, mode: "paper" }),
+  });
+}
+
+export async function deleteAgentProfile(profileUid: string) {
+  return fetchWorkflowApi<{ status: string }>(`/api/user/agent-mode/profiles/${encodeURIComponent(profileUid)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function setDefaultAgentProfile(profileUid: string) {
+  return fetchWorkflowApi<AgentModeSettings>(`/api/user/agent-mode/profiles/${encodeURIComponent(profileUid)}/default`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchAgentModeSettings(profileId?: number | null) {
+  return fetchWorkflowApi<AgentModeSettings>(withProfile("/api/user/agent-mode/settings", profileId));
+}
+
+export async function fetchAgentModeStatus(profileId?: number | null) {
+  return fetchWorkflowApi<AgentModeStatus>(withProfile("/api/user/agent-mode/status", profileId));
 }
 
 export async function saveAgentModeSettings(settings: Partial<AgentModeSettings>) {
@@ -325,21 +412,22 @@ export async function runAgentMode(payload: Record<string, unknown>) {
   });
 }
 
-export async function fetchLatestAgentModeRun() {
-  return fetchWorkflowApi<AgentModeLatestResponse>("/api/user/agent-mode/latest");
+export async function fetchLatestAgentModeRun(profileId?: number | null) {
+  return fetchWorkflowApi<AgentModeLatestResponse>(withProfile("/api/user/agent-mode/latest", profileId));
 }
 
-export async function fetchAgentModeRuns(params?: { limit?: number; status?: string; dryRun?: boolean; timeframe?: string }) {
+export async function fetchAgentModeRuns(params?: { limit?: number; status?: string; dryRun?: boolean; timeframe?: string; profileId?: number | null }) {
   const search = new URLSearchParams();
   if (params?.limit) search.set("limit", String(params.limit));
   if (params?.status) search.set("status", params.status);
   if (params?.dryRun !== undefined) search.set("dry_run", String(params.dryRun));
   if (params?.timeframe) search.set("timeframe", params.timeframe);
+  if (params?.profileId != null) search.set("profile_id", String(params.profileId));
   const suffix = search.toString() ? `?${search.toString()}` : "";
   return fetchWorkflowApi<AgentModeRunsResponse>(`/api/user/agent-mode/runs${suffix}`);
 }
 
-export async function fetchAgentModeTrades(params: { limit?: number; timeframe?: string; symbol?: string; status?: string; source?: string; runId?: string } = {}) {
+export async function fetchAgentModeTrades(params: { limit?: number; timeframe?: string; symbol?: string; status?: string; source?: string; runId?: string; profileId?: number | null } = {}) {
   const search = new URLSearchParams();
   search.set("limit", String(params.limit ?? 100));
   if (params.timeframe) search.set("timeframe", params.timeframe);
@@ -347,21 +435,23 @@ export async function fetchAgentModeTrades(params: { limit?: number; timeframe?:
   if (params.status) search.set("status", params.status);
   if (params.source) search.set("source", params.source);
   if (params.runId) search.set("run_id", params.runId);
+  if (params.profileId != null) search.set("profile_id", String(params.profileId));
   return fetchWorkflowApi<AgentModeTradesResponse>(`/api/user/agent-mode/trades?${search.toString()}`);
 }
 
-export async function fetchAgentModePerformance(params: { timeframe?: string; source?: string } = {}) {
+export async function fetchAgentModePerformance(params: { timeframe?: string; source?: string; profileId?: number | null } = {}) {
   const search = new URLSearchParams();
   if (params.timeframe) search.set("timeframe", params.timeframe);
   if (params.source) search.set("source", params.source);
+  if (params.profileId != null) search.set("profile_id", String(params.profileId));
   const suffix = search.toString() ? `?${search.toString()}` : "";
   return fetchWorkflowApi<AgentModePerformance>(`/api/user/agent-mode/performance${suffix}`);
 }
 
-export async function testAgentModeNotification(channel: "email" | "sms" | "both" | "none") {
+export async function testAgentModeNotification(channel: "email" | "sms" | "both" | "none", profileId?: number | null) {
   return fetchWorkflowApi<AgentModeNotificationTestResponse>("/api/user/agent-mode/notifications/test", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channel }),
+    body: JSON.stringify({ channel, ...(profileId != null ? { profile_id: profileId } : {}) }),
   });
 }

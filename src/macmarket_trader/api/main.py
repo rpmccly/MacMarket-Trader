@@ -26,6 +26,18 @@ from macmarket_trader.logging_config import configure_logging
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     validate_auth_runtime_configuration(settings)
+    # Self-heal the schema and migrate legacy Agent Mode settings into Agent
+    # Profiles on boot so the API works regardless of deploy ordering. Both steps
+    # are idempotent and best-effort: a hiccup must never block app startup.
+    try:
+        from macmarket_trader.storage.db import apply_schema_updates
+        from macmarket_trader.storage.db import SessionLocal
+        from macmarket_trader.storage.repositories import AgentProfileRepository
+
+        apply_schema_updates()
+        AgentProfileRepository(SessionLocal).migrate_legacy_settings_to_profiles()
+    except Exception:  # noqa: BLE001 - startup must not fail on schema/migration.
+        pass
     yield
 
 

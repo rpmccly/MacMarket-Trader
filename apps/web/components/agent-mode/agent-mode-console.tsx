@@ -5,15 +5,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Card, EmptyState, ErrorState, InlineFeedback, PageHeader, ResponsiveTable, StatusBadge } from "@/components/operator-ui";
 import {
+  createAgentProfile,
+  deleteAgentProfile,
   fetchAgentModeStatus,
   fetchAgentModePerformance,
   fetchAgentModeRuns,
   fetchAgentModeSettings,
   fetchAgentModeTrades,
+  fetchAgentProfiles,
   fetchLatestAgentModeRun,
   runAgentMode,
   saveAgentModeSettings,
+  setDefaultAgentProfile,
   testAgentModeNotification,
+  updateAgentProfile,
+  type AgentProfileOverview,
+  type AgentType,
   type AgentModePerformance,
   type AgentModeRunHistoryItem,
   type AgentModeRunResult,
@@ -53,9 +60,44 @@ const defaultSettings: AgentModeSettings = {
   sms_consent_confirmed: false,
   email_notifications_enabled: false,
   sms_notifications_enabled: false,
+  agent_type: "standard",
+  strategy_families: ["event_continuation", "breakout_prior_day_high", "pullback_trend_continuation"],
+  haco_direction_mode: "long_only",
+  true_momentum_trigger_mode: "review_only",
+  use_haco_filter: false,
+  use_true_momentum_confirmation: false,
   paper_only: true,
   execution_mode: "paper",
 };
+
+// Equities strategy_ids (stable) + operator-facing display names for Standard/Hybrid selection.
+const EQUITIES_STRATEGIES: ReadonlyArray<readonly [string, string]> = [
+  ["event_continuation", "Event Continuation"],
+  ["breakout_prior_day_high", "Breakout / Prior-Day High"],
+  ["pullback_trend_continuation", "Pullback / Trend Continuation"],
+  ["gap_follow_through", "Gap Follow-Through"],
+  ["mean_reversion", "Mean Reversion"],
+  ["haco_context", "HACO Context"],
+] as const;
+
+const AGENT_TYPE_LABELS: Record<string, string> = {
+  standard: "Standard Strategy",
+  haco_direction: "HACO Direction",
+  true_momentum: "True Momentum",
+  hybrid: "Hybrid",
+};
+
+const AGENT_TYPE_BLURB: Record<string, string> = {
+  standard: "Runs the deterministic strategy ranking (Event Continuation, Breakout, Pullback, etc.) you select below.",
+  haco_direction: "Triggers on the HACO direction signal. Long entries only; short signals are review-only (no paper shorts).",
+  true_momentum: "Triggers on True Momentum alignment. Pick a trigger mode below; review-only never opens paper trades.",
+  hybrid: "Advanced: combines selected Standard strategies with optional HACO filter and True Momentum confirmation.",
+};
+
+function agentTypeLabel(value: unknown): string {
+  const key = String(value || "standard");
+  return AGENT_TYPE_LABELS[key] ?? key.replace(/_/g, " ");
+}
 
 const tabs = ["Overview", "Runs", "Trades", "Positions", "Performance", "Settings"] as const;
 type AgentModeTab = typeof tabs[number];
@@ -212,16 +254,29 @@ export function AgentModeConsole() {
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [expandedSymbols, setExpandedSymbols] = useState<Record<string, boolean>>({});
+  const [profiles, setProfiles] = useState<AgentProfileOverview[]>([]);
+  // The profile being edited in Settings (concrete). null until first load resolves the default.
+  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
+  // Read views (Overview/Runs/Trades/Positions/Performance) aggregate all agents by default.
+  const [scopeAll, setScopeAll] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newType, setNewType] = useState<AgentType>("standard");
+  const [newName, setNewName] = useState("");
 
-  const load = useCallback(async (silent = false) => {
+  const effectiveProfileId = scopeAll ? null : selectedProfileId;
+
+  const load = useCallback(async (silent = false, profileIdOverride?: number | null) => {
     if (!silent) setLoadState("loading");
-    const [settingsResponse, statusResponse, latestResponse, runsResponse, tradesResponse, performanceResponse, watchlistsResponse] = await Promise.all([
-      fetchAgentModeSettings(),
-      fetchAgentModeStatus(),
-      fetchLatestAgentModeRun(),
-      fetchAgentModeRuns({ limit: 50, timeframe: performanceTimeframe }),
-      fetchAgentModeTrades({ limit: 100, timeframe: tradeTimeframe, symbol: tradeSymbol.trim() || undefined, status: tradeStatus || undefined }),
-      fetchAgentModePerformance({ timeframe: performanceTimeframe, source: "agent_mode" }),
+    const settingsProfileId = profileIdOverride !== undefined ? profileIdOverride : selectedProfileId;
+    const readProfileId = scopeAll ? null : settingsProfileId;
+    const [profilesResponse, settingsResponse, statusResponse, latestResponse, runsResponse, tradesResponse, performanceResponse, watchlistsResponse] = await Promise.all([
+      fetchAgentProfiles(),
+      fetchAgentModeSettings(settingsProfileId),
+      fetchAgentModeStatus(settingsProfileId),
+      fetchLatestAgentModeRun(readProfileId),
+      fetchAgentModeRuns({ limit: 50, timeframe: performanceTimeframe, profileId: readProfileId }),
+      fetchAgentModeTrades({ limit: 100, timeframe: tradeTimeframe, symbol: tradeSymbol.trim() || undefined, status: tradeStatus || undefined, profileId: readProfileId }),
+      fetchAgentModePerformance({ timeframe: performanceTimeframe, source: "agent_mode", profileId: readProfileId }),
       fetchWatchlists(),
     ]);
     if (!settingsResponse.ok || !settingsResponse.data) {
@@ -229,7 +284,11 @@ export function AgentModeConsole() {
       setFeedback({ state: "error", message: settingsResponse.error ?? "Agent Mode settings unavailable." });
       return;
     }
+    setProfiles(profilesResponse.data?.profiles ?? []);
     setSettings(settingsResponse.data);
+    if (settingsResponse.data.agent_profile_id != null && settingsProfileId == null) {
+      setSelectedProfileId(settingsResponse.data.agent_profile_id);
+    }
     setSymbolsText((settingsResponse.data.manual_symbols ?? []).join(", "));
     setStatus(statusResponse.data ?? null);
     setLatest(latestResponse.data?.latestRun?.result ?? null);
@@ -242,7 +301,7 @@ export function AgentModeConsole() {
     if (!statusResponse.ok || !latestResponse.ok || !runsResponse.ok || !tradesResponse.ok || !performanceResponse.ok || !watchlistsResponse.ok) {
       setFeedback({ state: "error", message: "Some Agent Mode performance panels could not refresh. Core settings are still available." });
     }
-  }, [performanceTimeframe, tradeStatus, tradeSymbol, tradeTimeframe]);
+  }, [performanceTimeframe, tradeStatus, tradeSymbol, tradeTimeframe, selectedProfileId, scopeAll]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,20 +417,88 @@ export function AgentModeConsole() {
 
   async function saveSettings() {
     const watchlistIds = settings.default_watchlist_id ? [settings.default_watchlist_id] : [];
-    setFeedback({ state: "loading", message: "Saving Agent Mode settings." });
-    const response = await saveAgentModeSettings({
+    setFeedback({ state: "loading", message: "Saving agent profile settings." });
+    const payload: Partial<AgentModeSettings> = {
       ...settings,
       manual_symbols: parsedSymbols,
       watchlist_ids: watchlistIds,
       max_positions: settings.max_positions,
-      mode: "paper",
-    } as Partial<AgentModeSettings> & { mode: "paper" });
+    };
+    const response = settings.profile_uid
+      ? await updateAgentProfile(settings.profile_uid, payload)
+      : await saveAgentModeSettings(payload);
     if (!response.ok || !response.data) {
       setFeedback({ state: "error", message: response.error ?? "Settings save failed." });
       return;
     }
     setSettings(response.data);
-    setFeedback({ state: "success", message: "Settings saved. Paper-only guard remains active." });
+    await load(true);
+    setFeedback({ state: "success", message: "Profile saved. Paper-only guard remains active." });
+  }
+
+  async function createProfile() {
+    const name = newName.trim() || `${AGENT_TYPE_LABELS[newType] ?? "Agent"} Agent`;
+    setFeedback({ state: "loading", message: "Creating agent profile." });
+    const response = await createAgentProfile({ agent_type: newType, name });
+    if (!response.ok || !response.data) {
+      setFeedback({ state: "error", message: response.error ?? "Create profile failed." });
+      return;
+    }
+    setShowCreate(false);
+    setNewName("");
+    const newId = response.data.agent_profile_id ?? null;
+    setScopeAll(false);
+    setSelectedProfileId(newId);
+    setActiveTab("Settings");
+    setFeedback({ state: "success", message: `Created ${name}. Configure and enable it below.` });
+  }
+
+  async function setProfileEnabled(profile: AgentProfileOverview, enabled: boolean) {
+    setFeedback({ state: "loading", message: `${enabled ? "Enabling" : "Disabling"} ${profile.name}.` });
+    const response = await updateAgentProfile(profile.profile_uid, { enabled });
+    if (!response.ok) {
+      setFeedback({ state: "error", message: response.error ?? "Update failed." });
+      return;
+    }
+    await load(true);
+    setFeedback({ state: "success", message: `${profile.name} ${enabled ? "enabled" : "disabled"}.` });
+  }
+
+  async function setProfileKillSwitch(profile: AgentProfileOverview, killed: boolean) {
+    const response = await updateAgentProfile(profile.profile_uid, { kill_switch_enabled: killed });
+    if (!response.ok) {
+      setFeedback({ state: "error", message: response.error ?? "Update failed." });
+      return;
+    }
+    await load(true);
+    setFeedback({ state: "success", message: `${profile.name} kill switch ${killed ? "engaged" : "released"}.` });
+  }
+
+  async function makeDefaultProfile(profile: AgentProfileOverview) {
+    const response = await setDefaultAgentProfile(profile.profile_uid);
+    if (!response.ok) {
+      setFeedback({ state: "error", message: response.error ?? "Could not set default." });
+      return;
+    }
+    await load(true);
+    setFeedback({ state: "success", message: `${profile.name} is now the default agent.` });
+  }
+
+  async function removeProfile(profile: AgentProfileOverview) {
+    if (!window.confirm(`Delete agent profile "${profile.name}"? Historical runs and trades remain attributed to it.`)) return;
+    const response = await deleteAgentProfile(profile.profile_uid);
+    if (!response.ok) {
+      setFeedback({ state: "error", message: response.error ?? "The default and the last remaining profile cannot be deleted." });
+      return;
+    }
+    setScopeAll(true);
+    setSelectedProfileId(null);
+    setFeedback({ state: "success", message: `Deleted ${profile.name}.` });
+  }
+
+  function focusProfile(profileId: number) {
+    setScopeAll(false);
+    setSelectedProfileId(profileId);
   }
 
   async function runNow(dry_run: boolean) {
@@ -391,6 +518,7 @@ export function AgentModeConsole() {
     const watchlistIds = settings.default_watchlist_id ? [settings.default_watchlist_id] : [];
     const payload: Record<string, unknown> = {
       dry_run,
+      profile_id: settings.agent_profile_id ?? undefined,
       universe_source: universeSource,
       default_watchlist_id: settings.default_watchlist_id ?? null,
       watchlist_ids: watchlistIds,
@@ -421,7 +549,7 @@ export function AgentModeConsole() {
 
   async function sendTestNotification(channel: "email" | "sms" | "both" | "none") {
     setFeedback({ state: "loading", message: `Sending ${channel} test notification.` });
-    const response = await testAgentModeNotification(channel);
+    const response = await testAgentModeNotification(channel, settings.agent_profile_id);
     if (!response.ok || !response.data) {
       setFeedback({ state: "error", message: response.error ?? "Test notification failed." });
       return;
@@ -449,15 +577,15 @@ export function AgentModeConsole() {
   return (
     <div className="op-stack">
       <PageHeader
-        title="Agent Mode"
-        subtitle="Paper-only performance cockpit for deterministic Agent Mode runs."
+        title="Agent Profiles"
+        subtitle="Paper-only cockpit for your Standard, HACO Direction, True Momentum, and Hybrid agents."
         actions={<StatusBadge tone="warn">Paper only. No live routing. Disable anytime.</StatusBadge>}
       />
 
       <InlineFeedback state={feedback.state} message={feedback.message} />
 
       {isRunning ? (
-        <Card title={status?.in_progress ? "Agent Mode run in progress" : "Agent Mode operation running"}>
+        <Card title={status?.in_progress ? "Agent run in progress" : "Agent operation running"}>
           <div className="agent-running-banner">
             <strong>{feedback.message ?? "Agent Mode is working."}</strong>
             <span>Started at {formatDateTime(runStartedAt ?? status?.last_run_started_at)}. Previous successful results remain visible while this refresh runs.</span>
@@ -465,6 +593,103 @@ export function AgentModeConsole() {
           </div>
         </Card>
       ) : null}
+
+      <Card title="Your agents">
+        <div className="op-stack">
+          <div className="op-row agent-filter-row">
+            <button
+              className={`op-btn ${scopeAll ? "op-btn-secondary is-active" : "op-btn-ghost"}`}
+              type="button"
+              onClick={() => setScopeAll(true)}
+            >
+              All agents
+            </button>
+            <span className="agent-setting-help">
+              {scopeAll
+                ? "Overview, Runs, Trades, Positions, and Performance aggregate every agent profile."
+                : `Scoped to ${settings.name ?? "the selected profile"}. Click "All agents" to aggregate.`}
+            </span>
+            <button className="op-btn op-btn-primary" type="button" onClick={() => setShowCreate((value) => !value)}>
+              {showCreate ? "Close" : "New agent"}
+            </button>
+          </div>
+
+          {showCreate ? (
+            <section className="agent-settings-section" aria-label="Create agent profile">
+              <h3>Create an agent</h3>
+              <div className="op-grid op-grid-3">
+                <label>
+                  <span>Template</span>
+                  <select value={newType} onChange={(event) => setNewType(event.target.value as AgentType)}>
+                    <option value="standard">Standard Strategy</option>
+                    <option value="haco_direction">HACO Direction</option>
+                    <option value="true_momentum">True Momentum</option>
+                    <option value="hybrid">Hybrid (advanced)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Name</span>
+                  <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={`${AGENT_TYPE_LABELS[newType]} Agent`} />
+                </label>
+                <div className="op-row" style={{ alignItems: "flex-end" }}>
+                  <button className="op-btn op-btn-primary" type="button" onClick={createProfile} disabled={isSaving}>Create</button>
+                  <button className="op-btn op-btn-ghost" type="button" onClick={() => setShowCreate(false)}>Cancel</button>
+                </div>
+              </div>
+              <SettingHelp>{AGENT_TYPE_BLURB[newType]}</SettingHelp>
+            </section>
+          ) : null}
+
+          {profiles.length ? (
+            <div className="op-grid op-grid-3 agent-profile-grid">
+              {profiles.map((profile) => {
+                const focused = !scopeAll && profile.agent_profile_id === selectedProfileId;
+                const modeSummary = profile.agent_type === "haco_direction"
+                  ? `HACO: ${formatFieldLabel(profile.haco_direction_mode)}`
+                  : profile.agent_type === "true_momentum"
+                    ? `Trigger: ${formatFieldLabel(profile.true_momentum_trigger_mode)}`
+                    : `Strategies: ${profile.strategy_count ?? 0}`;
+                return (
+                  <div key={profile.profile_uid} className={`agent-profile-card${focused ? " is-active" : ""}`}>
+                    <div className="op-row">
+                      <strong>{profile.name}</strong>
+                      {profile.is_default ? <StatusBadge tone="neutral">default</StatusBadge> : null}
+                    </div>
+                    <div className="op-row">
+                      <StatusBadge tone="neutral">{agentTypeLabel(profile.agent_type)}</StatusBadge>
+                      <StatusBadge tone={profile.kill_switch_enabled ? "bad" : profile.enabled ? "good" : "neutral"}>
+                        {profile.kill_switch_enabled ? "kill switch" : profile.enabled ? "enabled" : "disabled"}
+                      </StatusBadge>
+                    </div>
+                    <div className="agent-profile-card-meta">
+                      <span>Next run: {formatDateTime(profile.next_scheduled_run_at)}</span>
+                      <span>Last result: {formatFieldLabel(profile.last_run_status ?? "never_run")}</span>
+                      <span>Universe: {asText(profile.watchlist_name ?? formatFieldLabel(profile.universe_source))}</span>
+                      <span>{modeSummary}</span>
+                      <span>Open positions: {profile.open_position_count ?? 0}</span>
+                      <span>Realized P&amp;L: {formatMoney(profile.realized_pnl)}</span>
+                    </div>
+                    <div className="op-row">
+                      <button className="op-btn op-btn-ghost" type="button" onClick={() => { focusProfile(profile.agent_profile_id); setActiveTab("Settings"); }}>Edit</button>
+                      <button className="op-btn op-btn-ghost" type="button" onClick={() => focusProfile(profile.agent_profile_id)}>View</button>
+                      <button className="op-btn op-btn-ghost" type="button" onClick={() => setProfileEnabled(profile, !profile.enabled_setting)} disabled={isSaving}>
+                        {profile.enabled_setting ? "Disable" : "Enable"}
+                      </button>
+                      <button className="op-btn op-btn-ghost" type="button" onClick={() => setProfileKillSwitch(profile, !profile.kill_switch_enabled)} disabled={isSaving}>
+                        {profile.kill_switch_enabled ? "Release kill" : "Kill switch"}
+                      </button>
+                      {!profile.is_default ? <button className="op-btn op-btn-ghost" type="button" onClick={() => makeDefaultProfile(profile)} disabled={isSaving}>Make default</button> : null}
+                      {!profile.is_default ? <button className="op-btn op-btn-ghost" type="button" onClick={() => removeProfile(profile)} disabled={isSaving}>Delete</button> : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState title="No agents yet" hint="Create your first agent profile to start paper-only Agent Mode runs." />
+          )}
+        </div>
+      </Card>
 
       <div className="op-tabs" role="tablist" aria-label="Agent Mode sections">
         {tabs.map((tab) => (
@@ -828,6 +1053,83 @@ export function AgentModeConsole() {
             <EmptyState title="Loading Agent Mode" hint="Fetching paper-only settings and run controls." />
           ) : (
             <div className="op-stack">
+              <section className="agent-settings-section" aria-label="Agent identity and triggers">
+                <h3>Agent: {settings.name ?? "Default"} · {agentTypeLabel(settings.agent_type)}</h3>
+                <div className="op-grid op-grid-3">
+                  <label>
+                    <span>Profile name</span>
+                    <input value={settings.name ?? ""} onChange={(event) => setSettings({ ...settings, name: event.target.value })} />
+                  </label>
+                  <div className="op-row">
+                    <StatusBadge tone="neutral">{agentTypeLabel(settings.agent_type)}</StatusBadge>
+                    {settings.is_default ? <StatusBadge tone="neutral">default agent</StatusBadge> : null}
+                  </div>
+                </div>
+                <SettingHelp>{AGENT_TYPE_BLURB[String(settings.agent_type ?? "standard")] ?? ""}</SettingHelp>
+
+                {settings.agent_type === "standard" || settings.agent_type === "hybrid" ? (
+                  <div className="op-stack">
+                    <span className="agent-setting-help">Strategy families this agent may trade:</span>
+                    <div className="op-row">
+                      {EQUITIES_STRATEGIES.map(([id, label]) => {
+                        const selected = (settings.strategy_families ?? []).includes(id);
+                        return (
+                          <label key={id}>
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={(event) => {
+                                const current = new Set(settings.strategy_families ?? []);
+                                if (event.target.checked) current.add(id);
+                                else current.delete(id);
+                                setSettings({ ...settings, strategy_families: Array.from(current) });
+                              }}
+                            />{" "}
+                            {label}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
+                {settings.agent_type === "haco_direction" || (settings.agent_type === "hybrid" && settings.use_haco_filter) ? (
+                  <label>
+                    <span>HACO direction mode</span>
+                    <select value={settings.haco_direction_mode ?? "long_only"} onChange={(event) => setSettings({ ...settings, haco_direction_mode: event.target.value })}>
+                      <option value="long_only">Long only</option>
+                      <option value="short_only">Short only (review)</option>
+                      <option value="long_and_short">Long + Short (shorts review-only)</option>
+                    </select>
+                    <SettingHelp>HACO long opens paper longs. Short signals are review-only — Agent Mode never creates paper shorts.</SettingHelp>
+                  </label>
+                ) : null}
+
+                {settings.agent_type === "true_momentum" || (settings.agent_type === "hybrid" && settings.use_true_momentum_confirmation) ? (
+                  <label>
+                    <span>True Momentum trigger mode</span>
+                    <select value={settings.true_momentum_trigger_mode ?? "review_only"} onChange={(event) => setSettings({ ...settings, true_momentum_trigger_mode: event.target.value })}>
+                      <option value="review_only">Review only (no paper opens)</option>
+                      <option value="conservative">Conservative (long-term + short-term aligned)</option>
+                      <option value="balanced">Balanced (long-term bias + short-term trigger)</option>
+                      <option value="aggressive">Aggressive (short-term trigger when long-term neutral/improving)</option>
+                    </select>
+                    <SettingHelp>Review-only never opens paper trades. Bearish momentum is always review-only.</SettingHelp>
+                  </label>
+                ) : null}
+
+                {settings.agent_type === "hybrid" ? (
+                  <div className="op-stack">
+                    <div className="agent-paper-warning">
+                      Hybrid logic is advanced: it combines the selected Standard strategies with the filters you enable here. Test with dry-run before enabling.
+                    </div>
+                    <div className="op-row">
+                      <label><input type="checkbox" checked={Boolean(settings.use_haco_filter)} onChange={(event) => setSettings({ ...settings, use_haco_filter: event.target.checked })} /> Require HACO long filter</label>
+                      <label><input type="checkbox" checked={Boolean(settings.use_true_momentum_confirmation)} onChange={(event) => setSettings({ ...settings, use_true_momentum_confirmation: event.target.checked })} /> Require True Momentum confirmation</label>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
               <div className="op-row">
                 <StatusBadge tone={settings.enabled ? "good" : "neutral"}>{settings.enabled ? "enabled" : "disabled"}</StatusBadge>
                 <StatusBadge tone={settings.paused || settings.kill_switch_enabled ? "bad" : "good"}>

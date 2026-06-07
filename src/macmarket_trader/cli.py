@@ -19,10 +19,14 @@ from macmarket_trader.domain.schemas import Bar, PortfolioSnapshot, ReplayRunReq
 from macmarket_trader.replay.engine import ReplayEngine
 from macmarket_trader.service import RecommendationService
 from macmarket_trader.storage.db import SessionLocal
-from macmarket_trader.storage.repositories import EmailLogRepository, StrategyReportRepository
+from macmarket_trader.storage.repositories import (
+    AgentProfileRepository,
+    EmailLogRepository,
+    StrategyReportRepository,
+)
 from macmarket_trader.data.providers.registry import build_email_provider
 from macmarket_trader.strategy_reports import REPORT_TYPE_MOMENTUM_HEATMAP, StrategyReportService
-from macmarket_trader.storage.db import init_db
+from macmarket_trader.storage.db import apply_schema_updates, init_db
 
 
 def _sample_bars() -> list[Bar]:
@@ -65,9 +69,27 @@ def _database_diagnostics() -> dict[str, object]:
 def _safe_init_db_for_cli() -> None:
     try:
         init_db()
+        # Self-heal the schema for every CLI entrypoint (the scheduler check runs
+        # here). apply_schema_updates ALTER-adds columns that init_db's create_all
+        # cannot add to existing tables — e.g. the Phase 11 agent_mode_runs profile
+        # columns. Then migrate any legacy single-agent settings into profiles so
+        # the scheduler can evaluate them.
+        apply_schema_updates()
+        _migrate_agent_profiles_safely()
     except OperationalError as exc:
         if "already exists" not in str(exc).lower():
             raise
+
+
+def _migrate_agent_profiles_safely() -> dict[str, int] | None:
+    """Idempotently migrate legacy Agent Mode settings into Agent Profiles.
+
+    Never raises: a migration hiccup must not crash a CLI command or app startup.
+    """
+    try:
+        return AgentProfileRepository(SessionLocal).migrate_legacy_settings_to_profiles()
+    except Exception:  # noqa: BLE001 - migration is best-effort and self-healing.
+        return None
 
 
 def _safe_subprocess_json(command: list[str]) -> dict[str, object]:

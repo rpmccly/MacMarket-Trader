@@ -16,6 +16,7 @@ from macmarket_trader.domain.enums import AppRole, ApprovalStatus
 from macmarket_trader.domain.models import (
     AgentModeRunModel,
     AgentModeSettingsModel,
+    AgentProfileModel,
     AppUserModel,
     AuditLogModel,
     AppInviteModel,
@@ -452,6 +453,599 @@ class AgentModeRepository:
 
     def enabled_settings_count(self) -> int:
         return sum(1 for _ in self.list_enabled_settings())
+
+
+# Phase 11 — Agent Profiles. The migrated default profile preserves the exact
+# pre-change Standard behavior: the current ranking call used
+# ``list_strategies(EQUITIES)[:3]``, whose strategy_ids are these three.
+DEFAULT_STANDARD_STRATEGY_IDS = [
+    "event_continuation",
+    "breakout_prior_day_high",
+    "pullback_trend_continuation",
+]
+
+AGENT_PROFILE_AGENT_TYPES = {"standard", "haco_direction", "true_momentum", "hybrid"}
+
+# Config fields shared by the legacy ``agent_mode_settings`` row and the new
+# ``agent_profiles`` row. Copied verbatim during migration so existing users keep
+# their exact schedule/sizing/notification configuration.
+_AGENT_PROFILE_LEGACY_FIELDS = (
+    "enabled",
+    "paused",
+    "kill_switch_enabled",
+    "daily_run_time",
+    "timezone",
+    "universe_source",
+    "manual_symbols",
+    "watchlist_ids",
+    "default_watchlist_id",
+    "max_positions",
+    "scan_depth",
+    "max_dollars_per_trade",
+    "max_percent_of_paper_account_per_trade",
+    "max_new_trades_per_run",
+    "max_new_trades_per_day",
+    "max_open_agent_positions",
+    "max_exposure_per_symbol",
+    "min_cash_reserve",
+    "allow_opens",
+    "allow_closes",
+    "allow_scale_resize",
+    "allow_scale_ins",
+    "allow_new_trade_when_symbol_already_open",
+    "require_confirmation_for_restricted",
+    "notification_preference",
+    "notification_phone_number",
+    "sms_consent_confirmed",
+    "email_notifications_enabled",
+    "sms_notifications_enabled",
+    "scheduler_last_checked_at",
+    "scheduler_last_check_result",
+    "scheduler_last_check_reason",
+    "scheduler_last_due_at",
+    "scheduler_last_run_id",
+    "scheduler_last_window_key",
+)
+
+# Fields a profile-update request may set (excludes scheduler latch + identity).
+AGENT_PROFILE_UPDATABLE_FIELDS = frozenset(
+    {
+        "name",
+        "enabled",
+        "paused",
+        "kill_switch_enabled",
+        "daily_run_time",
+        "timezone",
+        "universe_source",
+        "manual_symbols",
+        "watchlist_ids",
+        "default_watchlist_id",
+        "max_positions",
+        "scan_depth",
+        "max_dollars_per_trade",
+        "max_percent_of_paper_account_per_trade",
+        "max_new_trades_per_run",
+        "max_new_trades_per_day",
+        "max_open_agent_positions",
+        "max_exposure_per_symbol",
+        "min_cash_reserve",
+        "allow_opens",
+        "allow_closes",
+        "allow_scale_resize",
+        "allow_scale_ins",
+        "allow_new_trade_when_symbol_already_open",
+        "require_confirmation_for_restricted",
+        "strategy_families",
+        "haco_direction_mode",
+        "true_momentum_trigger_mode",
+        "use_haco_filter",
+        "use_true_momentum_confirmation",
+        "notification_preference",
+        "notification_phone_number",
+        "sms_consent_confirmed",
+        "email_notifications_enabled",
+        "sms_notifications_enabled",
+    }
+)
+
+
+class AgentProfileRepository:
+    """User-scoped Agent Profile persistence (Phase 11).
+
+    Mirrors :class:`MomentumHeatmapRepository`'s profile pattern and supersedes the
+    single-row :class:`AgentModeRepository` settings model for everything except
+    legacy reads consumed by migration. All scheduler/run state is per profile.
+    """
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self.session_factory = session_factory
+
+    @staticmethod
+    def _new_profile_uid() -> str:
+        return f"agentprof_{uuid4().hex[:16]}"
+
+    @staticmethod
+    def _agent_type_defaults(agent_type: str) -> dict[str, object]:
+        agent_type = str(agent_type or "standard").strip().lower()
+        if agent_type not in AGENT_PROFILE_AGENT_TYPES:
+            agent_type = "standard"
+        base = {
+            "agent_type": agent_type,
+            "strategy_families": [],
+            "haco_direction_mode": "long_only",
+            # Guardrail: a new True Momentum profile never defaults to aggressive
+            # auto-open behavior. review_only produces reviews without paper opens
+            # until the operator opts into a trigger mode.
+            "true_momentum_trigger_mode": "review_only",
+            "use_haco_filter": False,
+            "use_true_momentum_confirmation": False,
+        }
+        if agent_type in {"standard", "hybrid"}:
+            base["strategy_families"] = list(DEFAULT_STANDARD_STRATEGY_IDS)
+        return base
+
+    @classmethod
+    def default_profile_payload(
+        cls,
+        *,
+        app_user_id: int,
+        name: str = "Standard Strategy Agent",
+        agent_type: str = "standard",
+        is_default: bool = True,
+    ) -> dict[str, object]:
+        return {
+            "profile_uid": cls._new_profile_uid(),
+            "app_user_id": app_user_id,
+            "name": name,
+            "is_default": is_default,
+            "enabled": False,
+            "paused": False,
+            "kill_switch_enabled": False,
+            "daily_run_time": "15:45",
+            "timezone": "America/New_York",
+            "universe_source": "manual",
+            "manual_symbols": list(DEFAULT_AGENT_MODE_MANUAL_SYMBOLS),
+            "watchlist_ids": [],
+            "default_watchlist_id": None,
+            "max_positions": 5,
+            "scan_depth": 12,
+            "max_dollars_per_trade": None,
+            "max_percent_of_paper_account_per_trade": None,
+            "max_new_trades_per_run": 5,
+            "max_new_trades_per_day": 5,
+            "max_open_agent_positions": 5,
+            "max_exposure_per_symbol": None,
+            "min_cash_reserve": 0.0,
+            "allow_opens": True,
+            "allow_closes": True,
+            "allow_scale_resize": False,
+            "allow_scale_ins": False,
+            "allow_new_trade_when_symbol_already_open": False,
+            "require_confirmation_for_restricted": True,
+            "notification_preference": "none",
+            "notification_phone_number": None,
+            "sms_consent_confirmed": False,
+            "email_notifications_enabled": False,
+            "sms_notifications_enabled": False,
+            "scheduler_last_checked_at": None,
+            "scheduler_last_check_result": None,
+            "scheduler_last_check_reason": None,
+            "scheduler_last_due_at": None,
+            "scheduler_last_run_id": None,
+            "scheduler_last_window_key": None,
+            **cls._agent_type_defaults(agent_type),
+        }
+
+    def _seed_default_profile(
+        self,
+        session: Session,
+        *,
+        app_user_id: int,
+        legacy: AgentModeSettingsModel | None,
+    ) -> tuple[AgentProfileModel, int]:
+        """Create the user's default 'Standard Strategy Agent' profile.
+
+        Copies all shared config from the legacy settings row when present, then
+        backfills any NULL-profile run rows for this user onto the new default.
+        """
+        payload = self.default_profile_payload(app_user_id=app_user_id)
+        profile = AgentProfileModel(**payload)
+        if legacy is not None:
+            for field in _AGENT_PROFILE_LEGACY_FIELDS:
+                value = getattr(legacy, field, None)
+                setattr(profile, field, list(value) if isinstance(value, list) else value)
+        session.add(profile)
+        session.flush()
+        backfilled = session.execute(
+            update(AgentModeRunModel)
+            .where(AgentModeRunModel.app_user_id == app_user_id)
+            .where(AgentModeRunModel.agent_profile_id.is_(None))
+            .values(
+                agent_profile_id=profile.id,
+                agent_profile_name=profile.name,
+                agent_type=profile.agent_type,
+            )
+        ).rowcount
+        return profile, int(backfilled or 0)
+
+    def migrate_legacy_settings_to_profiles(self) -> dict[str, int]:
+        """Idempotent: create one default profile per legacy settings row.
+
+        Users who already have at least one profile are left untouched. Existing
+        NULL-profile run rows are backfilled to the user's default profile so run
+        history stays attached after migration. Safe to call repeatedly.
+        """
+        created = 0
+        backfilled = 0
+        with self.session_factory() as session:
+            legacy_rows = list(session.execute(select(AgentModeSettingsModel)).scalars())
+            users_with_profiles = set(
+                session.execute(select(AgentProfileModel.app_user_id)).scalars()
+            )
+            for legacy in legacy_rows:
+                if legacy.app_user_id in users_with_profiles:
+                    continue
+                _, runs = self._seed_default_profile(
+                    session, app_user_id=legacy.app_user_id, legacy=legacy
+                )
+                created += 1
+                backfilled += runs
+                users_with_profiles.add(legacy.app_user_id)
+            if created or backfilled:
+                session.commit()
+        return {"profiles_created": created, "runs_backfilled": backfilled}
+
+    def ensure_default_profile(self, *, app_user_id: int) -> AgentProfileModel:
+        with self.session_factory() as session:
+            rows = list(
+                session.execute(
+                    select(AgentProfileModel)
+                    .where(AgentProfileModel.app_user_id == app_user_id)
+                    .order_by(
+                        AgentProfileModel.is_default.desc(),
+                        AgentProfileModel.created_at.asc(),
+                        AgentProfileModel.id.asc(),
+                    )
+                ).scalars()
+            )
+            if rows:
+                if not any(bool(row.is_default) for row in rows):
+                    rows[0].is_default = True
+                    session.commit()
+                    session.refresh(rows[0])
+                return next((row for row in rows if row.is_default), rows[0])
+            legacy = session.execute(
+                select(AgentModeSettingsModel).where(
+                    AgentModeSettingsModel.app_user_id == app_user_id
+                )
+            ).scalar_one_or_none()
+            profile, _ = self._seed_default_profile(
+                session, app_user_id=app_user_id, legacy=legacy
+            )
+            session.commit()
+            session.refresh(profile)
+            return profile
+
+    def list_profiles(self, *, app_user_id: int) -> list[AgentProfileModel]:
+        self.ensure_default_profile(app_user_id=app_user_id)
+        with self.session_factory() as session:
+            stmt = (
+                select(AgentProfileModel)
+                .where(AgentProfileModel.app_user_id == app_user_id)
+                .order_by(
+                    AgentProfileModel.is_default.desc(),
+                    AgentProfileModel.created_at.asc(),
+                    AgentProfileModel.id.asc(),
+                )
+            )
+            return list(session.execute(stmt).scalars())
+
+    def get_profile(self, *, app_user_id: int, profile_uid: str) -> AgentProfileModel | None:
+        with self.session_factory() as session:
+            return session.execute(
+                select(AgentProfileModel).where(
+                    AgentProfileModel.app_user_id == app_user_id,
+                    AgentProfileModel.profile_uid == profile_uid,
+                )
+            ).scalar_one_or_none()
+
+    def get_profile_by_id(self, *, app_user_id: int, profile_id: int) -> AgentProfileModel | None:
+        with self.session_factory() as session:
+            return session.execute(
+                select(AgentProfileModel).where(
+                    AgentProfileModel.app_user_id == app_user_id,
+                    AgentProfileModel.id == profile_id,
+                )
+            ).scalar_one_or_none()
+
+    def get_default_profile(self, *, app_user_id: int) -> AgentProfileModel:
+        return self.ensure_default_profile(app_user_id=app_user_id)
+
+    def resolve_profile(
+        self,
+        *,
+        app_user_id: int,
+        profile_uid: str | None = None,
+        profile_id: int | None = None,
+    ) -> AgentProfileModel | None:
+        """Resolve a requested profile, falling back to the user's default."""
+        self.ensure_default_profile(app_user_id=app_user_id)
+        if profile_uid:
+            row = self.get_profile(app_user_id=app_user_id, profile_uid=str(profile_uid))
+            if row is not None:
+                return row
+        if profile_id is not None:
+            row = self.get_profile_by_id(app_user_id=app_user_id, profile_id=int(profile_id))
+            if row is not None:
+                return row
+        if profile_uid or profile_id is not None:
+            # An explicit-but-unknown profile id/uid must not silently fall back.
+            return None
+        return self.get_default_profile(app_user_id=app_user_id)
+
+    def create_profile(self, *, app_user_id: int, payload: dict[str, object]) -> AgentProfileModel:
+        agent_type = str(payload.get("agent_type") or "standard").strip().lower()
+        if agent_type not in AGENT_PROFILE_AGENT_TYPES:
+            agent_type = "standard"
+        with self.session_factory() as session:
+            existing = list(
+                session.execute(
+                    select(AgentProfileModel).where(AgentProfileModel.app_user_id == app_user_id)
+                ).scalars()
+            )
+            base = self.default_profile_payload(
+                app_user_id=app_user_id,
+                name=str(payload.get("name") or "New Agent")[:128],
+                agent_type=agent_type,
+                is_default=not existing,
+            )
+            profile = AgentProfileModel(**base)
+            for field in AGENT_PROFILE_UPDATABLE_FIELDS:
+                if field in payload:
+                    value = payload[field]
+                    setattr(profile, field, list(value) if isinstance(value, list) else value)
+            session.add(profile)
+            session.commit()
+            session.refresh(profile)
+            return profile
+
+    def update_profile(
+        self, *, app_user_id: int, profile_uid: str, updates: dict[str, object]
+    ) -> AgentProfileModel | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentProfileModel).where(
+                    AgentProfileModel.app_user_id == app_user_id,
+                    AgentProfileModel.profile_uid == profile_uid,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            for field in AGENT_PROFILE_UPDATABLE_FIELDS:
+                if field in updates:
+                    value = updates[field]
+                    setattr(row, field, list(value) if isinstance(value, list) else value)
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def set_default_profile(self, *, app_user_id: int, profile_uid: str) -> AgentProfileModel | None:
+        with self.session_factory() as session:
+            target = session.execute(
+                select(AgentProfileModel).where(
+                    AgentProfileModel.app_user_id == app_user_id,
+                    AgentProfileModel.profile_uid == profile_uid,
+                )
+            ).scalar_one_or_none()
+            if target is None:
+                return None
+            for row in session.execute(
+                select(AgentProfileModel).where(AgentProfileModel.app_user_id == app_user_id)
+            ).scalars():
+                row.is_default = row.id == target.id
+            session.commit()
+            session.refresh(target)
+            return target
+
+    def delete_profile(self, *, app_user_id: int, profile_uid: str) -> tuple[str, AgentProfileModel | None]:
+        """Delete a non-default profile. Returns (status, row).
+
+        Status is ``deleted``, ``not_found``, ``blocked_default`` (cannot delete the
+        default profile), or ``blocked_last`` (cannot delete the only profile).
+        """
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentProfileModel).where(
+                    AgentProfileModel.app_user_id == app_user_id,
+                    AgentProfileModel.profile_uid == profile_uid,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return "not_found", None
+            total = session.execute(
+                select(func.count())
+                .select_from(AgentProfileModel)
+                .where(AgentProfileModel.app_user_id == app_user_id)
+            ).scalar_one()
+            if int(total or 0) <= 1:
+                return "blocked_last", row
+            if bool(row.is_default):
+                return "blocked_default", row
+            session.delete(row)
+            session.commit()
+            return "deleted", row
+
+    def list_all_profiles(self) -> list[AgentProfileModel]:
+        with self.session_factory() as session:
+            stmt = select(AgentProfileModel).order_by(
+                AgentProfileModel.app_user_id.asc(), AgentProfileModel.id.asc()
+            )
+            return list(session.execute(stmt).scalars())
+
+    def list_all_enabled_profiles(self) -> list[AgentProfileModel]:
+        with self.session_factory() as session:
+            stmt = (
+                select(AgentProfileModel)
+                .where(
+                    AgentProfileModel.enabled.is_(True),
+                    AgentProfileModel.paused.is_(False),
+                    AgentProfileModel.kill_switch_enabled.is_(False),
+                )
+                .order_by(AgentProfileModel.app_user_id.asc(), AgentProfileModel.id.asc())
+            )
+            return list(session.execute(stmt).scalars())
+
+    # ── Profile-scoped runs ──────────────────────────────────────────────────
+    def create_run(
+        self,
+        *,
+        app_user_id: int,
+        agent_profile_id: int | None,
+        agent_profile_name: str | None,
+        agent_type: str | None,
+        run_id: str,
+        status: str,
+        execution_mode: str,
+        dry_run: bool,
+        intent_count: int,
+        executed_order_count: int,
+        request_json: dict[str, object],
+        response_json: dict[str, object],
+        completed_at: datetime | None,
+    ) -> AgentModeRunModel:
+        with self.session_factory() as session:
+            row = AgentModeRunModel(
+                app_user_id=app_user_id,
+                agent_profile_id=agent_profile_id,
+                agent_profile_name=agent_profile_name,
+                agent_type=agent_type,
+                run_id=run_id,
+                status=status,
+                execution_mode=execution_mode,
+                dry_run=dry_run,
+                intent_count=intent_count,
+                executed_order_count=executed_order_count,
+                request_json=request_json,
+                response_json=response_json,
+                completed_at=completed_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def list_runs(
+        self,
+        *,
+        app_user_id: int,
+        agent_profile_id: int | None = None,
+        limit: int = 50,
+        status: str | None = None,
+        dry_run: bool | None = None,
+    ) -> list[AgentModeRunModel]:
+        with self.session_factory() as session:
+            stmt = select(AgentModeRunModel).where(AgentModeRunModel.app_user_id == app_user_id)
+            if agent_profile_id is not None:
+                stmt = stmt.where(AgentModeRunModel.agent_profile_id == agent_profile_id)
+            if status:
+                stmt = stmt.where(AgentModeRunModel.status == status)
+            if dry_run is not None:
+                stmt = stmt.where(AgentModeRunModel.dry_run.is_(dry_run))
+            stmt = stmt.order_by(AgentModeRunModel.created_at.desc()).limit(max(1, min(int(limit), 100)))
+            return list(session.execute(stmt).scalars())
+
+    def latest_run(self, *, app_user_id: int, agent_profile_id: int | None = None) -> AgentModeRunModel | None:
+        rows = self.list_runs(app_user_id=app_user_id, agent_profile_id=agent_profile_id, limit=1)
+        return rows[0] if rows else None
+
+    def latest_scheduled_run(self, *, app_user_id: int, agent_profile_id: int | None = None) -> AgentModeRunModel | None:
+        for row in self.list_runs(app_user_id=app_user_id, agent_profile_id=agent_profile_id, limit=100):
+            if AgentModeRepository._run_source(row) == "scheduled_agent":
+                return row
+        return None
+
+    def scheduled_run_for_window(
+        self, *, app_user_id: int, agent_profile_id: int | None, window_key: str
+    ) -> AgentModeRunModel | None:
+        if not window_key:
+            return None
+        for row in self.list_runs(app_user_id=app_user_id, agent_profile_id=agent_profile_id, limit=100):
+            if (
+                AgentModeRepository._run_source(row) == "scheduled_agent"
+                and AgentModeRepository._run_window_key(row) == window_key
+            ):
+                return row
+        return None
+
+    # ── Profile-scoped scheduler latch ───────────────────────────────────────
+    def update_scheduler_check(
+        self,
+        *,
+        profile_id: int,
+        checked_at: datetime,
+        result: str,
+        reason: str | None,
+        due_at: datetime | None,
+        run_id: str | None,
+        window_key: str | None,
+    ) -> AgentProfileModel | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                select(AgentProfileModel).where(AgentProfileModel.id == profile_id)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            row.scheduler_last_checked_at = checked_at
+            row.scheduler_last_check_result = str(result or "")[:32] or None
+            row.scheduler_last_check_reason = str(reason or "")[:255] or None
+            row.scheduler_last_due_at = due_at
+            row.scheduler_last_run_id = str(run_id or "")[:80] or None
+            row.scheduler_last_window_key = str(window_key or "")[:80] or None
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def claim_scheduler_window(
+        self,
+        *,
+        profile_id: int,
+        checked_at: datetime,
+        due_at: datetime | None,
+        window_key: str,
+        stale_after_seconds: int,
+    ) -> bool:
+        if not window_key:
+            return False
+        stale_before = checked_at - timedelta(seconds=max(60, int(stale_after_seconds)))
+        with self.session_factory() as session:
+            stmt = (
+                update(AgentProfileModel)
+                .where(AgentProfileModel.id == profile_id)
+                .where(
+                    or_(
+                        AgentProfileModel.scheduler_last_window_key.is_(None),
+                        AgentProfileModel.scheduler_last_window_key != window_key,
+                        AgentProfileModel.scheduler_last_check_result.is_(None),
+                        AgentProfileModel.scheduler_last_check_result != "running",
+                        AgentProfileModel.scheduler_last_checked_at.is_(None),
+                        AgentProfileModel.scheduler_last_checked_at < stale_before,
+                    )
+                )
+                .values(
+                    scheduler_last_checked_at=checked_at,
+                    scheduler_last_check_result="running",
+                    scheduler_last_check_reason="due_now",
+                    scheduler_last_due_at=due_at,
+                    scheduler_last_run_id=None,
+                    scheduler_last_window_key=str(window_key)[:80],
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            return bool(result.rowcount)
 
 
 def gross_pnl_or_fallback(row: PaperTradeModel) -> float:

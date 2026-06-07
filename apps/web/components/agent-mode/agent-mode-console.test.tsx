@@ -33,9 +33,14 @@ vi.mock("@/lib/agent-mode-api", () => ({
   fetchAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
   fetchAgentModeStatus: vi.fn(async () => ({ ok: true, data: null })),
   fetchAgentModeTrades: vi.fn(async () => ({ ok: true, data: { items: [] } })),
+  fetchAgentProfiles: vi.fn(async () => ({ ok: true, data: { profiles: [] } })),
   fetchLatestAgentModeRun: vi.fn(async () => ({ ok: true, data: null })),
   runAgentMode: vi.fn(async () => ({ ok: true, data: null })),
   saveAgentModeSettings: vi.fn(async () => ({ ok: true, data: null })),
+  createAgentProfile: vi.fn(async () => ({ ok: true, data: null })),
+  updateAgentProfile: vi.fn(async () => ({ ok: true, data: null })),
+  deleteAgentProfile: vi.fn(async () => ({ ok: true, data: { status: "deleted" } })),
+  setDefaultAgentProfile: vi.fn(async () => ({ ok: true, data: null })),
   testAgentModeNotification: vi.fn(async () => ({ ok: true, data: { attempts: [] } })),
 }));
 
@@ -56,9 +61,12 @@ describe("AgentModeConsole", () => {
   it("renders the protected paper-only console sections", () => {
     const html = renderToStaticMarkup(<AgentModeConsole />);
 
-    expect(html).toContain("Agent Mode");
-    expect(html).toContain("Paper-only performance cockpit");
+    expect(html).toContain("Agent Profiles");
+    expect(html).toContain("Paper-only cockpit for your Standard, HACO Direction, True Momentum, and Hybrid agents.");
     expect(html).toContain("Paper only. No live routing. Disable anytime.");
+    expect(html).toContain("Your agents");
+    expect(html).toContain("All agents");
+    expect(html).toContain("New agent");
     expect(html).toContain("Overview");
     expect(html).toContain("Runs");
     expect(html).toContain("Trades");
@@ -139,6 +147,34 @@ describe("AgentModeConsole", () => {
     expect(source).toContain("agent-performance-hero");
     expect(source).toContain("Percent return");
     expect(source).toContain("No Agent Mode performance yet");
+  });
+
+  it("contains the agent-profiles cockpit and agent-type controls", () => {
+    // Profile CRUD + scoping wiring.
+    expect(source).toContain("fetchAgentProfiles");
+    expect(source).toContain("createAgentProfile");
+    expect(source).toContain("updateAgentProfile");
+    expect(source).toContain("deleteAgentProfile");
+    expect(source).toContain("setDefaultAgentProfile");
+    expect(source).toContain("scopeAll");
+    expect(source).toContain("selectedProfileId");
+    // Per-profile controls and the four templates.
+    expect(source).toContain("New agent");
+    expect(source).toContain("Make default");
+    expect(source).toContain("Kill switch");
+    expect(source).toContain("Standard Strategy");
+    expect(source).toContain("HACO Direction");
+    expect(source).toContain("True Momentum");
+    expect(source).toContain("Hybrid");
+    // Agent-type configuration.
+    expect(source).toContain("HACO direction mode");
+    expect(source).toContain("True Momentum trigger mode");
+    expect(source).toContain("Require HACO long filter");
+    expect(source).toContain("Require True Momentum confirmation");
+    expect(source).toContain("Strategy families this agent may trade");
+    // Paper-only guardrails on the new surfaces.
+    expect(source).toContain("Agent Mode never creates paper shorts");
+    expect(source).toContain("Review-only never opens paper trades");
   });
 
   it("uses paper-safe language only", () => {

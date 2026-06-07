@@ -5,6 +5,50 @@ designed to evaluate the current equity paper book once per day, produce a
 deterministic action memo, and optionally submit approved paper-only changes
 through the existing paper order and paper position lifecycle.
 
+## Agent Profiles (Phase 11)
+
+Agent Mode is now an **Agent Profiles** cockpit: each user can create and run
+multiple independent, user-scoped paper agents instead of one settings row.
+
+Agent types:
+
+- **Standard Strategy Agent** (`standard`) — the existing deterministic strategy
+  ranking. The profile selects which strategy families it may trade (Event
+  Continuation, Breakout / Prior-Day High, Pullback / Trend Continuation, Gap
+  Follow-Through, Mean Reversion, HACO Context).
+- **HACO Direction Agent** (`haco_direction`) — uses the existing HACO direction
+  output as the primary trigger. `haco_direction_mode` is `long_only`,
+  `short_only`, or `long_and_short`. HACO long opens paper longs; HACO short is
+  **review-only** (no paper shorts are ever created).
+- **True Momentum Agent** (`true_momentum`) — uses the existing True Momentum
+  score/trend outputs. `true_momentum_trigger_mode` is `conservative`,
+  `balanced`, `aggressive`, or `review_only`. New True Momentum profiles default
+  to `review_only` (no auto-open). Bearish momentum is review-only.
+- **Hybrid Agent** (`hybrid`) — advanced: a top-ranked Standard candidate plus an
+  optional HACO long filter and/or True Momentum confirmation.
+
+Agent-type triggers are **isolated eligibility filters** applied *after*
+deterministic ranking and *before* an open is planned. They never change
+recommendation scoring or HACO/Momentum indicator math; they only read existing
+indicator outputs. The recommendation/sizing/risk-calendar pipeline still has
+final say on every eligible-long candidate. Bearish/short/exit reads become
+review-only intents (`CASH_NO_TRADE` with `status="review_only"`), counted
+separately from blocked actions.
+
+Migration: existing single-agent users are migrated into one default
+**"Standard Strategy Agent"** profile (`agent_type=standard`, `is_default=true`)
+that copies all prior settings and the scheduler latch. Existing run history is
+backfilled to that default profile. Migration is idempotent and runs on app
+startup, on every scheduler CLI invocation, and at the top of the scheduler
+loop. The legacy `agent_mode_settings` table is preserved for rollback.
+
+Each profile owns its own schedule, sizing/risk caps, notification preferences,
+strategy/trigger selection, and per-profile scheduler latch. The duplicate
+guard and scheduler claim are per profile + scheduled window
+(`local-date|HH:MM|timezone|profile_uid`). Runs, trades, positions, and
+performance can be viewed for all agents or filtered to one profile. Each run
+records `agent_profile_id`, `agent_profile_name`, and `agent_type`.
+
 ## Guardrails
 
 - Paper only. Agent Mode rejects non-paper execution modes.
@@ -21,18 +65,30 @@ through the existing paper order and paper position lifecycle.
 
 ## Endpoints
 
-- `GET /user/agent-mode/settings`
-- `POST /user/agent-mode/settings`
-- `GET /user/agent-mode/status`
-- `POST /user/agent-mode/run`
-- `GET /user/agent-mode/latest`
-- `GET /user/agent-mode/runs`
-- `GET /user/agent-mode/trades`
-- `GET /user/agent-mode/performance`
-- `POST /user/agent-mode/notifications/test`
+Profiles (Phase 11):
 
-All endpoints require an approved authenticated user. The run endpoint is
-rate-limited with other high-cost workflow routes.
+- `GET /user/agent-mode/profiles` — list the user's profiles (overview cards)
+- `POST /user/agent-mode/profiles` — create a profile from a template
+- `GET /user/agent-mode/profiles/{profile_uid}` — one profile's settings
+- `PUT /user/agent-mode/profiles/{profile_uid}` — update a profile
+- `DELETE /user/agent-mode/profiles/{profile_uid}` — delete (not default/last)
+- `POST /user/agent-mode/profiles/{profile_uid}/default` — set the default profile
+- `GET /user/agent-mode/agents` — per-profile overview summary
+
+Per-profile (default profile when `profile_id` is omitted):
+
+- `GET /user/agent-mode/settings` (`?profile_id=`)
+- `POST /user/agent-mode/settings` (body may include `profile_id`/`profile_uid`)
+- `GET /user/agent-mode/status` (`?profile_id=`)
+- `POST /user/agent-mode/run` (body may include `profile_id`)
+- `GET /user/agent-mode/latest` (`?profile_id=`)
+- `GET /user/agent-mode/runs` (`?profile_id=`; omit for all agents)
+- `GET /user/agent-mode/trades` (`?profile_id=`; omit for all agents)
+- `GET /user/agent-mode/performance` (`?profile_id=`; omit for all agents)
+- `POST /user/agent-mode/notifications/test` (body may include `profile_id`)
+
+All endpoints require an approved authenticated user and are user-scoped. The
+run endpoint is rate-limited with other high-cost workflow routes.
 
 ## Settings
 
@@ -247,3 +303,51 @@ orders, changes paper positions, runs schedules, or calls broker execution.
 Use Agent Mode for the autonomous paper lifecycle; use Daily Target Book to
 review the current paper book versus today's deterministic scan before taking
 operator-controlled action elsewhere.
+
+## Phase 11 deployment: backup, rollback, and smoke checks
+
+Before deploying the Agent Profiles schema change, back up the deployed SQLite
+database. The schema upgrade is additive (a new `agent_profiles` table plus
+nullable `agent_mode_runs.agent_profile_id/agent_profile_name/agent_type`
+columns) and applied automatically by `apply_schema_updates()` on app/scheduler
+startup, but a timestamped backup is required first.
+
+Backup (run on the deploy host, services stopped):
+
+```powershell
+.\scripts\backup_deployed_db.ps1 -StopServices
+```
+
+This copies `C:\Dashboard\MacMarket-Trader\macmarket_trader.db` (and WAL/SHM
+sidecars) into `C:\Dashboard\MacMarket-Trader\backups\db\<timestamp>\` with a
+SHA-256 manifest and a `README.txt` restore note.
+
+Rollback: stop the backend/frontend/scheduler, copy the backed-up `.db` (and
+sidecars) from the timestamped backup folder back over the deployed DB path, then
+restart. The legacy `agent_mode_settings` table is preserved, so a rollback to
+the prior single-agent build still reads its original settings. Verify a backup
+with:
+
+```powershell
+.\scripts\verify_sqlite_restore.ps1
+```
+
+Post-deploy smoke checks:
+
+1. Existing users show one migrated **"Standard Strategy Agent"** default profile
+   with their prior schedule/sizing/notifications intact, and prior run history
+   attached.
+2. Create a HACO Direction profile and a True Momentum profile; the True
+   Momentum profile defaults to `review_only`.
+3. `python -m macmarket_trader.cli agent-scheduler-diagnostics` lists every
+   profile with per-profile due state and `counts.profiles`.
+4. Run `python -m macmarket_trader.cli agent-scheduler-check --dry-run
+   --no-notifications`; each enabled profile records a per-profile scheduled
+   diagnostic run (no paper orders, no notifications).
+5. In the cockpit, the All-agents/single-profile filter scopes Runs, Trades, and
+   Performance; HACO-red and bearish-momentum candidates appear as review-only
+   (no paper opens, no paper shorts).
+6. Notifications: each profile run produces exactly one digest per enabled
+   channel; multiple profiles scheduled separately produce multiple digests, and
+   no per-symbol messages are sent. (SMS remains capped per user per day across
+   all of a user's agents.)

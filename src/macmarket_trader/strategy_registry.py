@@ -195,3 +195,10 @@ def get_strategy_by_display_name(display_name: str, *, market_mode: MarketMode |
         if entry.display_name == display_name:
             return entry
     return None
+
+
+def get_strategy_by_id(strategy_id: str, *, market_mode: MarketMode | None = None) -> StrategyRegistryEntry | None:
+    for entry in list_strategies(market_mode):
+        if entry.strategy_id == strategy_id:
+            return entry
+    return None

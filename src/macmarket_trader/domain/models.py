@@ -643,6 +643,74 @@ class AgentModeSettingsModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
 
 
+class AgentProfileModel(Base):
+    """Phase 11 — one row per user-scoped Agent Profile.
+
+    Supersedes the single ``agent_mode_settings`` row per user. Each profile is an
+    independent paper-only agent (``agent_type`` standard/haco_direction/true_momentum/
+    hybrid) with its own schedule, sizing/risk, notifications, strategy/trigger
+    selection, and per-profile scheduler latch. The legacy ``agent_mode_settings``
+    table is preserved for migration/rollback and is not written to going forward.
+    """
+
+    __tablename__ = "agent_profiles"
+    __table_args__ = (
+        UniqueConstraint("app_user_id", "profile_uid", name="uq_agent_profiles_user_uid"),
+        Index("ix_agent_profiles_user_enabled", "app_user_id", "enabled"),
+        Index("ix_agent_profiles_user_updated", "app_user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_uid: Mapped[str] = mapped_column(String(64), index=True)
+    app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128), default="Standard Strategy Agent", index=True)
+    agent_type: Mapped[str] = mapped_column(String(32), default="standard", server_default="standard", index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    kill_switch_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    daily_run_time: Mapped[str] = mapped_column(String(8), default="15:45")
+    timezone: Mapped[str] = mapped_column(String(64), default="America/New_York")
+    universe_source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    manual_symbols: Mapped[list[str]] = mapped_column(JSON, default=list)
+    watchlist_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    default_watchlist_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    max_positions: Mapped[int] = mapped_column(Integer, default=5)
+    scan_depth: Mapped[int] = mapped_column(Integer, default=12)
+    max_dollars_per_trade: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_percent_of_paper_account_per_trade: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_new_trades_per_run: Mapped[int] = mapped_column(Integer, default=5)
+    max_new_trades_per_day: Mapped[int] = mapped_column(Integer, default=5)
+    max_open_agent_positions: Mapped[int] = mapped_column(Integer, default=5)
+    max_exposure_per_symbol: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_cash_reserve: Mapped[float] = mapped_column(Float, default=0.0)
+    allow_opens: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_closes: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_scale_resize: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_scale_ins: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_new_trade_when_symbol_already_open: Mapped[bool] = mapped_column(Boolean, default=False)
+    require_confirmation_for_restricted: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Agent-type configuration (isolated trigger eligibility; never changes scoring).
+    strategy_families: Mapped[list[str]] = mapped_column(JSON, default=list)
+    haco_direction_mode: Mapped[str] = mapped_column(String(16), default="long_only", server_default="long_only")
+    true_momentum_trigger_mode: Mapped[str] = mapped_column(String(16), default="review_only", server_default="review_only")
+    use_haco_filter: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    use_true_momentum_confirmation: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    notification_preference: Mapped[str] = mapped_column(String(16), default="none")
+    notification_phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sms_consent_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    sms_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduler_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    scheduler_last_check_result: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    scheduler_last_check_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scheduler_last_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    scheduler_last_run_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    scheduler_last_window_key: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True)
+
+
 class AgentModeRunModel(Base):
     __tablename__ = "agent_mode_runs"
     __table_args__ = (
@@ -652,6 +720,12 @@ class AgentModeRunModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     app_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"), index=True)
+    # Phase 11 — which Agent Profile produced this run. Nullable for legacy rows;
+    # backfilled to the user's default profile during migration. Name/type are
+    # denormalized so historical runs still render after a profile is deleted.
+    agent_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    agent_profile_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
     execution_mode: Mapped[str] = mapped_column(String(16), default="paper", index=True)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True, index=True)

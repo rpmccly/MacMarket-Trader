@@ -15,7 +15,7 @@ from macmarket_trader.config import settings
 from macmarket_trader.data.providers.market_data import DeterministicFallbackMarketDataProvider, MarketSnapshot
 from macmarket_trader.domain.models import AppUserModel, NotificationAttemptModel, OrderModel, PaperPositionModel, PaperTradeModel, WatchlistModel
 from macmarket_trader.storage.db import SessionLocal
-from macmarket_trader.storage.repositories import AgentModeRepository, PaperPortfolioRepository
+from macmarket_trader.storage.repositories import AgentModeRepository, AgentProfileRepository, PaperPortfolioRepository
 
 
 client = TestClient(app)
@@ -806,7 +806,11 @@ def test_agent_mode_run_due_skips_unapproved_users(monkeypatch) -> None:
 
     runs = AgentModeService().run_due(now=datetime(2026, 5, 31, 22, 0, tzinfo=timezone.utc))
 
-    assert runs == [{"app_user_id": user_id, "status": "skipped", "reason": "user_not_approved", "window_key": "2026-05-31|15:45|America/New_York"}]
+    assert len(runs) == 1
+    assert runs[0]["app_user_id"] == user_id
+    assert runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "user_not_approved"
+    assert runs[0]["window_key"].startswith("2026-05-31|15:45|America/New_York|agentprof_")
     assert _order_count() == 0
     assert _position_count() == 0
 
@@ -846,35 +850,65 @@ def test_agent_mode_scheduler_not_due_updates_status_without_run(monkeypatch) ->
         updates={"enabled": True, "daily_run_time": "15:45", "timezone": "UTC"},
     )
 
-    runs = AgentModeService().run_due(now=datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc), dry_run=True)
+    checked_at = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    status_at = checked_at + timedelta(minutes=20)
+    runs = AgentModeService().run_due(now=checked_at, dry_run=True)
+    monkeypatch.setattr("macmarket_trader.agent_mode.service.utc_now", lambda: status_at)
 
-    assert runs == [
-        {
-            "app_user_id": user_id,
-            "status": "skipped",
-            "reason": "not_due_yet",
-            "due_now": False,
-            "window_key": "2026-06-03|15:45|UTC",
-        }
-    ]
+    assert len(runs) == 1
+    assert runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "not_due_yet"
+    assert runs[0]["due_now"] is False
+    assert runs[0]["window_key"].startswith("2026-06-03|15:45|UTC|agentprof_")
     assert AgentModeRepository(SessionLocal).latest_run(app_user_id=user_id) is None
     status = client.get("/user/agent-mode/status", headers=USER_AUTH).json()
-    assert status["scheduler_health"] == "ok"
+    assert status["scheduler_health"] == "stale"
+    assert status["scheduler_check_age_seconds"] == 20 * 60
     assert status["scheduler_last_check_result"] == "skipped"
     assert status["scheduler_last_check_reason"] == "not_due_yet"
     assert status["scheduler_due_now"] is False
 
 
-def test_agent_mode_scheduler_disabled_user_records_skip() -> None:
+def test_agent_mode_scheduler_disabled_user_records_skip(monkeypatch) -> None:
     user_id = _approve_user()
     AgentModeRepository(SessionLocal).get_or_create_settings(app_user_id=user_id)
 
-    runs = AgentModeService().run_due(now=datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc))
+    checked_at = datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("macmarket_trader.agent_mode.service.utc_now", lambda: checked_at + timedelta(minutes=20))
+    runs = AgentModeService().run_due(now=checked_at)
 
-    assert runs == [{"app_user_id": user_id, "status": "skipped", "reason": "agent_disabled", "due_now": False}]
+    assert len(runs) == 1
+    assert runs[0]["app_user_id"] == user_id
+    assert runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "agent_disabled"
+    assert runs[0]["due_now"] is False
     status = client.get("/user/agent-mode/status", headers=USER_AUTH).json()
     assert status["scheduler_last_check_reason"] == "agent_disabled"
+    assert status["scheduler_health"] == "stale"
+
+
+def test_agent_mode_scheduler_recent_check_reports_ok(monkeypatch) -> None:
+    user_id = _approve_user()
+    repo = AgentModeRepository(SessionLocal)
+    repo.update_settings(app_user_id=user_id, updates={"enabled": True, "daily_run_time": "15:45", "timezone": "UTC"})
+    checked_at = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)
+    repo.update_scheduler_check(
+        app_user_id=user_id,
+        checked_at=checked_at,
+        result="skipped",
+        reason="not_due_yet",
+        due_at=datetime(2026, 6, 3, 15, 45, tzinfo=timezone.utc),
+        run_id=None,
+        window_key="2026-06-03|15:45|UTC",
+    )
+    monkeypatch.setattr("macmarket_trader.agent_mode.service.utc_now", lambda: checked_at + timedelta(minutes=2))
+
+    status = client.get("/user/agent-mode/status", headers=USER_AUTH).json()
+
     assert status["scheduler_health"] == "ok"
+    assert status["scheduler_last_check_result"] == "skipped"
+    assert status["scheduler_last_check_reason"] == "not_due_yet"
+    assert status["last_run_status"] == "never_run"
 
 
 def test_agent_mode_scheduler_manual_run_does_not_block_scheduled_window(monkeypatch) -> None:
@@ -908,44 +942,39 @@ def test_agent_mode_scheduler_manual_run_does_not_block_scheduled_window(monkeyp
 def test_agent_mode_scheduler_duplicate_window_guard_skips_existing_scheduled_run(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
-    repo = AgentModeRepository(SessionLocal)
-    repo.update_settings(app_user_id=user_id, updates={"enabled": True, "daily_run_time": "09:30", "timezone": "UTC"})
-    repo.create_run(
-        app_user_id=user_id,
-        run_id="agent_scheduled_existing",
-        status="completed",
-        execution_mode="paper",
-        dry_run=False,
-        intent_count=0,
-        executed_order_count=0,
-        request_json={"source": "scheduled_agent", "scheduled_window_key": "2026-06-03|09:30|UTC"},
-        response_json={"source": "scheduled_agent", "summary": {"source": "scheduled_agent", "scheduledWindowKey": "2026-06-03|09:30|UTC"}},
-        completed_at=datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc),
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id, updates={"enabled": True, "daily_run_time": "09:30", "timezone": "UTC"}
     )
+    service = AgentModeService()
 
-    runs = AgentModeService().run_due(now=datetime(2026, 6, 3, 15, 5, tzinfo=timezone.utc), dry_run=True)
+    # First scheduled run in the window records a scheduled_agent run for the profile.
+    first = service.run_due(now=datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc), no_notifications=True)
+    assert first[0]["status"] == "completed"
 
-    assert runs == [
-        {
-            "app_user_id": user_id,
-            "status": "skipped",
-            "reason": "already_ran_for_window",
-            "runId": "agent_scheduled_existing",
-            "window_key": "2026-06-03|09:30|UTC",
-        }
-    ]
+    # A second check in the same profile window is deduped by the profile-qualified key.
+    second = service.run_due(now=datetime(2026, 6, 3, 15, 5, tzinfo=timezone.utc), dry_run=True, no_notifications=True)
+
+    assert second[0]["status"] == "skipped"
+    assert second[0]["reason"] == "already_ran_for_window"
+    assert second[0]["runId"] == first[0]["runId"]
+    assert second[0]["window_key"].startswith("2026-06-03|09:30|UTC|agentprof_")
 
 
 def test_agent_mode_scheduler_window_claim_prevents_duplicate_check(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
-    repo = AgentModeRepository(SessionLocal)
-    repo.update_settings(app_user_id=user_id, updates={"enabled": True, "daily_run_time": "09:30", "timezone": "UTC"})
-    assert repo.claim_scheduler_window(
-        app_user_id=user_id,
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id, updates={"enabled": True, "daily_run_time": "09:30", "timezone": "UTC"}
+    )
+    profile_repo = AgentProfileRepository(SessionLocal)
+    profile_repo.migrate_legacy_settings_to_profiles()
+    profile = profile_repo.get_default_profile(app_user_id=user_id)
+    window_key = f"2026-06-03|09:30|UTC|{profile.profile_uid}"
+    assert profile_repo.claim_scheduler_window(
+        profile_id=profile.id,
         checked_at=datetime(2026, 6, 3, 15, 4, tzinfo=timezone.utc),
         due_at=datetime(2026, 6, 3, 9, 30, tzinfo=timezone.utc),
-        window_key="2026-06-03|09:30|UTC",
+        window_key=window_key,
         stale_after_seconds=900,
     )
 
@@ -955,16 +984,11 @@ def test_agent_mode_scheduler_window_claim_prevents_duplicate_check(monkeypatch)
         no_notifications=True,
     )
 
-    assert runs == [
-        {
-            "app_user_id": user_id,
-            "status": "skipped",
-            "reason": "scheduler_window_already_claimed",
-            "due_now": True,
-            "window_key": "2026-06-03|09:30|UTC",
-        }
-    ]
-    assert repo.latest_run(app_user_id=user_id) is None
+    assert runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "scheduler_window_already_claimed"
+    assert runs[0]["due_now"] is True
+    assert runs[0]["window_key"] == window_key
+    assert profile_repo.latest_run(app_user_id=user_id, agent_profile_id=profile.id) is None
 
 
 def test_agent_mode_scheduler_uses_selected_watchlist(monkeypatch) -> None:
@@ -1036,7 +1060,7 @@ def test_agent_mode_scheduler_timezone_due_conversion(monkeypatch) -> None:
 
     assert not_due[0]["reason"] == "not_due_yet"
     assert due[0]["status"] == "completed"
-    assert due[0]["window_key"] == "2026-06-03|09:30|America/New_York"
+    assert due[0]["window_key"].startswith("2026-06-03|09:30|America/New_York|agentprof_")
 
 
 def test_agent_mode_scheduler_failure_creates_safe_error_record(monkeypatch) -> None:
@@ -1068,11 +1092,13 @@ def test_agent_mode_scheduler_status_reflects_completed_check(monkeypatch) -> No
         app_user_id=user_id,
         updates={"enabled": True, "daily_run_time": "09:30", "timezone": "UTC"},
     )
+    checked_at = datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc)
     AgentModeService().run_due(
-        now=datetime(2026, 6, 3, 15, 0, tzinfo=timezone.utc),
+        now=checked_at,
         dry_run=True,
         no_notifications=True,
     )
+    monkeypatch.setattr("macmarket_trader.agent_mode.service.utc_now", lambda: checked_at + timedelta(minutes=2))
 
     payload = client.get("/user/agent-mode/status", headers=USER_AUTH).json()
 

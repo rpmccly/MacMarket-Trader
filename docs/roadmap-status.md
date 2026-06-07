@@ -1,6 +1,45 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-06-03
+Last updated: 2026-06-07
+
+## 2026-06-07 Update - Phase 11 Agent Profiles (multi-agent)
+
+Expanded Agent Mode from one settings row per user into multiple user-scoped
+**Agent Profiles**, paper-only throughout. See `docs/agent-mode.md` for the full
+contract.
+
+- New additive `agent_profiles` table (mirrors the `MomentumHeatmapProfileModel`
+  profile pattern) plus nullable `agent_mode_runs.agent_profile_id`,
+  `agent_profile_name`, and `agent_type` columns. `apply_schema_updates()` now
+  also runs from `_safe_init_db_for_cli` and the FastAPI `lifespan`, so the
+  additive columns/table self-heal regardless of deploy ordering.
+- Idempotent migration converts each legacy `agent_mode_settings` row into one
+  default **"Standard Strategy Agent"** profile (copying schedule, sizing,
+  notifications, and the scheduler latch) and backfills existing runs. The legacy
+  table is preserved for rollback.
+- Four agent types: `standard` (selected strategy families), `haco_direction`
+  (HACO long/short direction), `true_momentum` (conservative/balanced/aggressive/
+  review_only), and `hybrid` (Standard + optional HACO filter + optional
+  momentum confirmation). Triggers (`agent_mode/triggers.py`) are isolated
+  eligibility filters that only read existing HACO/True Momentum outputs; they do
+  not change recommendation scoring or indicator math. Bearish/short/exit reads
+  are review-only; no paper shorts are created. New True Momentum profiles
+  default to `review_only`.
+- Scheduler evaluates all enabled profiles per user with a per-profile latch and
+  duplicate guard (`window_key` = `date|HH:MM|tz|profile_uid`). Diagnostics list
+  all profiles and due state. One notification digest per profile run per
+  channel; subject/body/SMS include the profile name and agent type.
+- Runs/trades/performance scope by profile (ownership follows the OPEN intent) or
+  aggregate "all agents". Frontend `/agent-mode` is now an Agent Profiles cockpit
+  (profile cards with per-profile enable/kill-switch, All-agents/single filter,
+  create/edit with agent-type controls).
+- Validation: pytest 1172 passed / 4 skipped; new `tests/test_agent_profiles.py`
+  + legacy-DB migration fixture in `tests/test_sqlite_schema_updates.py`. Frontend
+  vitest 1013 passed, `tsc --noEmit` clean, `npm run build` succeeds.
+
+No recommendation scoring, strategy/indicator math, provider defaults,
+risk-calendar decisions, Replay behavior, broker routing, live trading, or
+non-Agent paper lifecycle behavior changed.
 
 ## 2026-06-03 Update - Agent Scheduler Startup Hardening
 

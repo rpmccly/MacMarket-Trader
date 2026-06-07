@@ -760,6 +760,9 @@ def render_agent_mode_run_digest_html(
     held: list[dict],
     blocked: list[dict],
     app_url: str,
+    profile_name: str | None = None,
+    agent_type: str | None = None,
+    reviewed: list[dict] | None = None,
 ) -> str:
     """Return a branded, concise HTML digest for one Agent Mode run."""
     link = f"{app_url.rstrip('/')}/agent-mode?tab=Trades"
@@ -784,7 +787,15 @@ def render_agent_mode_run_digest_html(
         f'<td align="center" style="border-left:1px solid {_BORDER};padding:12px 8px;"><p style="margin:0;font-family:Arial,sans-serif;font-size:25px;font-weight:700;color:{_RED};">{_e(summary.get("blockedActions", 0))}</p><p style="margin:4px 0 0;font-family:Arial,sans-serif;font-size:9px;font-weight:600;color:{_TEXT_SECONDARY};text-transform:uppercase;letter-spacing:1px;">Blocked</p></td>'
         f'</tr></table></td></tr>'
         f'<tr><td style="background-color:{_BG_CARD};padding:20px 28px;">'
-        f'<p style="margin:0 0 8px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_SECONDARY};line-height:1.6;">'
+        + (
+            f'<p style="margin:0 0 8px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_PRIMARY};line-height:1.6;">'
+            f'Agent: <strong>{_e(profile_name)}</strong>'
+            + (f' &nbsp; Type: {_e(str(agent_type).replace("_", " "))}' if agent_type else "")
+            + f'</p>'
+            if profile_name
+            else ""
+        )
+        + f'<p style="margin:0 0 8px 0;font-family:Arial,sans-serif;font-size:13px;color:{_TEXT_SECONDARY};line-height:1.6;">'
         f'Watchlist: <strong style="color:{_TEXT_PRIMARY};">{_e(watchlist_name or "-")}</strong>'
         f' &nbsp; Candidates reviewed: {_e(summary.get("candidateCount", 0))}'
         f' &nbsp; Positions reviewed: {_e(summary.get("positionsBeforeCount", 0))}'
@@ -797,6 +808,7 @@ def render_agent_mode_run_digest_html(
         + _agent_digest_section("Opened", opened)
         + _agent_digest_section("Closed", closed)
         + _agent_digest_section("Held / Reviewed", held)
+        + _agent_digest_section("Reviewed (no trade)", reviewed or [])
         + _agent_digest_section("Blocked / Skipped", blocked)
         + _footer(ran_at)
     )
