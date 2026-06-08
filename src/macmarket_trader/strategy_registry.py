@@ -97,6 +97,23 @@ REGISTRY: list[StrategyRegistryEntry] = [
         regime_fit="any — signal-driven",
     ),
     StrategyRegistryEntry(
+        strategy_id="atr_trailing_stop",
+        display_name="ATR Trailing Stop",
+        market_mode=MarketMode.EQUITIES,
+        status="live",
+        summary="ATR Trailing Stop direction (LONG/SHORT) and trailing-stop/risk reference.",
+        directional_profile="directional",
+        execution_readiness="live",
+        required_data_inputs=["daily_bars", "atr"],
+        operator_notes=[
+            "ATR LONG is a bullish directional state; ATR SHORT is bearish.",
+            "A fresh flip is a stronger signal than a continuing state.",
+            "The trailing stop doubles as the protective stop / risk reference.",
+        ],
+        description="Deterministic ATR Trailing Stop (ThinkScript parity): a directional state that flips long/short when price crosses the volatility-scaled trailing stop. Both a signal and a trailing risk level.",
+        regime_fit="trending / volatility-aware",
+    ),
+    StrategyRegistryEntry(
         strategy_id="iron_condor",
         display_name="Iron Condor",
         market_mode=MarketMode.OPTIONS,

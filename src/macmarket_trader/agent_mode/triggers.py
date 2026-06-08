@@ -23,9 +23,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from macmarket_trader.domain.schemas import Bar
+from macmarket_trader.indicators.atr_trailing_stop import compute_atr_trailing_stop
 from macmarket_trader.indicators.haco import compute_haco_states
 from macmarket_trader.indicators.true_momentum import compute_true_momentum
 from macmarket_trader.indicators.true_momentum_score import compute_true_momentum_score
+
+ATR_LABEL = "ATR Trailing Stop"
 
 
 # Verdict kinds.
@@ -42,6 +45,12 @@ HYBRID_LABEL = "Hybrid"
 
 HACO_DIRECTION_MODES = {"long_only", "short_only", "long_and_short"}
 TRUE_MOMENTUM_TRIGGER_MODES = {"conservative", "balanced", "aggressive", "review_only"}
+
+# Canonical, operator-facing outcome reasons (see service run output taxonomy).
+REASON_PAPER_SHORT_NOT_SUPPORTED = "paper_short_not_supported"
+REASON_BEARISH_REVIEW_ONLY = "bearish_review_only"
+REASON_REVIEW_ONLY_MODE = "review_only_mode"
+REASON_TRIGGER_NOT_MET = "trigger_not_met"
 
 _LONG_TERM_BULLISH = {"bull", "max_bull"}
 _LONG_TERM_NEUTRAL_OR_IMPROVING = {"neutral_up", "neutral"}
@@ -130,21 +139,18 @@ def evaluate_haco_eligibility(
             detail,
         )
     if state == "red":
-        if mode in {"short_only", "long_and_short"}:
-            return TriggerVerdict(
-                SHORT_REVIEW, HACO_DIRECTION_LABEL, "haco_short_review_only",
-                "HACO direction is short (red); marked short-bias review (paper "
-                "shorting is not supported).",
-                detail,
-            )
+        # No explicit paper-short lifecycle exists, so a short/red signal never
+        # opens an order in ANY mode (incl. short_only / long_and_short). It is
+        # surfaced as a review with a clear reason rather than a paper short.
         return TriggerVerdict(
-            NEUTRAL_REVIEW, HACO_DIRECTION_LABEL, "haco_short_not_acted",
-            "HACO direction is short; this long-only profile holds cash.",
+            SHORT_REVIEW, HACO_DIRECTION_LABEL, REASON_PAPER_SHORT_NOT_SUPPORTED,
+            "HACO direction is short (red); paper shorting is not supported, so this "
+            "is review-only (no paper order).",
             detail,
         )
     return TriggerVerdict(
-        NEUTRAL_REVIEW, HACO_DIRECTION_LABEL, "haco_neutral",
-        "HACO direction is not clearly long or short.",
+        NEUTRAL_REVIEW, HACO_DIRECTION_LABEL, REASON_TRIGGER_NOT_MET,
+        "HACO direction is not clearly long; no paper long trigger.",
         detail,
     )
 
@@ -245,20 +251,20 @@ def evaluate_true_momentum_eligibility(
         )
     if long_term_bearish and short_term_bearish:
         return TriggerVerdict(
-            SHORT_REVIEW, TRUE_MOMENTUM_LABEL, "momentum_bearish_review_only",
-            "True Momentum is bearish on both timeframes; marked short-bias review "
+            SHORT_REVIEW, TRUE_MOMENTUM_LABEL, REASON_BEARISH_REVIEW_ONLY,
+            "True Momentum is bearish on both timeframes; review-only "
             "(paper shorting is not supported).",
             detail,
         )
     if trigger_mode == "review_only":
         return TriggerVerdict(
-            EXIT_REVIEW, TRUE_MOMENTUM_LABEL, "momentum_review_only_mode",
+            EXIT_REVIEW, TRUE_MOMENTUM_LABEL, REASON_REVIEW_ONLY_MODE,
             f"True Momentum review-only mode: {states['total_label'] or states['total_state']} "
             "(no paper open).",
             detail,
         )
     return TriggerVerdict(
-        NEUTRAL_REVIEW, TRUE_MOMENTUM_LABEL, "momentum_trigger_not_met",
+        NEUTRAL_REVIEW, TRUE_MOMENTUM_LABEL, REASON_TRIGGER_NOT_MET,
         f"True Momentum {trigger_mode} trigger not met "
         f"({states['total_label'] or states['total_state']}).",
         detail,
@@ -379,3 +385,176 @@ def evaluate_agent_eligibility(
         f"{strategy_label} candidate did not rank as a top candidate.",
         {"strategy": strategy_label},
     )
+
+
+# ── Phase 12 — directional signals + bidirectional decision engine ────────────
+@dataclass(frozen=True)
+class DirectionalSignal:
+    """A directional read (long/short/neutral) from a directional agent's indicator.
+
+    Read-only; the protective_stop is the indicator's own level (ATR trailing stop)
+    used by the service to size an indicator-driven open. Whether a short is acted
+    on is decided downstream by :func:`decide_bidirectional_action` + profile flags.
+    """
+
+    direction: Literal["long", "short", "neutral"]
+    fresh_flip: bool
+    primary_trigger: str
+    reason: str
+    summary: str
+    protective_stop: float | None = None
+    detail: dict[str, object] = field(default_factory=dict)
+
+
+def evaluate_atr_signal(
+    bars: Sequence[Bar],
+    *,
+    profile: Mapping[str, object] | None = None,
+    timeframe: str = "1D",
+) -> DirectionalSignal:
+    """ATR Trailing Stop direction + fresh-flip + trailing-stop level (read-only)."""
+    cfg = {
+        "trail_type": (profile or {}).get("atr_trail_type", "modified"),
+        "atr_period": (profile or {}).get("atr_period", 9),
+        "atr_factor": (profile or {}).get("atr_factor", 2.9),
+        "first_trade": (profile or {}).get("atr_first_trade", "long"),
+        "average_type": (profile or {}).get("atr_average_type", "wilders"),
+    }
+    try:
+        series = compute_atr_trailing_stop(bars, config=cfg)
+    except Exception as exc:  # noqa: BLE001 - degrade to neutral on bad data.
+        return DirectionalSignal("neutral", False, ATR_LABEL, "atr_unavailable", f"ATR unavailable ({type(exc).__name__}).")
+    point = series.latest
+    if point is None:
+        return DirectionalSignal("neutral", False, ATR_LABEL, "atr_insufficient_data", "Not enough bars for an ATR read.")
+    direction: Literal["long", "short", "neutral"] = point.state if point.state in {"long", "short"} else "neutral"
+    fresh = bool(point.buy_signal or point.sell_signal)
+    reason = f"atr_{direction}" + ("_flip" if fresh else "")
+    summary = (
+        f"ATR Trailing Stop is {direction.upper()}"
+        + (" (fresh flip)" if fresh else "")
+        + f"; trailing stop {point.trailing_stop}."
+    )
+    return DirectionalSignal(
+        direction, fresh, ATR_LABEL, reason, summary,
+        protective_stop=point.trailing_stop,
+        detail={
+            "state": point.state, "trailing_stop": point.trailing_stop,
+            "stop_distance": point.stop_distance, "stop_distance_pct": point.stop_distance_pct,
+            "bars_since_flip": point.bars_since_flip, "buy_signal": point.buy_signal,
+            "sell_signal": point.sell_signal, "atr_timeframe": timeframe,
+        },
+    )
+
+
+def directional_signal(
+    *,
+    agent_type: str,
+    profile: Mapping[str, object],
+    bars: Sequence[Bar],
+    candidate: Mapping[str, object] | None = None,
+    timeframe: str = "1D",
+) -> DirectionalSignal:
+    """Map a directional agent's indicator to a long/short/neutral signal.
+
+    Reuses the existing HACO/True Momentum verdict logic (no new indicator math)
+    and the ATR engine. Hybrid uses ATR as an optional directional confirmation.
+    """
+    agent_type = str(agent_type or "standard").strip().lower()
+    candidate = candidate or {}
+
+    if agent_type == "atr_trailing_stop":
+        return evaluate_atr_signal(bars, profile=profile, timeframe=timeframe)
+
+    if agent_type == "haco_direction":
+        verdict = evaluate_haco_eligibility(
+            bars, mode=str(profile.get("haco_direction_mode") or "long_only"), timeframe=timeframe
+        )
+        state = str(verdict.detail.get("haco_state") or "")
+        direction = "long" if state == "green" else "short" if state == "red" else "neutral"
+        fresh = str(verdict.detail.get("haco_flip") or "") in {"buy", "sell"}
+        return DirectionalSignal(direction, fresh, HACO_DIRECTION_LABEL, verdict.reason, verdict.summary, detail=verdict.detail)
+
+    if agent_type == "true_momentum":
+        verdict = evaluate_true_momentum_eligibility(
+            bars, trigger_mode=str(profile.get("true_momentum_trigger_mode") or "review_only"), timeframe=timeframe
+        )
+        if verdict.kind == LONG_ELIGIBLE:
+            direction = "long"
+        elif verdict.kind == SHORT_REVIEW:
+            direction = "short"
+        else:
+            direction = "neutral"
+        fresh = bool(verdict.detail.get("new_bull_signal") or verdict.detail.get("new_bear_signal"))
+        return DirectionalSignal(direction, fresh, TRUE_MOMENTUM_LABEL, verdict.reason, verdict.summary, detail=verdict.detail)
+
+    if agent_type == "hybrid":
+        verdict = evaluate_agent_eligibility(agent_type="hybrid", profile=profile, bars=bars, candidate=candidate, timeframe=timeframe)
+        direction = "long" if verdict.kind == LONG_ELIGIBLE else "short" if verdict.kind == SHORT_REVIEW else "neutral"
+        if direction == "long" and bool(profile.get("use_atr_filter")):
+            atr = evaluate_atr_signal(bars, profile=profile, timeframe=timeframe)
+            if atr.direction != "long":
+                return DirectionalSignal("neutral", False, HYBRID_LABEL, "hybrid_atr_filter_block", "Hybrid: ATR filter not long.", detail=verdict.detail)
+        return DirectionalSignal(direction, False, HYBRID_LABEL, verdict.reason, verdict.summary, detail=verdict.detail)
+
+    return DirectionalSignal("neutral", False, STANDARD_LABEL, "not_directional", "Standard agents are long-only via ranking.")
+
+
+def decide_bidirectional_action(
+    *,
+    signal_direction: str,
+    fresh_flip: bool,
+    own_side: str | None,
+    foreign_opposing: bool,
+    allow_shorts: bool,
+    allow_direction_flip: bool,
+    close_opposite_before_open: bool,
+    close_on_opposite_signal: bool,
+    hedge_allowed: bool,
+) -> dict[str, object]:
+    """Pure decision engine: (own position, signal, profile flags) → intended action.
+
+    ``own_side`` is THIS profile's own open side (long/short/None) — execution is
+    profile-owned; a profile never closes manual/foreign positions. ``foreign_opposing``
+    flags an opposing position owned by another profile or opened manually.
+
+    Returns {action, open_side, close_own, short_blocked}. Risk/sizing gates may later
+    downgrade an ``opened_*``/``flipped_*`` to blocked_by_risk/blocked_by_sizing.
+    """
+    direction = str(signal_direction or "neutral").lower()
+
+    if direction == "neutral":
+        if own_side == "long":
+            return {"action": "held_long", "open_side": None, "close_own": False, "short_blocked": False}
+        if own_side == "short":
+            return {"action": "held_short", "open_side": None, "close_own": False, "short_blocked": False}
+        return {"action": "no_signal", "open_side": None, "close_own": False, "short_blocked": False}
+
+    # Cross-profile/manual opposing exposure: never touch the foreign position; do not
+    # add opposing exposure unless an explicit hedge is allowed.
+    if foreign_opposing and own_side is None and not hedge_allowed:
+        return {"action": "review_opposing_external_position", "open_side": None, "close_own": False, "short_blocked": False}
+
+    if own_side is None:
+        if direction == "long":
+            return {"action": "opened_long", "open_side": "long", "close_own": False, "short_blocked": False}
+        if allow_shorts:
+            return {"action": "opened_short", "open_side": "short", "close_own": False, "short_blocked": False}
+        return {"action": "blocked_by_short_not_allowed", "open_side": None, "close_own": False, "short_blocked": True}
+
+    if own_side == direction:
+        return {"action": f"held_{direction}", "open_side": None, "close_own": False, "short_blocked": False}
+
+    # own_side opposes the signal → flip or close-on-opposite.
+    if direction == "short":  # own long, signal short
+        if allow_shorts and allow_direction_flip:
+            return {"action": "flipped_long_to_short", "open_side": "short", "close_own": True, "short_blocked": False}
+        if close_on_opposite_signal:
+            return {"action": "closed_long", "open_side": None, "close_own": True, "short_blocked": not allow_shorts}
+        return {"action": "held_long", "open_side": None, "close_own": False, "short_blocked": False}
+    # own short, signal long
+    if allow_direction_flip:
+        return {"action": "flipped_short_to_long", "open_side": "long", "close_own": True, "short_blocked": False}
+    if close_on_opposite_signal:
+        return {"action": "closed_short", "open_side": None, "close_own": True, "short_blocked": False}
+    return {"action": "held_short", "open_side": None, "close_own": False, "short_blocked": False}

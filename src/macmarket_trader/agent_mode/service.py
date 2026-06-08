@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from macmarket_trader.agent_mode import market_session
 from macmarket_trader.agent_mode import triggers as agent_triggers
 from macmarket_trader.api.routes import admin as workflow
 from macmarket_trader.config import settings
@@ -124,6 +125,23 @@ class AgentModeService:
             "true_momentum_trigger_mode": str(getattr(row, "true_momentum_trigger_mode", "review_only") or "review_only"),
             "use_haco_filter": bool(getattr(row, "use_haco_filter", False)),
             "use_true_momentum_confirmation": bool(getattr(row, "use_true_momentum_confirmation", False)),
+            # Phase 12 — ATR config + directional/bidirectional controls.
+            "atr_trail_type": str(getattr(row, "atr_trail_type", "modified") or "modified"),
+            "atr_period": int(getattr(row, "atr_period", 9) or 9),
+            "atr_factor": float(getattr(row, "atr_factor", 2.9) or 2.9),
+            "atr_first_trade": str(getattr(row, "atr_first_trade", "long") or "long"),
+            "atr_average_type": str(getattr(row, "atr_average_type", "wilders") or "wilders"),
+            "atr_decision_timeframe": str(getattr(row, "atr_decision_timeframe", "1D") or "1D"),
+            "atr_alignment_mode": str(getattr(row, "atr_alignment_mode", "decision_timeframe_only") or "decision_timeframe_only"),
+            "allow_shorts": bool(getattr(row, "allow_shorts", False)),
+            "allow_direction_flip": bool(getattr(row, "allow_direction_flip", True)),
+            "close_opposite_before_open": bool(getattr(row, "close_opposite_before_open", True)),
+            "close_on_opposite_signal": bool(getattr(row, "close_on_opposite_signal", True)),
+            "hedge_allowed": bool(getattr(row, "hedge_allowed", False)),
+            "use_atr_filter": bool(getattr(row, "use_atr_filter", False)),
+            "prevent_opposing_agent_positions_across_profiles": bool(
+                getattr(row, "prevent_opposing_agent_positions_across_profiles", False)
+            ),
             "paper_only": True,
             "execution_mode": "paper",
         }
@@ -207,6 +225,13 @@ class AgentModeService:
             "sms_notifications_enabled",
             "use_haco_filter",
             "use_true_momentum_confirmation",
+            "use_atr_filter",
+            "allow_shorts",
+            "allow_direction_flip",
+            "close_opposite_before_open",
+            "close_on_opposite_signal",
+            "hedge_allowed",
+            "prevent_opposing_agent_positions_across_profiles",
         ):
             if key in payload:
                 updates[key] = self._coerce_bool(payload.get(key), default=False)
@@ -304,6 +329,34 @@ class AgentModeService:
             if mode not in {"conservative", "balanced", "aggressive", "review_only"}:
                 raise HTTPException(status_code=400, detail="unsupported_true_momentum_trigger_mode")
             updates["true_momentum_trigger_mode"] = mode
+        # Phase 12 — ATR Trailing Stop config (validated; defaults frozen by the engine).
+        if "atr_trail_type" in payload:
+            value = str(payload.get("atr_trail_type") or "modified").strip().lower()
+            if value not in {"modified", "unmodified"}:
+                raise HTTPException(status_code=400, detail="unsupported_atr_trail_type")
+            updates["atr_trail_type"] = value
+        if "atr_average_type" in payload:
+            value = str(payload.get("atr_average_type") or "wilders").strip().lower()
+            if value not in {"wilders", "simple", "exponential"}:
+                raise HTTPException(status_code=400, detail="unsupported_atr_average_type")
+            updates["atr_average_type"] = value
+        if "atr_first_trade" in payload:
+            value = str(payload.get("atr_first_trade") or "long").strip().lower()
+            if value not in {"long", "short"}:
+                raise HTTPException(status_code=400, detail="unsupported_atr_first_trade")
+            updates["atr_first_trade"] = value
+        if "atr_alignment_mode" in payload:
+            value = str(payload.get("atr_alignment_mode") or "decision_timeframe_only").strip().lower()
+            if value not in {"decision_timeframe_only", "daily_and_hourly", "multi_timeframe_alignment"}:
+                raise HTTPException(status_code=400, detail="unsupported_atr_alignment_mode")
+            updates["atr_alignment_mode"] = value
+        if "atr_decision_timeframe" in payload:
+            updates["atr_decision_timeframe"] = str(payload.get("atr_decision_timeframe") or "1D").strip()[:8] or "1D"
+        if "atr_period" in payload:
+            updates["atr_period"] = self._coerce_int(payload.get("atr_period"), default=9, minimum=1, maximum=200)
+        if "atr_factor" in payload:
+            parsed = self._coerce_optional_float(payload.get("atr_factor"), minimum=0.1, maximum=100.0, field_name="atr_factor")
+            updates["atr_factor"] = parsed if parsed is not None else 2.9
         return updates
 
     def _resolve_profile_or_404(self, *, user, profile_uid=None, profile_id=None):
@@ -383,7 +436,7 @@ class AgentModeService:
         if mode not in {"paper", "paper_only"}:
             raise HTTPException(status_code=409, detail="Agent Mode only supports paper mode.")
         agent_type = str(payload.get("agent_type") or payload.get("template") or "standard").strip().lower()
-        if agent_type not in {"standard", "haco_direction", "true_momentum", "hybrid"}:
+        if agent_type not in {"standard", "haco_direction", "true_momentum", "hybrid", "atr_trailing_stop"}:
             raise HTTPException(status_code=400, detail="unsupported_agent_type")
         # Validate the config fields, then merge onto an agent-type default payload.
         updates = self.normalize_settings_update(payload)
@@ -714,6 +767,33 @@ class AgentModeService:
         tomorrow_local = due_at.astimezone(zone) + timedelta(days=1) if isinstance(due_at, datetime) else now.astimezone(zone) + timedelta(days=1)
         return tomorrow_local.astimezone(timezone.utc)
 
+    def _next_eligible_trading_run(
+        self,
+        *,
+        settings_payload: dict[str, object],
+        now: datetime,
+        already_ran_window: bool,
+    ) -> str | None:
+        """Next scheduled run that lands on an open US trading day (ISO 8601 UTC).
+
+        Walks the profile's next scheduled candidate forward (preserving the local
+        run time across day boundaries) until it falls on a day the US market is
+        open, so the operator sees when the agent will actually next trade.
+        """
+        candidate = self._next_scheduled_candidate(
+            settings_payload=settings_payload, now=now, already_ran_window=already_ran_window
+        )
+        if candidate is None:
+            return None
+        zone = self._setting_zone(str(settings_payload.get("timezone") or "America/New_York"))
+        market_zone = ZoneInfo(market_session.MARKET_TIMEZONE)
+        for _ in range(14):  # bounded; covers any weekend+holiday cluster
+            if market_session.is_trading_day(candidate.astimezone(market_zone).date()):
+                return candidate.astimezone(timezone.utc).isoformat()
+            next_local = candidate.astimezone(zone) + timedelta(days=1)
+            candidate = next_local.astimezone(timezone.utc)
+        return candidate.astimezone(timezone.utc).isoformat()
+
     def _next_run_at(
         self,
         *,
@@ -901,6 +981,13 @@ class AgentModeService:
             intent for intent in final_intents
             if intent.get("intent") == "CASH_NO_TRADE" and intent.get("status") == "review_only"
         ]
+        # Ownership boundary: positions this profile does NOT own (another agent's
+        # or a manual trade) that were close-worthy are reviewed, never closed.
+        ownership_block_reasons = {"blocked_foreign_agent_position", "blocked_manual_position"}
+        reviewed_external = [
+            intent for intent in trigger_reviews
+            if str(intent.get("reason")) in ownership_block_reasons
+        ]
         linked_order_ids = sorted(
             {
                 str(intent.get("order_id"))
@@ -934,6 +1021,7 @@ class AgentModeService:
             "holds": sum(1 for intent in final_intents if intent.get("intent") == "HOLD"),
             "blockedActions": len(blocked_actions),
             "triggerReviewOnly": len(trigger_reviews),
+            "reviewedExternalPositions": len(reviewed_external),
             "cashNoTrade": sum(1 for intent in final_intents if intent.get("intent") == "CASH_NO_TRADE"),
             "totalExecutedActions": len(paper_opens) + len(paper_closes),
             "realizedPnlFromClosedPositions": cls._round_money(realized_from_closes),
@@ -1068,10 +1156,11 @@ class AgentModeService:
             f"Watchlist: {watchlist_name}",
             f"Candidates reviewed: {len(candidates)}",
             f"Positions reviewed: {summary.get('positionsBeforeCount', 0)}",
-            f"Opened: {summary.get('paperOpensExecuted', 0)}",
-            f"Closed: {summary.get('paperClosesExecuted', 0)}",
+            f"Opened (own): {summary.get('paperOpensExecuted', 0)}",
+            f"Closed (own): {summary.get('paperClosesExecuted', 0)}",
             f"Held/reviewed: {summary.get('holds', 0)}",
             f"Reviewed (no trade): {summary.get('triggerReviewOnly', 0)}",
+            f"Reviewed (not owned - another agent/manual, never closed): {summary.get('reviewedExternalPositions', 0)}",
             f"Blocked/skipped: {summary.get('blockedActions', 0)}",
             f"Open Agent Mode: {link}",
             "",
@@ -1237,12 +1326,40 @@ class AgentModeService:
             count += int(summary.get("paperOpensExecuted", 0) or 0)
         return count
 
-    def _position_intent(self, review: dict[str, object], *, settings_payload: dict[str, object], dry_run: bool) -> dict[str, object]:
+    def _position_intent(
+        self,
+        review: dict[str, object],
+        *,
+        settings_payload: dict[str, object],
+        dry_run: bool,
+        owner_kind: str = "own",
+    ) -> dict[str, object] | None:
         action = str(review.get("action_classification") or "review_unavailable")
         allow_closes = bool(settings_payload.get("allow_closes", True))
         allow_scale = bool(settings_payload.get("allow_scale_resize", False))
         close_actions = {"stop_triggered", "invalidated", "time_stop_exit", "target_reached_take_profit"}
-        if action in close_actions and allow_closes:
+        is_close_worthy = action in close_actions
+        # Ownership boundary: never close/flip a position this profile does not own.
+        if owner_kind != "own":
+            if not is_close_worthy:
+                return None  # do not emit holds/scale reviews for others' positions
+            block_reason = "blocked_manual_position" if owner_kind == "manual" else "blocked_foreign_agent_position"
+            owner_label = "a manual paper trade" if owner_kind == "manual" else "another Agent Profile"
+            return {
+                "intent": "CASH_NO_TRADE",
+                "symbol": review.get("symbol"),
+                "side": review.get("side"),
+                "position_id": review.get("position_id"),
+                "status": "review_only",
+                "review_only": True,
+                "reason": block_reason,
+                "position_owner": owner_kind,
+                "summary": f"Review only: {review.get('symbol')} would close on {action}, but the open position belongs to {owner_label}. Agent Mode never closes positions it does not own.",
+                "paper_only": True,
+                "no_live_routing": True,
+                "review": review,
+            }
+        if is_close_worthy and allow_closes:
             intent = "CLOSE_PAPER"
         elif action == "scale_in_candidate" and allow_scale:
             intent = "SCALE_IN_PAPER"
@@ -1255,6 +1372,8 @@ class AgentModeService:
             "position_id": review.get("position_id"),
             "status": "dry_run" if dry_run else "pending",
             "reason": action,
+            "position_owner": "own",
+            "action_reason": "managed_own_position",
             "summary": review.get("action_summary"),
             "paper_only": True,
             "no_live_routing": True,
@@ -1335,6 +1454,7 @@ class AgentModeService:
             replay_run_id=position.replay_run_id,
             order_id=position.order_id,
             close_reason=f"agent_mode:{intent.get('reason')}",
+            agent_profile_id=getattr(position, "agent_profile_id", None),
         )
         self.paper_repo.close_position(position_id=position.id, closed_at=now)
         return {
@@ -1358,6 +1478,7 @@ class AgentModeService:
         timeframe: str,
         settings_payload: dict[str, object],
         open_positions: list[object],
+        agent_profile_id: int | None = None,
     ) -> dict[str, object]:
         symbol = str(candidate.get("symbol") or "").upper()
         bars_tuple = bars_by_symbol.get(symbol)
@@ -1394,10 +1515,11 @@ class AgentModeService:
                 "status": "review_only",
                 "review_only": True,
                 "side": resolved_side or None,
-                "reason": "short_recommendation_review_only",
+                "reason": "paper_short_not_supported",
                 "summary": (
                     "Review only: deterministic recommendation resolved "
-                    f"{resolved_side or 'non-long'}; Agent Mode never routes paper shorts."
+                    f"{resolved_side or 'non-long'}; paper shorting is not supported, "
+                    "so Agent Mode never routes this as a paper order."
                 ),
                 "recommendation_id": rec.recommendation_id,
                 "paper_only": True,
@@ -1449,10 +1571,12 @@ class AgentModeService:
                 recommendation_id=rec.recommendation_id,
                 replay_run_id=None,
                 order_id=order.order_id,
+                agent_profile_id=agent_profile_id,
             )
         return {
             **intent,
             "status": "executed",
+            "outcome": "opened_paper_long",
             "order_id": order.order_id,
             "position_id": position.id if position is not None else None,
             "recommendation_id": rec.recommendation_id,
@@ -1514,6 +1638,12 @@ class AgentModeService:
         mark_price = self._safe_float(mark)
         cost_basis = self._round_money(qty * avg_entry_price) if qty is not None and avg_entry_price is not None else None
         current_market_value = self._round_money(qty * mark_price) if qty is not None and mark_price is not None else None
+        # Phase 12 — side-aware unrealized P&L. Long = (mark-entry)*qty; short =
+        # (entry-mark)*qty. Recompute for paper shorts (the review helper assumes long).
+        side = str(payload.get("side") or "long").lower()
+        if side == "short" and qty is not None and avg_entry_price is not None and mark_price is not None:
+            unrealized_pnl = (avg_entry_price - mark_price) * qty
+            return_pct = ((avg_entry_price - mark_price) / avg_entry_price * 100.0) if avg_entry_price else return_pct
         return {
             **payload,
             "qty": self._round_qty(qty),
@@ -2073,17 +2203,39 @@ class AgentModeService:
         max_new_trades_per_day = self._coerce_int(settings_payload.get("max_new_trades_per_day"), default=5, minimum=0, maximum=5)
         timeframe = str(request.get("timeframe") or "1D").upper()
         universe = self.resolve_universe(app_user_id=user.id, settings_payload=settings_payload, overrides=request)
-        open_positions = self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
+        all_open_positions = self.paper_repo.list_positions(app_user_id=user.id, status="open", limit=100)
+        # Ownership boundary: an Agent Profile manages (closes/flips) only its OWN
+        # positions (agent_profile_id == this profile). A position owned by another
+        # profile, or opened manually (agent_profile_id NULL), is NEVER closed — a
+        # close-worthy review on it becomes a blocked_foreign_agent_position /
+        # blocked_manual_position action instead.
+        def _owner_kind(position) -> str:
+            owner = getattr(position, "agent_profile_id", None)
+            if owner is None:
+                return "manual"
+            return "own" if owner == agent_profile_id else "foreign_agent"
+
+        own_open_positions = [p for p in all_open_positions if _owner_kind(p) == "own"]
+        external_by_symbol: dict[str, list[object]] = {}
+        for position in all_open_positions:
+            if _owner_kind(position) != "own":
+                external_by_symbol.setdefault(str(position.symbol or "").upper(), []).append(position)
+        open_positions = own_open_positions  # sizing/cap math uses the agent's own book
         recent_rows = self.recommendation_repo.list_recent(limit=100, app_user_id=user.id)
         now = utc_now()
+        # Review ALL positions (so a close-worthy external position is reported as a
+        # block), but only act on owned positions.
         position_reviews = [
             workflow._build_position_review(position, app_user_id=user.id, user=user, recent_rows=recent_rows, now=now)
-            for position in open_positions
+            for position in all_open_positions
         ]
-        intents: list[dict[str, object]] = [
-            self._position_intent(review, settings_payload=settings_payload, dry_run=dry_run)
-            for review in position_reviews
-        ]
+        owner_kind_by_position_id = {int(p.id): _owner_kind(p) for p in all_open_positions}
+        intents: list[dict[str, object]] = []
+        for review in position_reviews:
+            pid = review.get("position_id")
+            owner_kind = owner_kind_by_position_id.get(int(pid)) if str(pid or "").strip().isdigit() else "manual"
+            intents.append(self._position_intent(review, settings_payload=settings_payload, dry_run=dry_run, owner_kind=owner_kind or "manual"))
+        intents = [intent for intent in intents if intent is not None]
 
         closing_symbols = {
             str(intent.get("symbol") or "").upper()
@@ -2092,7 +2244,7 @@ class AgentModeService:
         }
         held_symbols = {
             str(position.symbol or "").upper()
-            for position in open_positions
+            for position in own_open_positions
             if str(position.symbol or "").upper() not in closing_symbols
         }
         allow_existing_symbol_open = bool(settings_payload.get("allow_new_trade_when_symbol_already_open")) and bool(settings_payload.get("allow_scale_ins"))
@@ -2201,6 +2353,28 @@ class AgentModeService:
                 if verdict.emit_review:
                     intents.append(self._review_intent(symbol=symbol, verdict=verdict, candidate=candidate))
                 continue
+            # Optional cross-profile opposing-exposure guard (default OFF). When the
+            # operator enables it, this profile will not open a new long while
+            # ANOTHER profile (or a manual trade) holds an opposing SHORT in the same
+            # symbol. It only blocks the new open — it never closes the other
+            # position (ownership boundary still holds).
+            if bool(settings_payload.get("prevent_opposing_agent_positions_across_profiles")):
+                opposing_external = [
+                    p for p in external_by_symbol.get(symbol, [])
+                    if str(getattr(p, "side", "") or "").lower() == "short"
+                ]
+                if opposing_external:
+                    intents.append(self._cash_intent(
+                        symbol=symbol,
+                        reason="blocked_opposing_cross_profile",
+                        summary=(
+                            "cash/no trade because another position holds an opposing "
+                            "(short) side in this symbol and this Agent Profile prevents "
+                            "cross-profile opposing exposure. The other position is not closed."
+                        ),
+                        candidate=candidate,
+                    ))
+                    continue
             if decision and decision.get("allow_new_entries") is False:
                 intents.append(self._cash_intent(symbol=symbol, reason="risk_calendar_blocks_new_entries", summary="cash/no trade because risk calendar blocks new paper opens.", candidate=candidate))
                 continue
@@ -2260,6 +2434,7 @@ class AgentModeService:
                     timeframe=timeframe,
                     settings_payload=settings_payload,
                     open_positions=open_positions,
+                    agent_profile_id=agent_profile_id,
                 )
                 if executed.get("status") == "executed":
                     executed_order_count += 1
@@ -2306,11 +2481,12 @@ class AgentModeService:
         total_agent_paper_pnl = None
         if unrealized_after is not None:
             total_agent_paper_pnl = self._round_money(realized_from_closes + unrealized_after)
+        no_universe = not (universe.get("symbols") or [])
         universe_skip_reason = (
             str(universe.get("reason") or "")
             if universe.get("source_status") in {"missing", "empty", "error"}
             else None
-        ) or None
+        ) or ("no_universe" if no_universe else None)
         scheduler_payload = request.get("scheduler") if isinstance(request.get("scheduler"), dict) else {}
         scheduled_window_key = str(
             request.get("scheduled_window_key")
@@ -2318,11 +2494,17 @@ class AgentModeService:
             or ""
         ) or None
         scheduled_due_at = self._parse_iso_datetime(scheduler_payload.get("due_at_iso") or scheduler_payload.get("due_at"))
+        # Market-session label (the scheduler skips closed days before ever calling
+        # run(); a manual dry-run may still run on a closed day but is labeled so the
+        # operator knows it is off-session). Labeling only — never blocks a run.
+        market_session_state = market_session.market_session_state(now)
         summary = {
             "paperOnly": True,
             "executionMode": "paper",
             "dryRun": dry_run,
             "source": run_source,
+            "marketClosed": not bool(market_session_state["is_open_trading_day"]),
+            "marketSession": market_session_state,
             "schedulerDiagnostic": run_source == AGENT_MODE_SOURCE_DIAGNOSTIC,
             "agentProfileId": agent_profile_id,
             "agentProfileName": agent_profile_name,
@@ -2333,6 +2515,7 @@ class AgentModeService:
             "killSwitchEnabled": bool(settings_payload["kill_switch_enabled"]),
             "skipReason": run_guard_reason or universe_skip_reason,
             "universeSkipReason": universe_skip_reason,
+            "noUniverse": no_universe,
             "scheduledWindowKey": scheduled_window_key,
             "scheduledDueAt": scheduler_payload.get("due_at_iso") or scheduler_payload.get("due_at"),
             "scheduledDueAtLocal": scheduler_payload.get("due_at_local"),
@@ -2475,6 +2658,8 @@ class AgentModeService:
         current_utc = now or datetime.now(timezone.utc)
         self.profile_repo.migrate_legacy_settings_to_profiles()
         profiles = self.profile_repo.list_all_profiles()
+        session_state = market_session.market_session_state(current_utc)
+        market_open_today = bool(session_state["is_open_trading_day"])
         rows: list[dict[str, object]] = []
         for profile in profiles:
             payload = self.serialize_profile(profile)
@@ -2503,6 +2688,14 @@ class AgentModeService:
                     "timezone": profile.timezone,
                     "daily_run_time": profile.daily_run_time,
                     "due_now": bool(window.get("due_now")) and enabled and not already_ran,
+                    "would_run_now": bool(window.get("due_now")) and enabled and not already_ran and market_open_today,
+                    "market_open_today": market_open_today,
+                    "market_closed_reason": session_state.get("closed_reason"),
+                    "next_eligible_trading_run": (
+                        self._next_eligible_trading_run(
+                            settings_payload=payload, now=current_utc, already_ran_window=already_ran
+                        )
+                    ),
                     "already_ran_current_window": already_ran,
                     "current_window_key": window.get("window_key"),
                     "current_due_at": window.get("due_at_iso"),
@@ -2523,6 +2716,7 @@ class AgentModeService:
             "paper_only": True,
             "no_live_routing": True,
             "as_of": current_utc.isoformat(),
+            "market_session": session_state,
             "scheduler": {
                 "entrypoint": "python -m macmarket_trader.cli agent-scheduler-check",
                 "loop_script": "scripts/run-agent-mode-scheduler.ps1",
@@ -2530,6 +2724,9 @@ class AgentModeService:
                 "duplicate_guard": "scheduled_window_key_plus_scheduler_claim_per_profile",
                 "source_for_scheduled_runs": AGENT_MODE_SOURCE_SCHEDULED,
                 "source_for_diagnostics": AGENT_MODE_SOURCE_DIAGNOSTIC,
+                "skips_weekends_and_holidays": True,
+                "market_open_today": market_open_today,
+                "market_closed_reason": session_state.get("closed_reason"),
             },
             "counts": {
                 "profiles": len(profiles),
@@ -2582,6 +2779,31 @@ class AgentModeService:
                 )
                 output.append({**base, "status": "skipped", "reason": reason, "due_now": False})
                 continue
+            # Market-session guard: the scheduler never runs trading actions on a
+            # weekend or known US market holiday. This is a SKIP, not a failure —
+            # no orders, no trade notifications, no scheduled-run row, and the
+            # window is left UNCLAIMED so the first open-market tick runs it once
+            # (the next trading day has a different date → a different window_key,
+            # so there is no duplicate/dup-block). ``force`` (an explicit operator
+            # override) bypasses the guard; a manual dry-run via run() is labeled
+            # but still allowed.
+            session_state = market_session.market_session_state(current_utc)
+            if not force and not session_state["is_open_trading_day"]:
+                closed_reason = str(session_state.get("closed_reason") or market_session.REASON_OUTSIDE_SESSION)
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason=closed_reason, due_at=due_at, run_id=None, window_key=window_key,
+                )
+                output.append({
+                    **base,
+                    "status": "skipped",
+                    "reason": closed_reason,
+                    "market_closed": True,
+                    "market_session": session_state,
+                    "due_now": bool(window.get("due_now")),
+                    "window_key": window_key,
+                })
+                continue
             due_now = bool(window.get("due_now"))
             if not due_now and not force:
                 self.profile_repo.update_scheduler_check(
@@ -2599,6 +2821,29 @@ class AgentModeService:
                     reason="already_ran_for_window", due_at=due_at, run_id=existing.run_id, window_key=window_key,
                 )
                 output.append({**base, "status": "skipped", "reason": "already_ran_for_window", "runId": existing.run_id, "window_key": window_key})
+                continue
+            # No-universe guard: do NOT claim the window or create a (misleading)
+            # completed scheduled run when the profile resolves zero symbols — e.g.
+            # universe_source=watchlist with no/empty watchlist selected. Record a
+            # clear skip; the window stays unclaimed so a later tick can run it once
+            # the operator fixes the universe.
+            try:
+                universe_preview = self.resolve_universe(
+                    app_user_id=profile.app_user_id, settings_payload=settings_payload, overrides={}
+                )
+            except Exception as exc:  # noqa: BLE001 - treat resolution failure as no-universe.
+                universe_preview = {"symbols": [], "reason": self._safe_error_summary(exc), "source_status": "error"}
+            if not (universe_preview.get("symbols") or []):
+                detail_reason = str(universe_preview.get("reason") or "no_universe") or "no_universe"
+                self.profile_repo.update_scheduler_check(
+                    profile_id=profile.id, checked_at=current_utc, result="skipped",
+                    reason="no_universe", due_at=due_at, run_id=None, window_key=window_key,
+                )
+                output.append({
+                    **base, "status": "skipped", "reason": "no_universe",
+                    "universe_reason": detail_reason, "universe_source": universe_preview.get("source"),
+                    "due_now": True, "window_key": window_key,
+                })
                 continue
             if not force and not self.profile_repo.claim_scheduler_window(
                 profile_id=profile.id,

@@ -512,6 +512,7 @@ def test_agent_mode_settings_and_latest_run_are_user_scoped(monkeypatch) -> None
 def test_agent_mode_preserves_valid_holds(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=105.0))
+    own_profile_id = AgentProfileRepository(SessionLocal).get_default_profile(app_user_id=user_id).id
     PaperPortfolioRepository(SessionLocal).create_position(
         app_user_id=user_id,
         symbol="SPY",
@@ -519,6 +520,7 @@ def test_agent_mode_preserves_valid_holds(monkeypatch) -> None:
         quantity=5,
         average_price=100.0,
         order_id="paper-hold-spy",
+        agent_profile_id=own_profile_id,
     )
 
     response = client.post("/user/agent-mode/run", headers=USER_AUTH, json={"dry_run": True, "symbols": ["SPY"]})
@@ -533,8 +535,9 @@ def test_agent_mode_caps_target_book_at_five(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
     repo = PaperPortfolioRepository(SessionLocal)
+    own_profile_id = AgentProfileRepository(SessionLocal).get_default_profile(app_user_id=user_id).id
     for symbol in ["AAA", "BBB", "CCC", "DDD"]:
-        repo.create_position(app_user_id=user_id, symbol=symbol, side="long", quantity=1, average_price=100.0)
+        repo.create_position(app_user_id=user_id, symbol=symbol, side="long", quantity=1, average_price=100.0, agent_profile_id=own_profile_id)
 
     response = client.post(
         "/user/agent-mode/run",
@@ -685,6 +688,8 @@ def test_agent_mode_run_sends_one_digest_per_channel(monkeypatch) -> None:
 def test_agent_mode_close_uses_paper_lifecycle(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    AgentModeRepository(SessionLocal).update_settings(app_user_id=user_id, updates={"enabled": True, "allow_opens": False})
+    own_profile_id = AgentProfileRepository(SessionLocal).get_default_profile(app_user_id=user_id).id
     position = PaperPortfolioRepository(SessionLocal).create_position(
         app_user_id=user_id,
         symbol="SPY",
@@ -692,8 +697,8 @@ def test_agent_mode_close_uses_paper_lifecycle(monkeypatch) -> None:
         quantity=2,
         average_price=100.0,
         order_id="paper-close-spy",
+        agent_profile_id=own_profile_id,
     )
-    AgentModeRepository(SessionLocal).update_settings(app_user_id=user_id, updates={"enabled": True, "allow_opens": False})
 
     def close_review(*args, **kwargs):
         del args, kwargs
@@ -758,6 +763,11 @@ def test_agent_mode_endpoint_caps_are_enforced() -> None:
 def test_agent_mode_scale_resize_stays_review_only_for_mvp(monkeypatch) -> None:
     user_id = _approve_user()
     monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=105.0))
+    AgentModeRepository(SessionLocal).update_settings(
+        app_user_id=user_id,
+        updates={"enabled": True, "allow_scale_resize": True},
+    )
+    own_profile_id = AgentProfileRepository(SessionLocal).get_default_profile(app_user_id=user_id).id
     position = PaperPortfolioRepository(SessionLocal).create_position(
         app_user_id=user_id,
         symbol="SPY",
@@ -765,10 +775,7 @@ def test_agent_mode_scale_resize_stays_review_only_for_mvp(monkeypatch) -> None:
         quantity=2,
         average_price=100.0,
         order_id="paper-scale-spy",
-    )
-    AgentModeRepository(SessionLocal).update_settings(
-        app_user_id=user_id,
-        updates={"enabled": True, "allow_scale_resize": True},
+        agent_profile_id=own_profile_id,
     )
 
     def scale_review(*args, **kwargs):
@@ -804,13 +811,15 @@ def test_agent_mode_run_due_skips_unapproved_users(monkeypatch) -> None:
         user.approval_status = "pending"
         session.commit()
 
-    runs = AgentModeService().run_due(now=datetime(2026, 5, 31, 22, 0, tzinfo=timezone.utc))
+    # Use a weekday (Mon 2026-06-01) so the unapproved-user skip is exercised
+    # rather than the weekend market-session guard, which short-circuits earlier.
+    runs = AgentModeService().run_due(now=datetime(2026, 6, 1, 22, 0, tzinfo=timezone.utc))
 
     assert len(runs) == 1
     assert runs[0]["app_user_id"] == user_id
     assert runs[0]["status"] == "skipped"
     assert runs[0]["reason"] == "user_not_approved"
-    assert runs[0]["window_key"].startswith("2026-05-31|15:45|America/New_York|agentprof_")
+    assert runs[0]["window_key"].startswith("2026-06-01|15:45|America/New_York|agentprof_")
     assert _order_count() == 0
     assert _position_count() == 0
 
@@ -1039,10 +1048,12 @@ def test_agent_mode_scheduler_empty_watchlist_records_clear_skip(monkeypatch) ->
         no_notifications=True,
     )
 
-    assert runs[0]["status"] == "completed"
-    latest = AgentModeRepository(SessionLocal).latest_run(app_user_id=user_id)
-    assert latest is not None
-    assert latest.response_json["summary"]["skipReason"] == "watchlist_missing_or_empty"
+    # A watchlist profile with no/empty watchlist is SKIPPED before claiming the
+    # window — never a misleading "completed" run with zero symbols.
+    assert runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "no_universe"
+    assert "watchlist" in str(runs[0].get("universe_reason"))
+    assert AgentModeRepository(SessionLocal).latest_run(app_user_id=user_id) is None
     assert _order_count() == 0
     assert _position_count() == 0
 

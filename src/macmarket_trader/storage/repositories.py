@@ -464,7 +464,7 @@ DEFAULT_STANDARD_STRATEGY_IDS = [
     "pullback_trend_continuation",
 ]
 
-AGENT_PROFILE_AGENT_TYPES = {"standard", "haco_direction", "true_momentum", "hybrid"}
+AGENT_PROFILE_AGENT_TYPES = {"standard", "haco_direction", "true_momentum", "hybrid", "atr_trailing_stop"}
 
 # Config fields shared by the legacy ``agent_mode_settings`` row and the new
 # ``agent_profiles`` row. Copied verbatim during migration so existing users keep
@@ -540,6 +540,20 @@ AGENT_PROFILE_UPDATABLE_FIELDS = frozenset(
         "true_momentum_trigger_mode",
         "use_haco_filter",
         "use_true_momentum_confirmation",
+        "atr_trail_type",
+        "atr_period",
+        "atr_factor",
+        "atr_first_trade",
+        "atr_average_type",
+        "atr_decision_timeframe",
+        "atr_alignment_mode",
+        "allow_shorts",
+        "allow_direction_flip",
+        "close_opposite_before_open",
+        "close_on_opposite_signal",
+        "hedge_allowed",
+        "use_atr_filter",
+        "prevent_opposing_agent_positions_across_profiles",
         "notification_preference",
         "notification_phone_number",
         "sms_consent_confirmed",
@@ -573,10 +587,11 @@ class AgentProfileRepository:
             "agent_type": agent_type,
             "strategy_families": [],
             "haco_direction_mode": "long_only",
-            # Guardrail: a new True Momentum profile never defaults to aggressive
-            # auto-open behavior. review_only produces reviews without paper opens
-            # until the operator opts into a trigger mode.
-            "true_momentum_trigger_mode": "review_only",
+            # A new True Momentum profile is intended to trade, so it defaults to
+            # the safest TRADING mode (conservative: long-term + short-term aligned),
+            # not review_only. review_only stays explicitly selectable as a safe,
+            # no-open mode. It never defaults to aggressive.
+            "true_momentum_trigger_mode": "conservative" if agent_type == "true_momentum" else "review_only",
             "use_haco_filter": False,
             "use_true_momentum_confirmation": False,
         }
@@ -1596,7 +1611,14 @@ class PaperPortfolioRepository:
                 "win_rate": float((wins / closed_count) if closed_count else 0.0),
             }
 
-    def get_open_position(self, *, app_user_id: int, symbol: str, side: str | None = None) -> PaperPositionModel | None:
+    def get_open_position(
+        self,
+        *,
+        app_user_id: int,
+        symbol: str,
+        side: str | None = None,
+        agent_profile_id: int | None = None,
+    ) -> PaperPositionModel | None:
         with self.session_factory() as session:
             stmt = select(PaperPositionModel).where(
                 PaperPositionModel.app_user_id == app_user_id,
@@ -1605,7 +1627,19 @@ class PaperPortfolioRepository:
             )
             if side is not None:
                 stmt = stmt.where(PaperPositionModel.side == side)
+            if agent_profile_id is not None:
+                stmt = stmt.where(PaperPositionModel.agent_profile_id == agent_profile_id)
             return session.execute(stmt).scalar_one_or_none()
+
+    def list_open_positions_for_profile(self, *, app_user_id: int, agent_profile_id: int) -> list[PaperPositionModel]:
+        """Open positions OWNED by a specific Agent Profile (ownership boundary)."""
+        with self.session_factory() as session:
+            stmt = select(PaperPositionModel).where(
+                PaperPositionModel.app_user_id == app_user_id,
+                PaperPositionModel.status == "open",
+                PaperPositionModel.agent_profile_id == agent_profile_id,
+            )
+            return list(session.execute(stmt).scalars())
 
     def get_position_by_id(self, *, position_id: int) -> PaperPositionModel | None:
         with self.session_factory() as session:
@@ -1646,6 +1680,7 @@ class PaperPortfolioRepository:
         recommendation_id: str | None = None,
         replay_run_id: int | None = None,
         order_id: str | None = None,
+        agent_profile_id: int | None = None,
     ) -> PaperPositionModel:
         with self.session_factory() as session:
             row = PaperPositionModel(
@@ -1661,6 +1696,7 @@ class PaperPortfolioRepository:
                 recommendation_id=recommendation_id,
                 replay_run_id=replay_run_id,
                 order_id=order_id,
+                agent_profile_id=agent_profile_id,
             )
             session.add(row)
             session.commit()
@@ -1678,19 +1714,23 @@ class PaperPortfolioRepository:
         recommendation_id: str | None = None,
         replay_run_id: int | None = None,
         order_id: str | None = None,
+        agent_profile_id: int | None = None,
     ) -> PaperPositionModel:
-        """Aggregate a new fill into an existing open (user, symbol, side) position
-        with weighted-average entry price, or create a new position if none open.
+        """Aggregate a new fill into an existing open (user, symbol, side[, profile])
+        position with weighted-average entry price, or create a new position if none open.
+        When ``agent_profile_id`` is given, only the owning profile's position aggregates
+        (the per-profile ownership boundary); a new position is tagged with that owner.
         """
         with self.session_factory() as session:
-            existing = session.execute(
-                select(PaperPositionModel).where(
-                    PaperPositionModel.app_user_id == app_user_id,
-                    PaperPositionModel.symbol == symbol,
-                    PaperPositionModel.side == side,
-                    PaperPositionModel.status == "open",
-                )
-            ).scalar_one_or_none()
+            match = select(PaperPositionModel).where(
+                PaperPositionModel.app_user_id == app_user_id,
+                PaperPositionModel.symbol == symbol,
+                PaperPositionModel.side == side,
+                PaperPositionModel.status == "open",
+            )
+            if agent_profile_id is not None:
+                match = match.where(PaperPositionModel.agent_profile_id == agent_profile_id)
+            existing = session.execute(match).scalar_one_or_none()
             if existing is not None:
                 old_remaining = float(existing.remaining_qty if existing.remaining_qty is not None else existing.quantity)
                 old_avg = float(existing.average_price)
@@ -1717,6 +1757,7 @@ class PaperPortfolioRepository:
                 recommendation_id=recommendation_id,
                 replay_run_id=replay_run_id,
                 order_id=order_id,
+                agent_profile_id=agent_profile_id,
             )
             session.add(row)
             session.commit()
@@ -1783,6 +1824,7 @@ class PaperPortfolioRepository:
         replay_run_id: int | None = None,
         order_id: str | None = None,
         close_reason: str | None = None,
+        agent_profile_id: int | None = None,
     ) -> PaperTradeModel:
         with self.session_factory() as session:
             row = PaperTradeModel(
@@ -1803,6 +1845,7 @@ class PaperPortfolioRepository:
                 replay_run_id=replay_run_id,
                 order_id=order_id,
                 close_reason=close_reason,
+                agent_profile_id=agent_profile_id,
             )
             session.add(row)
             session.commit()

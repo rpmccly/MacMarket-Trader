@@ -111,6 +111,8 @@ export type AgentModeStatus = {
   executionMode?: string;
 };
 
+export type PositionOwnerKind = "own" | "foreign_agent" | "manual";
+
 export type AgentModeIntent = {
   intent: string;
   symbol?: string | null;
@@ -128,6 +130,9 @@ export type AgentModeIntent = {
   missing_data?: string[];
   candidate?: Record<string, unknown> | null;
   review?: Record<string, unknown> | null;
+  // Ownership boundary: who owns the position this intent refers to.
+  position_owner?: PositionOwnerKind | null;
+  action_reason?: string | null;
 };
 
 export type AgentModeRunResult = {
@@ -170,6 +175,16 @@ export type AgentModeRunResult = {
     blockedActions?: number;
     cashNoTrade?: number;
     totalExecutedActions?: number;
+    triggerReviewOnly?: number;
+    reviewedExternalPositions?: number;
+    marketClosed?: boolean;
+    marketSession?: {
+      market_timezone?: string;
+      session_date?: string;
+      is_open_trading_day?: boolean;
+      closed_reason?: string | null;
+      next_trading_day?: string;
+    } | null;
     skipReason?: string | null;
     maxOpenAgentPositions?: number;
     maxNewTradesPerRun?: number;

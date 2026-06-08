@@ -90,13 +90,40 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
 const AGENT_TYPE_BLURB: Record<string, string> = {
   standard: "Runs the deterministic strategy ranking (Event Continuation, Breakout, Pullback, etc.) you select below.",
   haco_direction: "Triggers on the HACO direction signal. Long entries only; short signals are review-only (no paper shorts).",
-  true_momentum: "Triggers on True Momentum alignment. Pick a trigger mode below; review-only never opens paper trades.",
+  true_momentum: "Triggers on True Momentum alignment. Defaults to conservative (opens paper longs when long-term and short-term momentum align); review-only is a safe no-open mode.",
   hybrid: "Advanced: combines selected Standard strategies with optional HACO filter and True Momentum confirmation.",
 };
 
 function agentTypeLabel(value: unknown): string {
   const key = String(value || "standard");
   return AGENT_TYPE_LABELS[key] ?? key.replace(/_/g, " ");
+}
+
+// Whether an agent profile can open paper LONGS, given its type/mode. Shorts are
+// never opened (review-only) because no paper-short lifecycle exists.
+function paperOpenCapability(profile: { agent_type?: string; true_momentum_trigger_mode?: string | null }): {
+  label: string;
+  tone: "good" | "warn" | "neutral";
+} {
+  const type = String(profile.agent_type || "standard");
+  if (type === "true_momentum") {
+    return String(profile.true_momentum_trigger_mode || "review_only") === "review_only"
+      ? { label: "Review only (no paper opens)", tone: "warn" }
+      : { label: "Opens paper longs", tone: "good" };
+  }
+  if (type === "haco_direction") return { label: "Opens paper longs · shorts review-only", tone: "good" };
+  if (type === "hybrid") return { label: "Opens paper longs when filters confirm", tone: "good" };
+  return { label: "Opens paper longs", tone: "good" };
+}
+
+function profileNeedsWatchlist(profile: {
+  universe_source?: string | null;
+  watchlist_name?: string | null;
+  resolved_symbol_count?: number;
+}): boolean {
+  const source = String(profile.universe_source || "");
+  const usesWatchlist = source === "watchlist" || source === "watchlist_plus_manual";
+  return usesWatchlist && !profile.watchlist_name && (profile.resolved_symbol_count ?? 0) === 0;
 }
 
 const tabs = ["Overview", "Runs", "Trades", "Positions", "Performance", "Settings"] as const;
@@ -148,6 +175,21 @@ function formatIntentLabel(intent: string): string {
     .replace("REDUCE_PAPER", "reduce paper review")
     .replace("CASH_NO_TRADE", "cash/no trade")
     .replace("HOLD", "hold");
+}
+
+// Ownership boundary label for a paper-action intent: an agent only closes/flips
+// positions it owns; others are review-only and never closed.
+function formatOwnerLabel(owner?: string | null): string {
+  if (owner === "own") return "This agent";
+  if (owner === "foreign_agent") return "Another agent";
+  if (owner === "manual") return "Manual trade";
+  return "-";
+}
+
+function toneForOwner(owner?: string | null): "good" | "warn" | "bad" | "neutral" {
+  if (owner === "own") return "good";
+  if (owner === "foreign_agent" || owner === "manual") return "warn";
+  return "neutral";
 }
 
 const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -649,6 +691,8 @@ export function AgentModeConsole() {
                   : profile.agent_type === "true_momentum"
                     ? `Trigger: ${formatFieldLabel(profile.true_momentum_trigger_mode)}`
                     : `Strategies: ${profile.strategy_count ?? 0}`;
+                const capability = paperOpenCapability(profile);
+                const needsWatchlist = profileNeedsWatchlist(profile);
                 return (
                   <div key={profile.profile_uid} className={`agent-profile-card${focused ? " is-active" : ""}`}>
                     <div className="op-row">
@@ -660,11 +704,16 @@ export function AgentModeConsole() {
                       <StatusBadge tone={profile.kill_switch_enabled ? "bad" : profile.enabled ? "good" : "neutral"}>
                         {profile.kill_switch_enabled ? "kill switch" : profile.enabled ? "enabled" : "disabled"}
                       </StatusBadge>
+                      <StatusBadge tone={capability.tone}>{capability.label}</StatusBadge>
                     </div>
+                    {needsWatchlist ? (
+                      <div className="agent-paper-warning">No watchlist selected — this agent has nothing to scan. Pick a watchlist or switch the universe source.</div>
+                    ) : null}
                     <div className="agent-profile-card-meta">
                       <span>Next run: {formatDateTime(profile.next_scheduled_run_at)}</span>
                       <span>Last result: {formatFieldLabel(profile.last_run_status ?? "never_run")}</span>
-                      <span>Universe: {asText(profile.watchlist_name ?? formatFieldLabel(profile.universe_source))}</span>
+                      <span>Universe: {needsWatchlist ? "No watchlist selected" : asText(profile.watchlist_name ?? formatFieldLabel(profile.universe_source))}</span>
+                      <span>Resolved symbols: {profile.resolved_symbol_count ?? 0}</span>
                       <span>{modeSummary}</span>
                       <span>Open positions: {profile.open_position_count ?? 0}</span>
                       <span>Realized P&amp;L: {formatMoney(profile.realized_pnl)}</span>
@@ -834,14 +883,26 @@ export function AgentModeConsole() {
           </Card>
 
           <Card title="Paper actions">
+            {run?.summary?.marketClosed ? (
+              <p className="agent-paper-warning" data-testid="market-closed-note">
+                Market closed ({run.summary.marketSession?.closed_reason ?? "off-session"}). Scheduled agent runs
+                are skipped on weekends and US market holidays — this manual run is informational only.
+                {run.summary.marketSession?.next_trading_day ? ` Next trading day: ${run.summary.marketSession.next_trading_day}.` : ""}
+              </p>
+            ) : null}
+            <p className="agent-setting-help" data-testid="ownership-boundary-note">
+              This agent only manages positions it owns. It will not close positions it does not own —
+              another agent&apos;s or a manual paper trade is review-only, never closed or flipped.
+            </p>
             {run?.intents?.length ? (
               <ResponsiveTable label="Agent Mode paper actions">
                 <table className="op-table">
-                  <thead><tr><th>Action</th><th>Symbol</th><th>Status</th><th>Reason</th><th>Linked paper IDs</th><th>Summary</th></tr></thead>
+                  <thead><tr><th>Action</th><th>Symbol</th><th>Owner</th><th>Status</th><th>Reason</th><th>Linked paper IDs</th><th>Summary</th></tr></thead>
                   <tbody>{run.intents.map((intent, index) => (
                     <tr key={`${intent.intent}-${intent.symbol ?? index}-${index}`}>
                       <td><StatusBadge tone={toneForIntent(intent.intent)}>{formatIntentLabel(intent.intent)}</StatusBadge></td>
                       <td>{intent.symbol ?? "-"}</td>
+                      <td>{intent.position_owner ? <StatusBadge tone={toneForOwner(intent.position_owner)}>{formatOwnerLabel(intent.position_owner)}</StatusBadge> : "-"}</td>
                       <td>{intent.status}</td>
                       <td>{intent.reason ?? "-"}</td>
                       <td>{[intent.order_id ? `order ${intent.order_id}` : null, intent.position_id ? `position ${intent.position_id}` : null, intent.trade_id ? `trade ${intent.trade_id}` : null].filter(Boolean).join(", ") || "-"}</td>

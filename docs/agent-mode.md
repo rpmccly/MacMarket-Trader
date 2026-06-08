@@ -18,12 +18,19 @@ Agent types:
   Follow-Through, Mean Reversion, HACO Context).
 - **HACO Direction Agent** (`haco_direction`) — uses the existing HACO direction
   output as the primary trigger. `haco_direction_mode` is `long_only`,
-  `short_only`, or `long_and_short`. HACO long opens paper longs; HACO short is
-  **review-only** (no paper shorts are ever created).
+  `short_only`, or `long_and_short`. A **green/long** signal opens a paper long
+  (subject to risk/sizing/duplicate gates). A **red/short** signal never opens an
+  order in any mode — it is review-only with reason `paper_short_not_supported`
+  because no paper-short lifecycle exists.
 - **True Momentum Agent** (`true_momentum`) — uses the existing True Momentum
   score/trend outputs. `true_momentum_trigger_mode` is `conservative`,
   `balanced`, `aggressive`, or `review_only`. New True Momentum profiles default
-  to `review_only` (no auto-open). Bearish momentum is review-only.
+  to **`conservative`** (intended to trade): they open a paper long when
+  long-term momentum is bullish and short-term is rising. `balanced` opens on a
+  long-term bias plus a short-term trigger; `aggressive` opens on a short-term
+  trigger when long-term is neutral/improving (never when long-term is bearish);
+  `review_only` never opens (a safe, explicitly selectable mode). Bearish
+  long-term + short-term resolves to `bearish_review_only` (no paper short).
 - **Hybrid Agent** (`hybrid`) — advanced: a top-ranked Standard candidate plus an
   optional HACO long filter and/or True Momentum confirmation.
 
@@ -31,9 +38,19 @@ Agent-type triggers are **isolated eligibility filters** applied *after*
 deterministic ranking and *before* an open is planned. They never change
 recommendation scoring or HACO/Momentum indicator math; they only read existing
 indicator outputs. The recommendation/sizing/risk-calendar pipeline still has
-final say on every eligible-long candidate. Bearish/short/exit reads become
-review-only intents (`CASH_NO_TRADE` with `status="review_only"`), counted
-separately from blocked actions.
+final say on every eligible-long candidate, and a paper open executes only when
+the resolved order side is **long** — if the deterministic engine resolves a
+short (e.g. a failed-event fade in a risk-off regime), the candidate becomes
+review-only with reason `paper_short_not_supported` rather than a paper short.
+Run outputs distinguish `opened_paper_long`, `trigger_not_met`,
+`review_only_mode`, `bearish_review_only`, `paper_short_not_supported`, and
+`no_universe`.
+
+If a profile resolves **zero symbols** (e.g. `universe_source=watchlist` with no
+watchlist selected), the scheduler records a per-profile `no_universe` skip and
+does **not** claim the window or create a (misleading) completed run; the window
+stays open so a later tick runs it once the universe is fixed. Manual runs label
+this `noUniverse` with the universe skip reason.
 
 Migration: existing single-agent users are migrated into one default
 **"Standard Strategy Agent"** profile (`agent_type=standard`, `is_default=true`)
@@ -62,6 +79,56 @@ records `agent_profile_id`, `agent_profile_name`, and `agent_type`.
 - Agent Mode never forces five trades; failed or missing gates become
   `CASH_NO_TRADE`.
 - Already-open symbols are not duplicated as new paper-open candidates.
+
+### Position ownership boundary (Phase 12)
+
+Each paper position and trade carries an owning `agent_profile_id` (NULL = a
+manual/operator paper trade). A run only **closes or flips positions its own
+profile opened**:
+
+- Own position (`agent_profile_id` == this profile) → managed normally
+  (`action_reason: managed_own_position`); a close-worthy review executes a
+  paper close, and the realized trade is tagged with the same `agent_profile_id`.
+- Another profile's position → review only, **never closed**
+  (`reason: blocked_foreign_agent_position`, `position_owner: foreign_agent`).
+- A manual paper trade (NULL owner) → review only, **never closed**
+  (`reason: blocked_manual_position`, `position_owner: manual`).
+
+The run preview shows an **Owner** column (This agent / Another agent / Manual
+trade) and states that the agent will not close positions it does not own. The
+notification digest separates owned actions (`Opened (own)`, `Closed (own)`)
+from `Reviewed (not owned …)` (the `reviewedExternalPositions` count). "All
+agents" views aggregate across a user's profiles, but **execution stays
+profile-owned**.
+
+Optional cross-profile exposure guard
+(`prevent_opposing_agent_positions_across_profiles`, default **off**): when
+enabled, a profile will not open a new long while another profile (or a manual
+trade) holds an opposing short in the same symbol
+(`reason: blocked_opposing_cross_profile`). It only blocks the new open — it
+never closes the other profile's position. Follow-up: a UI toggle for this
+setting ships with the directional/ATR cockpit controls.
+
+### Market-session scheduling guard (Phase 12)
+
+Scheduled agent runs never trade on a closed market. Before a window is claimed,
+`run_due()` skips weekends and known US market holidays (evaluated on the US
+Eastern calendar via `agent_mode/market_session.py`):
+
+- `market_closed_weekend` — Saturday/Sunday.
+- `market_closed_holiday` — a known NYSE/Nasdaq full-day closure. The static set
+  covers the current and next calendar year; **follow-up:** automatic multi-year
+  / observed-rule expansion (or a provider calendar). Early-close half-days are
+  treated as open.
+- `market_closed_outside_session` — reserved.
+
+A skip is **not a failure**: no orders, no trade notifications, no scheduled-run
+row, and the window is left **unclaimed**, so the first open-market tick still
+runs it once (the next trading day has a different `window_key`, so there is no
+duplicate or dup-block). A manual dry-run may still run on a closed day but is
+labeled (`summary.marketClosed`, `summary.marketSession`). Scheduler diagnostics
+report the market-session state, `market_open_today`, each profile's
+`would_run_now`, and `next_eligible_trading_run`.
 
 ## Endpoints
 
@@ -338,7 +405,7 @@ Post-deploy smoke checks:
    with their prior schedule/sizing/notifications intact, and prior run history
    attached.
 2. Create a HACO Direction profile and a True Momentum profile; the True
-   Momentum profile defaults to `review_only`.
+   Momentum profile defaults to `conservative` (review_only stays selectable).
 3. `python -m macmarket_trader.cli agent-scheduler-diagnostics` lists every
    profile with per-profile due state and `counts.profiles`.
 4. Run `python -m macmarket_trader.cli agent-scheduler-check --dry-run

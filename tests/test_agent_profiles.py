@@ -20,9 +20,9 @@ from macmarket_trader.api.main import app
 from macmarket_trader.api.routes import admin as admin_routes
 from macmarket_trader.api.routes import agent_mode as agent_mode_routes
 from macmarket_trader.data.providers.market_data import DeterministicFallbackMarketDataProvider, MarketSnapshot
-from macmarket_trader.domain.models import AppUserModel, NotificationAttemptModel, PaperPositionModel
+from macmarket_trader.domain.models import AppUserModel, NotificationAttemptModel, PaperPositionModel, PaperTradeModel
 from macmarket_trader.storage.db import SessionLocal
-from macmarket_trader.storage.repositories import AgentModeRepository, AgentProfileRepository
+from macmarket_trader.storage.repositories import AgentModeRepository, AgentProfileRepository, PaperPortfolioRepository
 
 
 client = TestClient(app)
@@ -194,11 +194,19 @@ def test_user_can_create_multiple_profiles() -> None:
     assert hybrid["agent_type"] == "hybrid"
 
 
-def test_true_momentum_profile_defaults_to_review_only() -> None:
+def test_true_momentum_profile_defaults_to_conservative() -> None:
     _approve_user()
     momentum = _create_profile({"agent_type": "true_momentum", "name": "Momentum"})
-    # Guardrail: never default a new True Momentum profile to aggressive auto-open.
-    assert momentum["true_momentum_trigger_mode"] == "review_only"
+    # New True Momentum profiles are intended to trade: default to conservative
+    # (long-term + short-term aligned), never aggressive.
+    assert momentum["true_momentum_trigger_mode"] == "conservative"
+    # review_only remains explicitly selectable as a safe, no-open mode.
+    updated = client.put(
+        f"/user/agent-mode/profiles/{momentum['profile_uid']}",
+        json={"true_momentum_trigger_mode": "review_only"},
+        headers=USER_AUTH,
+    ).json()
+    assert updated["true_momentum_trigger_mode"] == "review_only"
 
 
 def test_delete_default_and_last_profile_blocked() -> None:
@@ -233,7 +241,7 @@ def test_haco_profile_only_uses_haco_triggers(monkeypatch) -> None:
     assert not _opens(red), "HACO red must not open a paper long"
     reviews = _reviews(red)
     assert reviews and all(r.get("primary_trigger") == "HACO Direction" for r in reviews)
-    assert any("haco_short_review_only" in str(r.get("reason")) for r in reviews)
+    assert any(r.get("reason") == "paper_short_not_supported" for r in reviews)
 
 
 def test_haco_short_is_review_only_and_never_a_paper_short(monkeypatch) -> None:
@@ -279,7 +287,7 @@ def test_enabled_run_never_routes_a_paper_short_even_if_recommendation_is_short(
 
     # No paper short order/position is created; the short rec becomes review-only.
     assert not [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER" and i.get("status") == "executed"]
-    assert any(i.get("reason") == "short_recommendation_review_only" for i in _reviews(result))
+    assert any(i.get("reason") == "paper_short_not_supported" for i in _reviews(result))
     assert int(result["summary"].get("executedOrderCount", 0)) == 0
     with SessionLocal() as session:
         positions = list(session.execute(select(PaperPositionModel).where(PaperPositionModel.app_user_id == user_id)).scalars())
@@ -345,6 +353,67 @@ def test_standard_profile_uses_selected_strategies(monkeypatch) -> None:
     })
     _service_run(user_id, standard["agent_profile_id"])
     assert captured["strategies"] == ["Breakout / Prior-Day High", "Mean Reversion"]
+
+
+# ── Enabled runs actually open paper longs on valid long triggers ────────────
+def test_haco_green_enabled_creates_one_paper_long(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    _patch_haco(monkeypatch, "green")
+    haco = _create_profile({
+        "agent_type": "haco_direction", "name": "HACO Long", "haco_direction_mode": "long_only",
+        "enabled": True, "universe_source": "manual", "manual_symbols": ["SPY"], "scan_depth": 1,
+    })
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    opens = [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER" and i.get("status") == "executed"]
+    assert len(opens) == 1
+    assert opens[0]["side"] == "long"
+    assert opens[0].get("outcome") == "opened_paper_long"
+    assert opens[0].get("primary_trigger") == "HACO Direction"
+    assert result["summary"]["paperOpensExecuted"] == 1
+    with SessionLocal() as session:
+        positions = list(session.execute(select(PaperPositionModel).where(PaperPositionModel.app_user_id == user_id)).scalars())
+    assert len(positions) == 1
+    assert positions[0].side == "long"
+
+
+def test_true_momentum_conservative_enabled_creates_one_paper_long(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    _patch_momentum(monkeypatch, total_state="max_bull", trend_score=90.0, cross_up=True, trend_direction=1)
+    tm = _create_profile({
+        "agent_type": "true_momentum", "name": "TM Cons", "true_momentum_trigger_mode": "conservative",
+        "enabled": True, "universe_source": "manual", "manual_symbols": ["SPY"], "scan_depth": 1,
+    })
+    result = _service_run(user_id, tm["agent_profile_id"], dry_run=False)
+    opens = [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER" and i.get("status") == "executed"]
+    assert len(opens) == 1
+    assert opens[0]["side"] == "long"
+    assert opens[0].get("outcome") == "opened_paper_long"
+    assert opens[0].get("primary_trigger") == "True Momentum"
+    assert result["summary"]["paperOpensExecuted"] == 1
+
+
+def test_watchlist_profile_without_watchlist_is_no_universe(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _create_profile({"agent_type": "standard", "name": "WL", "universe_source": "watchlist", "enabled": True})
+    result = _service_run(user_id, prof["agent_profile_id"], dry_run=True)
+    assert result["summary"]["noUniverse"] is True
+    assert "watchlist" in str(result["summary"]["universeSkipReason"])
+    assert result["summary"]["skipReason"] == result["summary"]["universeSkipReason"]
+    assert not [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER"]
+
+
+def test_manual_universe_resolves_per_profile(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    a = _create_profile({"agent_type": "standard", "name": "A", "universe_source": "manual", "manual_symbols": ["SPY"]})
+    b = _create_profile({"agent_type": "standard", "name": "B", "universe_source": "manual", "manual_symbols": ["QQQ", "MTUM"]})
+    ra = _service_run(user_id, a["agent_profile_id"], dry_run=True)
+    rb = _service_run(user_id, b["agent_profile_id"], dry_run=True)
+    assert ra["universe"]["symbols"] == ["SPY"]
+    assert rb["universe"]["symbols"] == ["QQQ", "MTUM"]
 
 
 # ── Profile-scoped runs/trades/performance ───────────────────────────────────
@@ -414,3 +483,293 @@ def test_scheduler_diagnostics_lists_multiple_profiles(monkeypatch) -> None:
     assert diagnostics["counts"]["profiles"] >= 3
     assert {row["agent_type"] for row in user_profiles} >= {"standard", "true_momentum"}
     del user_id
+
+
+# ── Ownership boundary: an agent manages (closes/flips) ONLY its own positions ─
+def _seed_position(user_id, *, symbol="SPY", side="long", qty=2.0, price=100.0, agent_profile_id=None):
+    return PaperPortfolioRepository(SessionLocal).create_position(
+        app_user_id=user_id, symbol=symbol, side=side, quantity=qty,
+        average_price=price, agent_profile_id=agent_profile_id,
+    )
+
+
+def _force_stop_review(monkeypatch, *, mark=94.0):
+    """Force every open position to look stop-triggered (close-worthy)."""
+    def _review(position, **_kwargs):
+        return {
+            "position_id": position.id,
+            "symbol": position.symbol,
+            "side": position.side,
+            "current_mark_price": mark,
+            "action_classification": "stop_triggered",
+            "action_summary": f"{position.symbol} protective stop triggered",
+            "warnings": [],
+            "missing_data": [],
+        }
+    monkeypatch.setattr(admin_routes, "_build_position_review", _review)
+
+
+def _force_hold_review(monkeypatch):
+    """Force every open position to look like a benign hold (no close-worthy action)."""
+    def _review(position, **_kwargs):
+        return {
+            "position_id": position.id,
+            "symbol": position.symbol,
+            "side": position.side,
+            "current_mark_price": 100.0,
+            "action_classification": "hold",
+            "action_summary": f"{position.symbol} hold",
+            "warnings": [],
+            "missing_data": [],
+        }
+    monkeypatch.setattr(admin_routes, "_build_position_review", _review)
+
+
+def _own_profile(agent_type, name, **extra):
+    payload = {
+        "agent_type": agent_type, "name": name, "enabled": True,
+        "allow_opens": False, "universe_source": "manual", "manual_symbols": ["SPY"],
+    }
+    payload.update(extra)
+    return _create_profile(payload)
+
+
+def _position_status(position_id):
+    with SessionLocal() as session:
+        row = session.get(PaperPositionModel, position_id)
+        return row.status if row else None
+
+
+def test_ownership_haco_cannot_close_true_momentum_position(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    haco = _own_profile("haco_direction", "HACO")
+    tm = _own_profile("true_momentum", "TM")
+    tm_pos = _seed_position(user_id, agent_profile_id=tm["agent_profile_id"])
+    _force_stop_review(monkeypatch)
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    blocks = [i for i in _intents(result) if i.get("reason") == "blocked_foreign_agent_position"]
+    assert blocks and blocks[0]["position_id"] == tm_pos.id
+    assert blocks[0]["position_owner"] == "foreign_agent"
+    assert not [i for i in _intents(result) if i.get("intent") == "CLOSE_PAPER"]
+    assert _position_status(tm_pos.id) == "open"  # never closed by a foreign agent
+
+
+def test_ownership_true_momentum_cannot_close_haco_position(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    haco = _own_profile("haco_direction", "HACO")
+    tm = _own_profile("true_momentum", "TM")
+    haco_pos = _seed_position(user_id, agent_profile_id=haco["agent_profile_id"])
+    _force_stop_review(monkeypatch)
+    result = _service_run(user_id, tm["agent_profile_id"], dry_run=False)
+    blocks = [i for i in _intents(result) if i.get("reason") == "blocked_foreign_agent_position"]
+    assert blocks and blocks[0]["position_id"] == haco_pos.id
+    assert not [i for i in _intents(result) if i.get("intent") == "CLOSE_PAPER"]
+    assert _position_status(haco_pos.id) == "open"
+
+
+def test_ownership_atr_cannot_close_manual_position(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    atr = _own_profile("atr_trailing_stop", "ATR")
+    manual_pos = _seed_position(user_id, agent_profile_id=None)  # manual paper trade (NULL owner)
+    _force_stop_review(monkeypatch)
+    result = _service_run(user_id, atr["agent_profile_id"], dry_run=False)
+    blocks = [i for i in _intents(result) if i.get("reason") == "blocked_manual_position"]
+    assert blocks and blocks[0]["position_id"] == manual_pos.id
+    assert blocks[0]["position_owner"] == "manual"
+    assert not [i for i in _intents(result) if i.get("intent") == "CLOSE_PAPER"]
+    assert _position_status(manual_pos.id) == "open"  # manual trades are never agent-closed
+
+
+def test_ownership_agent_closes_only_its_own_position(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    haco = _own_profile("haco_direction", "HACO")
+    own_pos = _seed_position(user_id, agent_profile_id=haco["agent_profile_id"])
+    _force_stop_review(monkeypatch)
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    closes = [i for i in _intents(result) if i.get("intent") == "CLOSE_PAPER"]
+    assert len(closes) == 1
+    assert closes[0]["position_id"] == own_pos.id
+    assert closes[0]["position_owner"] == "own"
+    assert closes[0].get("action_reason") == "managed_own_position"
+    assert closes[0]["status"] == "executed"
+    assert _position_status(own_pos.id) == "closed"
+    # The realized trade is tagged to the owning profile.
+    with SessionLocal() as session:
+        trade = session.execute(
+            select(PaperTradeModel).where(PaperTradeModel.position_id == own_pos.id)
+        ).scalar_one()
+    assert trade.agent_profile_id == haco["agent_profile_id"]
+
+
+def test_all_agents_view_aggregates_but_execution_is_profile_owned(monkeypatch) -> None:
+    # The user can SEE positions across all profiles, but a single run only acts
+    # on the running profile's own positions (others become block reviews).
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    haco = _own_profile("haco_direction", "HACO")
+    tm = _own_profile("true_momentum", "TM")
+    haco_pos = _seed_position(user_id, symbol="SPY", agent_profile_id=haco["agent_profile_id"])
+    tm_pos = _seed_position(user_id, symbol="QQQ", agent_profile_id=tm["agent_profile_id"])
+    _force_stop_review(monkeypatch)
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    closes = [i for i in _intents(result) if i.get("intent") == "CLOSE_PAPER"]
+    assert {i["position_id"] for i in closes} == {haco_pos.id}
+    assert any(
+        i.get("reason") == "blocked_foreign_agent_position" and i["position_id"] == tm_pos.id
+        for i in _intents(result)
+    )
+    assert _position_status(haco_pos.id) == "closed"
+    assert _position_status(tm_pos.id) == "open"
+
+
+def test_digest_distinguishes_owned_actions_from_reviewed_external(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData(mark=94.0))
+    haco = _own_profile("haco_direction", "HACO")
+    tm = _own_profile("true_momentum", "TM")
+    _seed_position(user_id, symbol="SPY", agent_profile_id=haco["agent_profile_id"])
+    _seed_position(user_id, symbol="QQQ", agent_profile_id=tm["agent_profile_id"])
+    _force_stop_review(monkeypatch)
+    summary = _service_run(user_id, haco["agent_profile_id"], dry_run=False)["summary"]
+    assert summary["paperClosesExecuted"] == 1            # owned position acted on
+    assert summary["reviewedExternalPositions"] == 1      # foreign reviewed, never closed
+    assert summary["reviewedExternalPositions"] <= summary["triggerReviewOnly"]
+
+
+# ── Optional cross-profile opposing-exposure guard (default OFF) ──────────────
+def test_cross_profile_opposing_open_allowed_by_default(monkeypatch) -> None:
+    # Default: a long open is NOT blocked just because another profile holds an
+    # opposing short in the same symbol.
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    _patch_haco(monkeypatch, "green")
+    _force_hold_review(monkeypatch)
+    other = _own_profile("true_momentum", "TM")
+    _seed_position(user_id, symbol="SPY", side="short", agent_profile_id=other["agent_profile_id"])
+    haco = _create_profile({
+        "agent_type": "haco_direction", "name": "HACO", "haco_direction_mode": "long_only",
+        "enabled": True, "universe_source": "manual", "manual_symbols": ["SPY"], "scan_depth": 1,
+    })
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    assert not [i for i in _intents(result) if i.get("reason") == "blocked_opposing_cross_profile"]
+    opens = [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER" and i.get("status") == "executed"]
+    assert len(opens) == 1  # the long open proceeds despite the cross-profile short
+
+
+def test_cross_profile_opposing_open_blocked_when_enabled(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    _patch_haco(monkeypatch, "green")
+    _force_hold_review(monkeypatch)
+    other = _own_profile("true_momentum", "TM")
+    short_pos = _seed_position(user_id, symbol="SPY", side="short", agent_profile_id=other["agent_profile_id"])
+    haco = _create_profile({
+        "agent_type": "haco_direction", "name": "HACO", "haco_direction_mode": "long_only",
+        "enabled": True, "universe_source": "manual", "manual_symbols": ["SPY"], "scan_depth": 1,
+        "prevent_opposing_agent_positions_across_profiles": True,
+    })
+    result = _service_run(user_id, haco["agent_profile_id"], dry_run=False)
+    blocked = [i for i in _intents(result) if i.get("reason") == "blocked_opposing_cross_profile"]
+    assert blocked and blocked[0]["symbol"] == "SPY"
+    assert not [i for i in _intents(result) if i.get("intent") == "OPEN_PAPER" and i.get("status") == "executed"]
+    assert _position_status(short_pos.id) == "open"  # the other profile's short is NOT closed
+
+
+# ── Market-session scheduler guard: no scheduled trading on closed days ───────
+SATURDAY = datetime(2026, 6, 6, 15, 0, tzinfo=timezone.utc)
+SUNDAY = datetime(2026, 6, 7, 15, 0, tzinfo=timezone.utc)
+MONDAY = datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc)
+HOLIDAY = datetime(2026, 7, 3, 15, 0, tzinfo=timezone.utc)  # Independence Day (observed)
+
+
+def _enabled_scheduled_profile(name="Sched"):
+    return _create_profile({
+        "agent_type": "standard", "name": name, "enabled": True,
+        "daily_run_time": "09:30", "timezone": "UTC",
+        "universe_source": "manual", "manual_symbols": ["SPY"],
+    })
+
+
+def test_scheduler_skips_saturday_and_sunday(monkeypatch) -> None:
+    _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _enabled_scheduled_profile()
+    for now in (SATURDAY, SUNDAY):
+        rows = AgentModeService().run_due(now=now)
+        mine = [r for r in rows if r.get("agent_profile_id") == prof["agent_profile_id"]]
+        assert mine and all(r["status"] == "skipped" for r in mine)
+        assert all(r["reason"] == "market_closed_weekend" for r in mine)
+        assert all(r.get("market_closed") is True for r in mine)
+        # A weekend tick never produces a completed (trading) run.
+        assert not [r for r in rows if r.get("status") == "completed"]
+
+
+def test_scheduler_skips_known_market_holiday(monkeypatch) -> None:
+    _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _enabled_scheduled_profile()
+    rows = AgentModeService().run_due(now=HOLIDAY)
+    mine = [r for r in rows if r.get("agent_profile_id") == prof["agent_profile_id"]]
+    assert mine and all(r["reason"] == "market_closed_holiday" for r in mine)
+    assert not [r for r in rows if r.get("status") == "completed"]
+
+
+def test_scheduler_runs_on_monday_after_weekend(monkeypatch) -> None:
+    _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _enabled_scheduled_profile()
+    # Weekend ticks skip WITHOUT claiming the window...
+    AgentModeService().run_due(now=SATURDAY)
+    AgentModeService().run_due(now=SUNDAY)
+    # ...so Monday still runs (the weekend never claimed or dup-blocked it).
+    rows = AgentModeService().run_due(now=MONDAY)
+    mine = [r for r in rows if r.get("agent_profile_id") == prof["agent_profile_id"]]
+    assert mine and mine[0]["status"] == "completed"
+    # Exactly one scheduled run row exists for the Monday window (no duplicate).
+    runs = client.get(f"/user/agent-mode/runs?profile_id={prof['agent_profile_id']}", headers=USER_AUTH).json()
+    assert len(runs["items"]) == 1
+
+
+def test_scheduler_weekend_creates_no_runs_or_orders(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _enabled_scheduled_profile()
+    AgentModeService().run_due(now=SATURDAY)
+    # No run rows, no positions, no notification attempts created on a weekend.
+    runs = client.get(f"/user/agent-mode/runs?profile_id={prof['agent_profile_id']}", headers=USER_AUTH).json()
+    assert runs["items"] == []
+    with SessionLocal() as session:
+        positions = list(session.execute(select(PaperPositionModel).where(PaperPositionModel.app_user_id == user_id)).scalars())
+        attempts = list(session.execute(select(NotificationAttemptModel)).scalars())
+    assert positions == []
+    assert attempts == []
+
+
+def test_manual_dry_run_labeled_market_closed_on_weekend(monkeypatch) -> None:
+    user_id = _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    prof = _enabled_scheduled_profile()
+    # A manual dry-run may still run, but must be labeled market_closed.
+    import macmarket_trader.agent_mode.service as svc
+    monkeypatch.setattr(svc, "utc_now", lambda: SATURDAY)
+    result = _service_run(user_id, prof["agent_profile_id"], dry_run=True)
+    assert result["summary"]["marketClosed"] is True
+    assert result["summary"]["marketSession"]["closed_reason"] == "market_closed_weekend"
+
+
+def test_scheduler_diagnostics_report_market_session(monkeypatch) -> None:
+    _approve_user()
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketData())
+    _enabled_scheduled_profile()
+    diag = AgentModeService().scheduler_diagnostics(now=SATURDAY)
+    assert diag["market_session"]["closed_reason"] == "market_closed_weekend"
+    assert diag["scheduler"]["market_open_today"] is False
+    assert diag["scheduler"]["skips_weekends_and_holidays"] is True
+    row = next(r for r in diag["profiles"])
+    assert row["market_open_today"] is False
+    assert row["would_run_now"] is False  # never "would run" on a closed day
+    assert str(row["next_eligible_trading_run"]).startswith("2026-06-08")  # next Monday

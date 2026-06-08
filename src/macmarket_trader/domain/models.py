@@ -574,6 +574,9 @@ class PaperPositionModel(Base):
     recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     replay_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Phase 12 — owning Agent Profile (NULL = manual/non-agent). Drives the
+    # per-profile ownership boundary: an agent may only close/flip its own positions.
+    agent_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 class PaperTradeModel(Base):
@@ -597,6 +600,8 @@ class PaperTradeModel(Base):
     replay_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     close_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Phase 12 — owning Agent Profile (NULL = manual/non-agent).
+    agent_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 class AgentModeSettingsModel(Base):
@@ -696,6 +701,28 @@ class AgentProfileModel(Base):
     true_momentum_trigger_mode: Mapped[str] = mapped_column(String(16), default="review_only", server_default="review_only")
     use_haco_filter: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     use_true_momentum_confirmation: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Phase 12 — ATR Trailing Stop agent config + directional/bidirectional controls.
+    # All scalar defaults so apply_schema_updates can ALTER-add them to the existing table.
+    atr_trail_type: Mapped[str] = mapped_column(String(16), default="modified", server_default="modified")
+    atr_period: Mapped[int] = mapped_column(Integer, default=9, server_default="9")
+    atr_factor: Mapped[float] = mapped_column(Float, default=2.9, server_default="2.9")
+    atr_first_trade: Mapped[str] = mapped_column(String(8), default="long", server_default="long")
+    atr_average_type: Mapped[str] = mapped_column(String(16), default="wilders", server_default="wilders")
+    atr_decision_timeframe: Mapped[str] = mapped_column(String(8), default="1D", server_default="1D")
+    atr_alignment_mode: Mapped[str] = mapped_column(String(32), default="decision_timeframe_only", server_default="decision_timeframe_only")
+    allow_shorts: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    allow_direction_flip: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    close_opposite_before_open: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    close_on_opposite_signal: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    hedge_allowed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    use_atr_filter: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Optional cross-profile exposure guard (default OFF). When enabled, this
+    # profile will not OPEN a new position whose side opposes a position already
+    # held by ANOTHER profile (or a manual trade) in the same symbol. It never
+    # closes the other position — it only blocks the new opposing open.
+    prevent_opposing_agent_positions_across_profiles: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     notification_preference: Mapped[str] = mapped_column(String(16), default="none")
     notification_phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sms_consent_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)

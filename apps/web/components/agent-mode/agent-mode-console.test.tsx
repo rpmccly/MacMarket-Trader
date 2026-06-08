@@ -175,6 +175,12 @@ describe("AgentModeConsole", () => {
     // Paper-only guardrails on the new surfaces.
     expect(source).toContain("Agent Mode never creates paper shorts");
     expect(source).toContain("Review-only never opens paper trades");
+    // Paper-open capability + missing-watchlist indicators.
+    expect(source).toContain("paperOpenCapability");
+    expect(source).toContain("Opens paper longs");
+    expect(source).toContain("Review only (no paper opens)");
+    expect(source).toContain("No watchlist selected");
+    expect(source).toContain("Resolved symbols:");
   });
 
   it("uses paper-safe language only", () => {
@@ -186,5 +192,26 @@ describe("AgentModeConsole", () => {
     expect(source).not.toMatch(/buy now/i);
     expect(source).not.toMatch(/sell now/i);
     expect(source).not.toMatch(/financial advice/i);
+  });
+
+  it("surfaces the position-ownership boundary in the run preview", () => {
+    // Ownership labels + the explicit "will not close what it does not own" copy.
+    expect(source).toContain("ownership-boundary-note");
+    expect(source).toContain("It will not close positions it does not own");
+    expect(source).toContain("formatOwnerLabel");
+    expect(source).toContain("position_owner");
+    expect(source).toContain("This agent");
+    expect(source).toContain("Another agent");
+    expect(source).toContain("Manual trade");
+    // Owner column header in the paper-actions table.
+    expect(source).toContain("<th>Owner</th>");
+  });
+
+  it("surfaces the market-closed (weekend/holiday) label in the run preview", () => {
+    expect(source).toContain("market-closed-note");
+    expect(source).toContain("Market closed");
+    expect(source).toContain("skipped on weekends and US market holidays");
+    expect(source).toContain("marketClosed");
+    expect(source).toContain("next_trading_day");
   });
 });
