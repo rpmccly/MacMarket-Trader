@@ -80,6 +80,62 @@ records `agent_profile_id`, `agent_profile_name`, and `agent_type`.
   `CASH_NO_TRADE`.
 - Already-open symbols are not duplicated as new paper-open candidates.
 
+### Bidirectional (directional) paper lifecycle (Phase 12)
+
+Standard agents stay **long-only and backward-compatible**. A profile becomes
+*directional* when it is an **ATR Trailing Stop** agent or any agent with
+`allow_shorts` enabled (HACO/True Momentum/Hybrid). Directional profiles drive
+opens/closes/flips through the pure decision engine
+(`triggers.decide_bidirectional_action`): per symbol, `(own side, signal
+direction, profile flags)` →
+`opened_long` / `opened_short` / `closed_long` / `closed_short` /
+`flipped_long_to_short` / `flipped_short_to_long` / `held_long` / `held_short` /
+`blocked_by_short_not_allowed` / `review_opposing_external_position` / `no_signal`.
+
+- Paper **short opens** (directional agents only) are risk-sized off the
+  indicator's protective stop (ATR trailing stop where available; conservative
+  fallback otherwise), routed through the same paper broker/OMS, and tagged with
+  the owning `agent_profile_id`. A short is created only when `allow_shorts` is
+  on; otherwise a SHORT signal is review-only (`paper_short_not_allowed`).
+- **Flips** close the own position first (the close-leg is appended before the
+  open-leg, so it executes first) then open the opposite side — there is never a
+  simultaneous long+short for the same symbol/profile.
+- A protective-stop close always takes priority over a signal-driven hold; only a
+  plain HOLD is reconciled against the directional signal.
+- Side-aware P&L: unrealized for a short = `(entry − mark) × qty`; realized uses
+  the side-aware `_equity_trade_pnl` (short multiplier −1).
+- HACO and True Momentum reuse the exact same lifecycle once `allow_shorts` is on.
+
+**ATR research surfaces (Phase 12, research-only).** The ATR Trailing Stop also
+powers two research surfaces, independent of Agent Mode execution:
+- **ATR Intel** (`/charts/atr`, `POST /charts/atr`): price + trailing-stop chart,
+  current state, latest stop, distance-to-stop %, bars since flip, last flip, and
+  a 1W/1D/4H/1H/30M state table.
+- **ATR Direction Heatmap** (`/atr-heatmap`, `POST /charts/atr-heatmap` + CSV/preview):
+  per-symbol multi-timeframe LONG/SHORT states + deterministic alignment
+  (+1 LONG / −1 SHORT per timeframe → LONG/SHORT/MIXED) + trailing stop / distance /
+  flip. Stateless refresh from manual symbols or an existing watchlist.
+- **ATR scheduled report** (`atr_heatmap` report type on `/schedules`): email-only,
+  branded heatmap email with summary counts, top aligned long/short, recently
+  flipped, and the state table. Routed through `StrategyReportService`, fully
+  separate from Agent Mode notifications (no SMS).
+The ATR engine math is frozen and shared across all three surfaces and the agent.
+
+**Cockpit controls (Phase 12 UI).** The Agent Profiles cockpit (`/agent-mode`)
+adds an **ATR Trailing Stop** template and exposes the directional execution
+settings: a collapsed *Advanced ATR settings* block (trail type, period, factor,
+first trade, average type, decision timeframe, alignment mode) and a collapsed
+*Directional & short controls* block (`allow_shorts`, `allow_direction_flip`,
+`close_opposite_before_open`, `close_on_opposite_signal`, `hedge_allowed`,
+`prevent_opposing_agent_positions_across_profiles`), each carrying a "Paper
+shorts are simulated only." warning. Profile cards show capability (opens
+longs / shorts / both), allow-shorts + flip behavior, current position side, and
+last action. The manual run preview adds **Side** and **Expected** columns
+(open long/short, close, flip long↔short, hold, review/block). The notification
+digest breaks opens/closes/flips down by direction (`openedLong`/`openedShort`,
+`closedLong`/`closedShort`, `flippedLongToShort`/`flippedShortToLong`) while
+preserving one digest per profile run per channel.
+
 ### Position ownership boundary (Phase 12)
 
 Each paper position and trade carries an owning `agent_profile_id` (NULL = a

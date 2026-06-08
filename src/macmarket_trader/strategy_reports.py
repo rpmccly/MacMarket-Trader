@@ -10,6 +10,12 @@ from macmarket_trader.analysis_packets import (
     build_macro_context_summary,
     build_provider_context_summary,
 )
+from macmarket_trader.charts.atr_heatmap_reporting import (
+    atr_heatmap_html,
+    atr_heatmap_text,
+    build_atr_report_payload,
+)
+from macmarket_trader.charts.atr_heatmap_service import ATR_HEATMAP_TIMEFRAMES, AtrHeatmapService
 from macmarket_trader.charts.haco_heatmap_reporting import (
     annotate_rows as annotate_haco_rows,
     build_report_payload as build_haco_report_payload,
@@ -39,7 +45,7 @@ from macmarket_trader.charts.momentum_heatmap_service import (
 from macmarket_trader.data.providers.base import EmailMessage, EmailProvider
 from macmarket_trader.data.providers.registry import build_market_data_service
 from macmarket_trader.domain.enums import MarketMode
-from macmarket_trader.domain.schemas import HacoHeatmapRequest, MomentumHeatmapRequest
+from macmarket_trader.domain.schemas import AtrHeatmapRequest, HacoHeatmapRequest, MomentumHeatmapRequest
 from macmarket_trader.email_templates import (
     render_scheduled_heatmap_failure_html,
     render_scheduled_heatmap_failure_text,
@@ -60,19 +66,23 @@ from macmarket_trader.storage.repositories import (
 REPORT_TYPE_STRATEGY_SCAN = "strategy_scan"
 REPORT_TYPE_MOMENTUM_HEATMAP = "momentum_heatmap"
 REPORT_TYPE_HACO_HEATMAP = "haco_heatmap"
+REPORT_TYPE_ATR_HEATMAP = "atr_heatmap"
 SCHEDULE_REPORT_TYPES = {
     REPORT_TYPE_STRATEGY_SCAN,
     REPORT_TYPE_MOMENTUM_HEATMAP,
     REPORT_TYPE_HACO_HEATMAP,
+    REPORT_TYPE_ATR_HEATMAP,
 }
 HEATMAP_REPORT_TYPES = {
     REPORT_TYPE_MOMENTUM_HEATMAP,
     REPORT_TYPE_HACO_HEATMAP,
+    REPORT_TYPE_ATR_HEATMAP,
 }
 REPORT_TYPE_LABELS = {
     REPORT_TYPE_STRATEGY_SCAN: "Strategy Candidate Scan",
     REPORT_TYPE_MOMENTUM_HEATMAP: "Momentum Heatmap",
     REPORT_TYPE_HACO_HEATMAP: "HACO Heatmap",
+    REPORT_TYPE_ATR_HEATMAP: "ATR Direction Heatmap",
 }
 
 
@@ -135,6 +145,8 @@ class StrategyReportService:
             return self._run_momentum_heatmap_schedule(schedule, settings, trigger=trigger)
         if report_type == REPORT_TYPE_HACO_HEATMAP:
             return self._run_haco_heatmap_schedule(schedule, settings, trigger=trigger)
+        if report_type == REPORT_TYPE_ATR_HEATMAP:
+            return self._run_atr_heatmap_schedule(schedule, settings, trigger=trigger)
         return self._run_strategy_scan_schedule(schedule, settings, trigger=trigger)
 
     def _run_strategy_scan_schedule(self, schedule, settings: dict[str, object], *, trigger: str) -> dict[str, object]:  # noqa: ANN001
@@ -728,6 +740,70 @@ class StrategyReportService:
             "No live trading, broker routing, recommendations, paper orders, or automatic execution are created by this report.",
         ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _atr_summary(report: dict[str, Any]) -> dict[str, object]:
+        rows = [row for row in report.get("rows") or [] if isinstance(row, dict)]
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        usable = sum(1 for row in rows if str(row.get("status")) == "ok")
+        return {
+            "row_count": len(rows),
+            "usable_row_count": usable,
+            "long_count": int(summary.get("long_count") or 0),
+            "short_count": int(summary.get("short_count") or 0),
+            # Aliases so the shared schedule-run summary formatter renders ATR rows.
+            "all_long_count": int(summary.get("long_count") or 0),
+            "all_short_count": int(summary.get("short_count") or 0),
+            "mixed_count": int(summary.get("mixed_count") or 0),
+            "unavailable_count": int(summary.get("unavailable_count") or 0),
+            "recently_flipped_count": len(report.get("recently_flipped") or []),
+        }
+
+    def _run_atr_heatmap_schedule(self, schedule, settings: dict[str, object], *, trigger: str) -> dict[str, object]:  # noqa: ANN001
+        symbols = self._normalize_symbols(settings.get("symbols", []))
+        if not symbols:
+            raise ValueError("atr heatmap schedule requires at least one symbol")
+        try:
+            timeframes = self._normalize_heatmap_timeframes(
+                settings.get("timeframes"),
+                allowed=tuple(ATR_HEATMAP_TIMEFRAMES),
+            )
+            service = AtrHeatmapService(self.market_data_service)
+            response = service.build_heatmap(
+                AtrHeatmapRequest(symbols=symbols, timeframes=timeframes)
+            ).model_dump(mode="json")
+            report = build_atr_report_payload(response=response, profile_name=str(schedule.name or "Scheduled ATR Heatmap"))
+            summary = self._atr_summary(report)
+            if int(summary.get("usable_row_count") or 0) <= 0:
+                return self._record_heatmap_failure(
+                    schedule,
+                    settings,
+                    report_type=REPORT_TYPE_ATR_HEATMAP,
+                    trigger=trigger,
+                    reason="no_usable_atr_heatmap_rows",
+                    symbols=symbols,
+                    partial_summary=summary,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return self._record_heatmap_failure(
+                schedule,
+                settings,
+                report_type=REPORT_TYPE_ATR_HEATMAP,
+                trigger=trigger,
+                reason=f"atr_heatmap_refresh_failed:{type(exc).__name__}",
+                symbols=symbols,
+            )
+
+        return self._send_heatmap_report(
+            schedule,
+            settings,
+            report_type=REPORT_TYPE_ATR_HEATMAP,
+            trigger=trigger,
+            report=report,
+            summary=summary,
+            html=atr_heatmap_html(report),
+            text=atr_heatmap_text(report),
+        )
 
     def _send_heatmap_report(
         self,

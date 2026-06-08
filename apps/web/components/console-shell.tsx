@@ -32,6 +32,8 @@ const navSections = [
       ["/haco-heatmap", "HACO Direction Heatmap"],
       ["/charts/momentum", "Momentum Intelligence"],
       ["/momentum-heatmap", "Momentum Heatmap"],
+      ["/charts/atr", "ATR Intel"],
+      ["/atr-heatmap", "ATR Direction Heatmap"],
     ],
   },
   {

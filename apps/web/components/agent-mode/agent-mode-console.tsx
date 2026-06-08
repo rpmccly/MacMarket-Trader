@@ -66,6 +66,21 @@ const defaultSettings: AgentModeSettings = {
   true_momentum_trigger_mode: "review_only",
   use_haco_filter: false,
   use_true_momentum_confirmation: false,
+  // Phase 12 — ATR + directional defaults (paper shorts off by default).
+  atr_trail_type: "modified",
+  atr_period: 9,
+  atr_factor: 2.9,
+  atr_first_trade: "long",
+  atr_average_type: "wilders",
+  atr_decision_timeframe: "1D",
+  atr_alignment_mode: "decision_timeframe_only",
+  allow_shorts: false,
+  allow_direction_flip: true,
+  close_opposite_before_open: true,
+  close_on_opposite_signal: true,
+  hedge_allowed: false,
+  use_atr_filter: false,
+  prevent_opposing_agent_positions_across_profiles: false,
   paper_only: true,
   execution_mode: "paper",
 };
@@ -85,6 +100,7 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   haco_direction: "HACO Direction",
   true_momentum: "True Momentum",
   hybrid: "Hybrid",
+  atr_trailing_stop: "ATR Trailing Stop",
 };
 
 const AGENT_TYPE_BLURB: Record<string, string> = {
@@ -92,6 +108,7 @@ const AGENT_TYPE_BLURB: Record<string, string> = {
   haco_direction: "Triggers on the HACO direction signal. Long entries only; short signals are review-only (no paper shorts).",
   true_momentum: "Triggers on True Momentum alignment. Defaults to conservative (opens paper longs when long-term and short-term momentum align); review-only is a safe no-open mode.",
   hybrid: "Advanced: combines selected Standard strategies with optional HACO filter and True Momentum confirmation.",
+  atr_trailing_stop: "Directional ATR Trailing Stop agent. The trailing stop is both the direction signal and the protective stop. Opens paper longs by default; enable Allow shorts to open simulated paper shorts and flip between sides. Paper shorts are simulated only.",
 };
 
 function agentTypeLabel(value: unknown): string {
@@ -101,18 +118,36 @@ function agentTypeLabel(value: unknown): string {
 
 // Whether an agent profile can open paper LONGS, given its type/mode. Shorts are
 // never opened (review-only) because no paper-short lifecycle exists.
-function paperOpenCapability(profile: { agent_type?: string; true_momentum_trigger_mode?: string | null }): {
+function paperOpenCapability(profile: {
+  agent_type?: string;
+  true_momentum_trigger_mode?: string | null;
+  allow_shorts?: boolean | null;
+}): {
   label: string;
   tone: "good" | "warn" | "neutral";
 } {
   const type = String(profile.agent_type || "standard");
+  const shorts = Boolean(profile.allow_shorts);
+  if (type === "atr_trailing_stop") {
+    return shorts
+      ? { label: "Opens paper longs and shorts", tone: "good" }
+      : { label: "Opens paper longs only", tone: "good" };
+  }
   if (type === "true_momentum") {
-    return String(profile.true_momentum_trigger_mode || "review_only") === "review_only"
-      ? { label: "Review only (no paper opens)", tone: "warn" }
+    if (String(profile.true_momentum_trigger_mode || "review_only") === "review_only")
+      return { label: "Review only (no paper opens)", tone: "warn" };
+    return shorts
+      ? { label: "Opens paper longs and shorts", tone: "good" }
       : { label: "Opens paper longs", tone: "good" };
   }
-  if (type === "haco_direction") return { label: "Opens paper longs · shorts review-only", tone: "good" };
-  if (type === "hybrid") return { label: "Opens paper longs when filters confirm", tone: "good" };
+  if (type === "haco_direction")
+    return shorts
+      ? { label: "Opens paper longs and shorts", tone: "good" }
+      : { label: "Opens paper longs · shorts review-only", tone: "good" };
+  if (type === "hybrid")
+    return shorts
+      ? { label: "Opens paper longs and shorts when filters confirm", tone: "good" }
+      : { label: "Opens paper longs when filters confirm", tone: "good" };
   return { label: "Opens paper longs", tone: "good" };
 }
 
@@ -190,6 +225,21 @@ function toneForOwner(owner?: string | null): "good" | "warn" | "bad" | "neutral
   if (owner === "own") return "good";
   if (owner === "foreign_agent" || owner === "manual") return "warn";
   return "neutral";
+}
+
+// Expected directional action for a run-preview intent: open long/short, close,
+// flip long↔short, hold, or review/block. Drives the "Expected" preview column.
+function expectedActionLabel(intent: { intent?: string; reason?: string | null; side?: string | null; status?: string }): string {
+  const reason = String(intent.reason || "");
+  const side = String(intent.side || "").toLowerCase();
+  if (reason === "flipped_long_to_short") return "flip long→short";
+  if (reason === "flipped_short_to_long") return "flip short→long";
+  if (intent.intent === "OPEN_PAPER") return side === "short" ? "open short" : "open long";
+  if (intent.intent === "CLOSE_PAPER") return side ? `close ${side}` : "close";
+  if (intent.intent === "HOLD") return "hold";
+  if (intent.status === "review_only") return "review";
+  if (intent.status === "blocked" || intent.status === "skipped") return "blocked";
+  return "—";
 }
 
 const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -666,6 +716,7 @@ export function AgentModeConsole() {
                     <option value="standard">Standard Strategy</option>
                     <option value="haco_direction">HACO Direction</option>
                     <option value="true_momentum">True Momentum</option>
+                    <option value="atr_trailing_stop">ATR Trailing Stop</option>
                     <option value="hybrid">Hybrid (advanced)</option>
                   </select>
                 </label>
@@ -712,10 +763,17 @@ export function AgentModeConsole() {
                     <div className="agent-profile-card-meta">
                       <span>Next run: {formatDateTime(profile.next_scheduled_run_at)}</span>
                       <span>Last result: {formatFieldLabel(profile.last_run_status ?? "never_run")}</span>
+                      {profile.last_action ? <span>Last action: {formatFieldLabel(profile.last_action)}</span> : null}
                       <span>Universe: {needsWatchlist ? "No watchlist selected" : asText(profile.watchlist_name ?? formatFieldLabel(profile.universe_source))}</span>
                       <span>Resolved symbols: {profile.resolved_symbol_count ?? 0}</span>
                       <span>{modeSummary}</span>
-                      <span>Open positions: {profile.open_position_count ?? 0}</span>
+                      {profile.directional ? (
+                        <span>
+                          Shorts: {profile.allow_shorts ? "allowed (paper, simulated only)" : "off (long-only)"}
+                          {" · "}Flip: {profile.allow_direction_flip ? "on" : "off"}
+                        </span>
+                      ) : null}
+                      <span>Open positions: {profile.open_position_count ?? 0}{profile.directional ? ` · side: ${profile.current_position_side ?? "flat"}` : ""}</span>
                       <span>Realized P&amp;L: {formatMoney(profile.realized_pnl)}</span>
                     </div>
                     <div className="op-row">
@@ -897,11 +955,13 @@ export function AgentModeConsole() {
             {run?.intents?.length ? (
               <ResponsiveTable label="Agent Mode paper actions">
                 <table className="op-table">
-                  <thead><tr><th>Action</th><th>Symbol</th><th>Owner</th><th>Status</th><th>Reason</th><th>Linked paper IDs</th><th>Summary</th></tr></thead>
+                  <thead><tr><th>Action</th><th>Symbol</th><th>Side</th><th>Expected</th><th>Owner</th><th>Status</th><th>Reason</th><th>Linked paper IDs</th><th>Summary</th></tr></thead>
                   <tbody>{run.intents.map((intent, index) => (
                     <tr key={`${intent.intent}-${intent.symbol ?? index}-${index}`}>
                       <td><StatusBadge tone={toneForIntent(intent.intent)}>{formatIntentLabel(intent.intent)}</StatusBadge></td>
                       <td>{intent.symbol ?? "-"}</td>
+                      <td>{intent.side ? <span className={`op-side-badge is-${String(intent.side).toLowerCase()}`}>{String(intent.side).toUpperCase()}</span> : "-"}</td>
+                      <td>{expectedActionLabel(intent)}</td>
                       <td>{intent.position_owner ? <StatusBadge tone={toneForOwner(intent.position_owner)}>{formatOwnerLabel(intent.position_owner)}</StatusBadge> : "-"}</td>
                       <td>{intent.status}</td>
                       <td>{intent.reason ?? "-"}</td>
@@ -1189,6 +1249,92 @@ export function AgentModeConsole() {
                       <label><input type="checkbox" checked={Boolean(settings.use_true_momentum_confirmation)} onChange={(event) => setSettings({ ...settings, use_true_momentum_confirmation: event.target.checked })} /> Require True Momentum confirmation</label>
                     </div>
                   </div>
+                ) : null}
+
+                {settings.agent_type === "atr_trailing_stop" ? (
+                  <div className="op-stack" data-testid="atr-config">
+                    <div className="agent-paper-warning">
+                      ATR Trailing Stop is both the direction signal and the protective stop / risk reference. Paper shorts are simulated only.
+                    </div>
+                    <details className="agent-advanced-atr">
+                      <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced ATR settings</summary>
+                      <div className="op-grid op-grid-3" style={{ marginTop: 8 }}>
+                        <label>
+                          <span>ATR trail type</span>
+                          <select value={settings.atr_trail_type ?? "modified"} onChange={(event) => setSettings({ ...settings, atr_trail_type: event.target.value })}>
+                            <option value="modified">Modified</option>
+                            <option value="unmodified">Unmodified</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>ATR period</span>
+                          <input type="number" min={1} value={settings.atr_period ?? 9} onChange={(event) => setSettings({ ...settings, atr_period: Number(event.target.value) })} />
+                        </label>
+                        <label>
+                          <span>ATR factor</span>
+                          <input type="number" step="0.1" min={0} value={settings.atr_factor ?? 2.9} onChange={(event) => setSettings({ ...settings, atr_factor: Number(event.target.value) })} />
+                        </label>
+                        <label>
+                          <span>First trade</span>
+                          <select value={settings.atr_first_trade ?? "long"} onChange={(event) => setSettings({ ...settings, atr_first_trade: event.target.value })}>
+                            <option value="long">Long</option>
+                            <option value="short">Short</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Average type</span>
+                          <select value={settings.atr_average_type ?? "wilders"} onChange={(event) => setSettings({ ...settings, atr_average_type: event.target.value })}>
+                            <option value="wilders">Wilders</option>
+                            <option value="simple">Simple</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Decision timeframe</span>
+                          <select value={settings.atr_decision_timeframe ?? "1D"} onChange={(event) => setSettings({ ...settings, atr_decision_timeframe: event.target.value })}>
+                            <option value="1W">1W</option>
+                            <option value="1D">1D</option>
+                            <option value="4H">4H</option>
+                            <option value="1H">1H</option>
+                            <option value="30M">30M</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Alignment mode</span>
+                          <select value={settings.atr_alignment_mode ?? "decision_timeframe_only"} onChange={(event) => setSettings({ ...settings, atr_alignment_mode: event.target.value })}>
+                            <option value="decision_timeframe_only">Decision timeframe only</option>
+                            <option value="multi_timeframe_aligned">Multi-timeframe aligned</option>
+                          </select>
+                        </label>
+                      </div>
+                      <SettingHelp>ATR math is frozen and shared with ATR Intel; these only configure how this agent reads the signal and protective stop.</SettingHelp>
+                    </details>
+                  </div>
+                ) : null}
+
+                {settings.agent_type !== "standard" ? (
+                  <details className="agent-directional-controls" data-testid="directional-controls">
+                    <summary style={{ cursor: "pointer", fontWeight: 600 }}>Directional &amp; short controls (advanced)</summary>
+                    <div className="agent-paper-warning" style={{ marginTop: 8 }}>
+                      Paper shorts are simulated only. Enabling shorts lets this agent open simulated paper shorts and flip between sides — no live routing, ever.
+                    </div>
+                    <div className="op-row" style={{ marginTop: 8 }}>
+                      <label><input type="checkbox" checked={Boolean(settings.allow_shorts)} onChange={(event) => setSettings({ ...settings, allow_shorts: event.target.checked })} /> Allow shorts (paper, simulated only)</label>
+                      <label><input type="checkbox" checked={settings.allow_direction_flip ?? true} onChange={(event) => setSettings({ ...settings, allow_direction_flip: event.target.checked })} /> Allow direction flip</label>
+                    </div>
+                    <div className="op-row">
+                      <label><input type="checkbox" checked={settings.close_opposite_before_open ?? true} onChange={(event) => setSettings({ ...settings, close_opposite_before_open: event.target.checked })} /> Close opposite before open</label>
+                      <label><input type="checkbox" checked={settings.close_on_opposite_signal ?? true} onChange={(event) => setSettings({ ...settings, close_on_opposite_signal: event.target.checked })} /> Close on opposite signal</label>
+                    </div>
+                    <div className="op-row">
+                      <label><input type="checkbox" checked={Boolean(settings.hedge_allowed)} onChange={(event) => setSettings({ ...settings, hedge_allowed: event.target.checked })} /> Hedge allowed</label>
+                      <label><input type="checkbox" checked={Boolean(settings.prevent_opposing_agent_positions_across_profiles)} onChange={(event) => setSettings({ ...settings, prevent_opposing_agent_positions_across_profiles: event.target.checked })} /> Prevent opposing positions across profiles</label>
+                    </div>
+                    <SettingHelp>
+                      This profile can open {settings.allow_shorts ? "longs and shorts" : "longs only"}.{" "}
+                      {settings.allow_direction_flip ? "It flips between long and short on an opposing signal." : "It does not flip; an opposing signal closes the position when close-on-opposite is on."}{" "}
+                      It only ever manages positions it owns — manual and other agents&apos; positions are never closed.
+                    </SettingHelp>
+                  </details>
                 ) : null}
               </section>
               <div className="op-row">

@@ -160,7 +160,7 @@ type Watchlist = { id: number; name: string; symbols: string[]; created_at: stri
 type WatchlistSort = "name" | "symbol_count";
 type WatchlistSaveMode = "replace" | "merge";
 type ScheduleUniverseSourceType = "manual" | "watchlist" | "watchlist_plus_manual" | "all_active";
-type ReportType = "strategy_scan" | "momentum_heatmap" | "haco_heatmap";
+type ReportType = "strategy_scan" | "momentum_heatmap" | "haco_heatmap" | "atr_heatmap";
 type ScheduleRunSummary = {
   report_type?: ReportType | string;
   report_type_label?: string;
@@ -220,10 +220,11 @@ const REPORT_TYPES: { value: ReportType; label: string; description: string }[] 
   { value: "strategy_scan", label: "Strategy Candidate Scan", description: "Ranked deterministic recommendation candidates." },
   { value: "momentum_heatmap", label: "Momentum Heatmap", description: "Research-only Momentum Heatmap table email." },
   { value: "haco_heatmap", label: "HACO Heatmap", description: "Research-only HACO Direction Heatmap table email." },
+  { value: "atr_heatmap", label: "ATR Direction Heatmap", description: "Research-only ATR Direction Heatmap table email (LONG/SHORT alignment + trailing stop)." },
 ];
 
 function normalizeReportType(value: string | undefined | null): ReportType {
-  if (value === "momentum_heatmap" || value === "haco_heatmap") return value;
+  if (value === "momentum_heatmap" || value === "haco_heatmap" || value === "atr_heatmap") return value;
   return "strategy_scan";
 }
 

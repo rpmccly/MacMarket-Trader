@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 from macmarket_trader.domain.schemas import Bar
 from macmarket_trader.indicators.atr_trailing_stop import compute_atr_trailing_stop

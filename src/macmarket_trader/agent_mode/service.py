@@ -13,9 +13,9 @@ from macmarket_trader.agent_mode import market_session
 from macmarket_trader.agent_mode import triggers as agent_triggers
 from macmarket_trader.api.routes import admin as workflow
 from macmarket_trader.config import settings
-from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
+from macmarket_trader.domain.enums import ApprovalStatus, Direction, MarketMode
 from macmarket_trader.domain.models import AppUserModel
-from macmarket_trader.domain.schemas import PortfolioSnapshot, TradeRecommendation
+from macmarket_trader.domain.schemas import OrderIntent, PortfolioSnapshot, TradeRecommendation
 from macmarket_trader.domain.time import utc_now
 from macmarket_trader.email_templates import render_agent_mode_run_digest_html
 from macmarket_trader.notifications import NotificationService
@@ -515,6 +515,13 @@ class AgentModeService:
             if self._is_agent_position(position, links=links)
         ]
         agent_type = str(settings_payload.get("agent_type") or "standard")
+        # Phase 12 — directional capability + current side/last action for the card.
+        directional = self._profile_is_directional(agent_type=agent_type, settings_payload=settings_payload)
+        own_sides = {str(getattr(p, "side", "") or "").lower() for p in open_positions}
+        own_sides.discard("")
+        current_position_side = (
+            "flat" if not own_sides else next(iter(own_sides)) if len(own_sides) == 1 else "mixed"
+        )
         return {
             "profile_uid": row.profile_uid,
             "agent_profile_id": row.id,
@@ -530,17 +537,44 @@ class AgentModeService:
             "next_scheduled_run_at": next_run.isoformat() if next_run else None,
             "last_run_status": last_status,
             "last_run_at": latest.created_at.isoformat() if latest and latest.created_at else None,
+            "last_action": self._last_action_label(latest),
             "universe_source": settings_payload.get("universe_source"),
             "watchlist_name": universe.get("watchlist_name"),
             "resolved_symbol_count": len(universe.get("symbols") or []),
             "strategy_count": len(settings_payload.get("strategy_families") or []) if agent_type in {"standard", "hybrid"} else None,
             "haco_direction_mode": settings_payload.get("haco_direction_mode") if agent_type in {"haco_direction", "hybrid"} else None,
             "true_momentum_trigger_mode": settings_payload.get("true_momentum_trigger_mode") if agent_type in {"true_momentum", "hybrid"} else None,
+            # Directional execution capability (Phase 12).
+            "directional": directional,
+            "allow_shorts": bool(settings_payload.get("allow_shorts", False)),
+            "allow_direction_flip": bool(settings_payload.get("allow_direction_flip", True)),
+            "current_position_side": current_position_side,
             "open_position_count": len(open_positions),
             "realized_pnl": realized,
             "trade_count": len(trades),
             "paperOnly": True,
         }
+
+    def _last_action_label(self, latest) -> str | None:
+        """Human-readable label of the most recent executed open/close/flip action."""
+        if latest is None:
+            return None
+        response = self._run_response(latest)
+        intents = response.get("intents") if isinstance(response.get("intents"), list) else []
+        executed = [
+            i for i in intents
+            if isinstance(i, dict) and i.get("intent") in {"OPEN_PAPER", "CLOSE_PAPER"} and i.get("status") == "executed"
+        ]
+        if not executed:
+            return None
+        last = executed[-1]
+        reason = str(last.get("reason") or "")
+        side = str(last.get("side") or "").lower()
+        if reason in {"flipped_long_to_short", "flipped_short_to_long"}:
+            return reason.replace("_", " ")
+        if last.get("intent") == "OPEN_PAPER":
+            return f"opened {side}".strip() if side else "opened"
+        return f"closed {side}".strip() if side else "closed"
 
     def resolve_universe(self, *, app_user_id: int, settings_payload: dict[str, object], overrides: dict[str, object]) -> dict[str, object]:
         explicit_source = overrides.get("universe_source")
@@ -1013,11 +1047,30 @@ class AgentModeService:
             cls._safe_float(intent.get("net_pnl") if intent.get("net_pnl") is not None else intent.get("realized_pnl")) or 0.0
             for intent in paper_closes
         )
+        # Phase 12 — directional action buckets for the digest (side-aware).
+        def _side(intent: dict[str, object]) -> str:
+            return str(intent.get("side") or "").lower()
+        opened_long = [i for i in paper_opens if _side(i) == "long"]
+        opened_short = [i for i in paper_opens if _side(i) == "short"]
+        flip_reasons = {"flipped_long_to_short", "flipped_short_to_long"}
+        flips = [i for i in paper_closes if str(i.get("reason")) in flip_reasons]
+        flipped_long_to_short = [i for i in flips if str(i.get("reason")) == "flipped_long_to_short"]
+        flipped_short_to_long = [i for i in flips if str(i.get("reason")) == "flipped_short_to_long"]
+        non_flip_closes = [i for i in paper_closes if str(i.get("reason")) not in flip_reasons]
+        closed_long = [i for i in non_flip_closes if _side(i) == "long"]
+        closed_short = [i for i in non_flip_closes if _side(i) == "short"]
         return {
             "positionsBeforeCount": positions_before_count,
             "positionsAfterCount": positions_after_count,
             "paperOpensExecuted": len(paper_opens),
             "paperClosesExecuted": len(paper_closes),
+            # Directional breakdown (side-aware) for the digest action buckets.
+            "openedLong": len(opened_long),
+            "openedShort": len(opened_short),
+            "closedLong": len(closed_long),
+            "closedShort": len(closed_short),
+            "flippedLongToShort": len(flipped_long_to_short),
+            "flippedShortToLong": len(flipped_short_to_long),
             "holds": sum(1 for intent in final_intents if intent.get("intent") == "HOLD"),
             "blockedActions": len(blocked_actions),
             "triggerReviewOnly": len(trigger_reviews),
@@ -1156,8 +1209,9 @@ class AgentModeService:
             f"Watchlist: {watchlist_name}",
             f"Candidates reviewed: {len(candidates)}",
             f"Positions reviewed: {summary.get('positionsBeforeCount', 0)}",
-            f"Opened (own): {summary.get('paperOpensExecuted', 0)}",
-            f"Closed (own): {summary.get('paperClosesExecuted', 0)}",
+            f"Opened (own): {summary.get('paperOpensExecuted', 0)} (long {summary.get('openedLong', 0)} / short {summary.get('openedShort', 0)})",
+            f"Closed (own): {summary.get('paperClosesExecuted', 0)} (long {summary.get('closedLong', 0)} / short {summary.get('closedShort', 0)})",
+            f"Flipped: long→short {summary.get('flippedLongToShort', 0)} / short→long {summary.get('flippedShortToLong', 0)}",
             f"Held/reviewed: {summary.get('holds', 0)}",
             f"Reviewed (no trade): {summary.get('triggerReviewOnly', 0)}",
             f"Reviewed (not owned - another agent/manual, never closed): {summary.get('reviewedExternalPositions', 0)}",
@@ -1413,6 +1467,155 @@ class AgentModeService:
             "paper_only": True,
             "no_live_routing": True,
             "review_only": True,
+        }
+
+    # ── Phase 12 — directional (bidirectional) lifecycle helpers ──────────────
+    @staticmethod
+    def _profile_is_directional(*, agent_type: str, settings_payload: dict[str, object]) -> bool:
+        """A profile uses the bidirectional decision engine when it is an ATR agent
+        (always directional) or any agent that has explicitly enabled shorts.
+
+        Standard stays long-only and backward-compatible; HACO/True Momentum/Hybrid
+        only get the directional lifecycle once ``allow_shorts`` is turned on.
+        """
+        if str(agent_type or "").strip().lower() == "atr_trailing_stop":
+            return True
+        return bool(settings_payload.get("allow_shorts"))
+
+    @staticmethod
+    def _directional_flags(settings_payload: dict[str, object]) -> dict[str, bool]:
+        return {
+            "allow_shorts": bool(settings_payload.get("allow_shorts", False)),
+            "allow_direction_flip": bool(settings_payload.get("allow_direction_flip", True)),
+            "close_opposite_before_open": bool(settings_payload.get("close_opposite_before_open", True)),
+            "close_on_opposite_signal": bool(settings_payload.get("close_on_opposite_signal", True)),
+            "hedge_allowed": bool(settings_payload.get("hedge_allowed", False)),
+        }
+
+    def _execute_directional_short_open(
+        self,
+        *,
+        intent: dict[str, object],
+        candidate: dict[str, object],
+        user,
+        bars_by_symbol: dict[str, tuple[list[Any], str, bool]],
+        timeframe: str,
+        settings_payload: dict[str, object],
+        open_positions: list[object],
+        agent_profile_id: int | None = None,
+    ) -> dict[str, object]:
+        """Open a paper SHORT for a directional agent (allow_shorts only).
+
+        Risk-sized off the indicator's protective stop (ATR trailing stop when
+        available) instead of the long-biased deterministic recommendation engine,
+        then routed through the same paper broker/OMS. Paper-only; never live.
+        """
+        symbol = str(candidate.get("symbol") or "").upper()
+        bars_tuple = bars_by_symbol.get(symbol)
+        if not bars_tuple:
+            return {**intent, "status": "skipped", "execution_error": "bars_unavailable"}
+        bars, source, fallback_mode = bars_tuple
+        # Entry = latest mark (snapshot close, else last bar close).
+        entry = None
+        try:
+            snapshot = workflow.market_data_service.latest_snapshot(symbol, timeframe)
+            entry = self._safe_float(getattr(snapshot, "close", None))
+        except Exception:  # noqa: BLE001 - fall back to the last bar close.
+            entry = None
+        if (entry is None or entry <= 0) and bars:
+            entry = self._safe_float(getattr(bars[-1], "close", None))
+        if entry is None or entry <= 0:
+            return {**intent, "status": "skipped", "execution_error": "mark_unavailable"}
+        # Protective stop: prefer the indicator stop (ATR); else re-derive from ATR;
+        # else a conservative fallback. A short needs a stop ABOVE entry.
+        stop = self._safe_float(intent.get("protective_stop"))
+        if stop is None or stop <= entry:
+            try:
+                stop = self._safe_float(agent_triggers.evaluate_atr_signal(bars, profile=settings_payload, timeframe=timeframe).protective_stop)
+            except Exception:  # noqa: BLE001
+                stop = None
+        if stop is None or stop <= entry:
+            stop = entry * 1.05  # fallback: 5% protective stop above entry
+        risk_per_share = stop - entry
+        if risk_per_share <= 0:
+            return {**intent, "status": "skipped", "execution_error": "protective_stop_unusable"}
+        risk_dollars = workflow._effective_risk_dollars(user)
+        max_notional = workflow._effective_paper_max_order_notional(user)
+        if not (isinstance(risk_dollars, (int, float)) and risk_dollars > 0) or not (max_notional and max_notional > 0):
+            return {**intent, "status": "blocked", "execution_error": "agent_sizing_unavailable"}
+        risk_shares = int(max(0, math.floor(risk_dollars / risk_per_share)))
+        notional_cap_shares = int(max(0, math.floor(max_notional / entry)))
+        final_shares = min(risk_shares, notional_cap_shares)
+        sizing_plan = self._apply_agent_sizing_caps(
+            sizing_plan={
+                "recommended_shares": risk_shares,
+                "final_order_shares": final_shares,
+                "operator_override_shares": None,
+                "max_paper_order_notional": workflow._round_money(max_notional),
+                "notional_cap_shares": notional_cap_shares,
+                "estimated_notional": workflow._round_money(final_shares * entry),
+                "risk_at_stop": workflow._round_money(final_shares * risk_per_share),
+                "sizing_mode": "atr_risk_and_notional_capped",
+                "notional_cap_reduced": final_shares < risk_shares,
+                "protective_stop": round(stop, 4),
+                "risk_per_share": round(risk_per_share, 4),
+            },
+            settings_payload=settings_payload,
+            user=user,
+            open_positions=open_positions,
+        )
+        capped_shares = int(sizing_plan.get("final_order_shares") or 0)
+        if capped_shares <= 0:
+            return {**intent, "status": "blocked", "execution_error": sizing_plan.get("agent_sizing_block_reason") or "agent_sizing_blocked", **sizing_plan}
+        recommendation_id = f"agentdir_{uuid4().hex[:12]}"
+        order_intent = OrderIntent(
+            recommendation_id=recommendation_id,
+            symbol=symbol,
+            side=Direction.SHORT,
+            shares=capped_shares,
+            limit_price=round(entry, 4),
+        )
+        order, fill = workflow.paper_broker.execute(order_intent)
+        workflow.recommendation_service.persist_order(
+            order,
+            notes=(
+                "agent_mode_paper_short_open"
+                f"|source={source}|fallback={str(fallback_mode).lower()}"
+                "|paper_only=true|no_live_routing=true"
+            ),
+            app_user_id=user.id,
+        )
+        workflow.recommendation_service.persist_fill(fill)
+        position = None
+        if fill.filled_shares > 0:
+            position = self.paper_repo.upsert_position_on_fill(
+                app_user_id=user.id,
+                symbol=order.symbol,
+                side=order.side.value,
+                fill_qty=float(fill.filled_shares),
+                fill_price=float(fill.fill_price),
+                recommendation_id=None,
+                replay_run_id=None,
+                order_id=order.order_id,
+                agent_profile_id=agent_profile_id,
+            )
+        return {
+            **intent,
+            "status": "executed",
+            "outcome": "opened_paper_short",
+            "side": "short",
+            "order_id": order.order_id,
+            "position_id": position.id if position is not None else None,
+            "recommendation_id": recommendation_id,
+            "shares": order.shares,
+            "limit_price": self._round_price(order.limit_price),
+            "fill_price": self._round_price(fill.fill_price),
+            "protective_stop": round(stop, 4),
+            "market_data_source": source,
+            "fallback_mode": fallback_mode,
+            "paper_only": True,
+            "no_live_routing": True,
+            **sizing_plan,
         }
 
     def _execute_close(self, *, intent: dict[str, object], user) -> dict[str, object]:
@@ -2221,6 +2424,13 @@ class AgentModeService:
             if _owner_kind(position) != "own":
                 external_by_symbol.setdefault(str(position.symbol or "").upper(), []).append(position)
         open_positions = own_open_positions  # sizing/cap math uses the agent's own book
+        # Phase 12 — directional (bidirectional) lifecycle. Directional profiles
+        # (ATR, or any agent with allow_shorts) decide open/close/flip per symbol via
+        # the pure decision engine; Standard and shorts-off agents stay long-only.
+        directional = self._profile_is_directional(agent_type=agent_type, settings_payload=settings_payload)
+        directional_flags = self._directional_flags(settings_payload)
+        own_position_by_id = {int(p.id): p for p in own_open_positions}
+        flip_opens: list[dict[str, object]] = []  # symbols whose own position flips to the opposite side
         recent_rows = self.recommendation_repo.list_recent(limit=100, app_user_id=user.id)
         now = utc_now()
         # Review ALL positions (so a close-worthy external position is reported as a
@@ -2288,6 +2498,63 @@ class AgentModeService:
                 data_quality.append({"symbol": symbol, "status": "error", "reason": exc.detail})
                 intents.append(self._cash_intent(symbol=symbol, reason="market_data_unavailable", summary="cash/no trade because market data was unavailable."))
 
+        # Phase 12 — directional own-position reconciliation. For directional
+        # profiles, an OWN position that is not already closing on its protective
+        # stop is re-evaluated against the directional signal: an opposing signal
+        # closes it (close_on_opposite_signal) or flips it (allow_direction_flip +
+        # allow_shorts for the short leg); same-direction/neutral holds. Foreign and
+        # manual positions are never touched (ownership boundary). Bars for own held
+        # symbols are fetched here on demand.
+        if directional:
+            intents_by_position_id = {
+                int(i.get("position_id")): i
+                for i in intents
+                if str(i.get("position_id") or "").strip().isdigit()
+            }
+            for position in own_open_positions:
+                symbol = str(position.symbol or "").upper()
+                existing = intents_by_position_id.get(int(position.id))
+                # Only reconcile a plain HOLD — a protective-stop CLOSE keeps priority.
+                if existing is None or existing.get("intent") != "HOLD":
+                    continue
+                bars_tuple = bars_by_symbol.get(symbol)
+                if not bars_tuple:
+                    try:
+                        bars_tuple = workflow._workflow_bars(symbol, limit=120, timeframe=timeframe)
+                        bars_by_symbol[symbol] = bars_tuple
+                    except HTTPException:
+                        continue
+                signal = agent_triggers.directional_signal(
+                    agent_type=agent_type, profile=settings_payload, bars=bars_tuple[0], timeframe=timeframe
+                )
+                own_side = str(getattr(position, "side", "") or "").lower()
+                decision = agent_triggers.decide_bidirectional_action(
+                    signal_direction=signal.direction, fresh_flip=signal.fresh_flip,
+                    own_side=own_side if own_side in {"long", "short"} else None,
+                    foreign_opposing=False, **directional_flags,
+                )
+                action = str(decision.get("action") or "")
+                existing["directional_action"] = action
+                existing["primary_trigger"] = signal.primary_trigger
+                if not bool(decision.get("close_own")) or not bool(settings_payload.get("allow_closes", True)):
+                    continue  # held_* / no_signal / closes disabled → keep the HOLD
+                existing.update({
+                    "intent": "CLOSE_PAPER",
+                    "status": "dry_run" if dry_run else "pending",
+                    "reason": action,
+                    "action_reason": "managed_own_position",
+                    "summary": signal.summary,
+                })
+                if action in {"flipped_long_to_short", "flipped_short_to_long"}:
+                    flip_opens.append({
+                        "symbol": symbol,
+                        "open_side": str(decision.get("open_side") or ""),
+                        "protective_stop": signal.protective_stop,
+                        "primary_trigger": signal.primary_trigger,
+                        "summary": signal.summary,
+                        "reason": action,
+                    })
+
         strategies = self._ranking_strategies_for_profile(settings_payload)
         ranking = workflow.ranking_engine.rank_candidates(
             bars_by_symbol=bars_by_symbol,
@@ -2334,47 +2601,112 @@ class AgentModeService:
                 continue
             risk = candidate.get("risk_calendar") if isinstance(candidate.get("risk_calendar"), dict) else {}
             decision = risk.get("decision") if isinstance(risk.get("decision"), dict) else {}
-            # Phase 11 — agent-type eligibility gate. Applied AFTER deterministic
-            # ranking and BEFORE any open is planned, so scoring is untouched and the
-            # recommendation/sizing/risk pipeline still has the final say on opens.
-            verdict = agent_triggers.evaluate_agent_eligibility(
-                agent_type=agent_type,
-                profile=settings_payload,
-                bars=bars_tuple[0] if bars_tuple else [],
-                candidate=candidate,
-                timeframe=timeframe,
-            )
-            candidate["primary_trigger"] = verdict.primary_trigger
-            candidate["agent_trigger_reason"] = verdict.reason
-            candidate["agent_trigger_detail"] = verdict.detail
-            if not verdict.eligible_long:
-                # Bearish/short or exit-caution reads surface as review-only intents
-                # (no order, never a paper short). Neutral/no-signal symbols skip silently.
-                if verdict.emit_review:
-                    intents.append(self._review_intent(symbol=symbol, verdict=verdict, candidate=candidate))
-                continue
-            # Optional cross-profile opposing-exposure guard (default OFF). When the
-            # operator enables it, this profile will not open a new long while
-            # ANOTHER profile (or a manual trade) holds an opposing SHORT in the same
-            # symbol. It only blocks the new open — it never closes the other
-            # position (ownership boundary still holds).
-            if bool(settings_payload.get("prevent_opposing_agent_positions_across_profiles")):
-                opposing_external = [
-                    p for p in external_by_symbol.get(symbol, [])
-                    if str(getattr(p, "side", "") or "").lower() == "short"
-                ]
-                if opposing_external:
+            # Decide the open SIDE. Applied AFTER deterministic ranking and BEFORE any
+            # open is planned, so scoring is untouched. Directional profiles (ATR or
+            # allow_shorts) use the bidirectional decision engine — own_side is None
+            # here because held symbols are excluded above and own-position flips/closes
+            # are reconciled separately. Everyone else keeps the Phase 11 long-only
+            # eligibility gate exactly as before.
+            planned_open_side: str | None = None
+            open_reason = ""
+            open_summary = ""
+            open_primary_trigger = ""
+            open_protective_stop: float | None = None
+            if directional:
+                signal = agent_triggers.directional_signal(
+                    agent_type=agent_type, profile=settings_payload,
+                    bars=bars_tuple[0] if bars_tuple else [], candidate=candidate, timeframe=timeframe,
+                )
+                candidate["primary_trigger"] = signal.primary_trigger
+                candidate["agent_trigger_reason"] = signal.reason
+                candidate["agent_trigger_detail"] = signal.detail
+                # Cross-profile opposing exposure only blocks when the operator opted in
+                # (default OFF → cross-agent opposing is allowed).
+                prevent_opposing = bool(settings_payload.get("prevent_opposing_agent_positions_across_profiles"))
+                opposing_side = "long" if signal.direction == "short" else "short" if signal.direction == "long" else None
+                foreign_opposing = bool(prevent_opposing and opposing_side and any(
+                    str(getattr(p, "side", "") or "").lower() == opposing_side
+                    for p in external_by_symbol.get(symbol, [])
+                ))
+                bid = agent_triggers.decide_bidirectional_action(
+                    signal_direction=signal.direction, fresh_flip=signal.fresh_flip,
+                    own_side=None, foreign_opposing=foreign_opposing, **directional_flags,
+                )
+                action = str(bid.get("action") or "")
+                if action == "opened_long":
+                    planned_open_side = "long"
+                elif action == "opened_short":
+                    planned_open_side = "short"
+                    open_protective_stop = signal.protective_stop
+                elif action == "blocked_by_short_not_allowed":
+                    intents.append({
+                        "intent": "CASH_NO_TRADE", "symbol": symbol, "status": "review_only",
+                        "review_only": True, "reason": "paper_short_not_allowed",
+                        "summary": "Review only: directional signal is SHORT but allow_shorts is off for this Agent Profile (no paper short).",
+                        "primary_trigger": signal.primary_trigger, "candidate": candidate,
+                        "paper_only": True, "no_live_routing": True,
+                    })
+                    continue
+                elif action == "review_opposing_external_position":
                     intents.append(self._cash_intent(
-                        symbol=symbol,
-                        reason="blocked_opposing_cross_profile",
-                        summary=(
-                            "cash/no trade because another position holds an opposing "
-                            "(short) side in this symbol and this Agent Profile prevents "
-                            "cross-profile opposing exposure. The other position is not closed."
-                        ),
+                        symbol=symbol, reason="blocked_opposing_cross_profile",
+                        summary=("cash/no trade because another profile/manual holds an opposing "
+                                 "position in this symbol and this Agent Profile prevents cross-profile "
+                                 "opposing exposure. The other position is not closed."),
                         candidate=candidate,
                     ))
                     continue
+                else:  # no_signal / held_* (no own position to hold) → nothing to open
+                    continue
+                open_reason = signal.reason
+                open_summary = signal.summary
+                open_primary_trigger = signal.primary_trigger
+            else:
+                # Phase 11 long-only eligibility gate (unchanged).
+                verdict = agent_triggers.evaluate_agent_eligibility(
+                    agent_type=agent_type,
+                    profile=settings_payload,
+                    bars=bars_tuple[0] if bars_tuple else [],
+                    candidate=candidate,
+                    timeframe=timeframe,
+                )
+                candidate["primary_trigger"] = verdict.primary_trigger
+                candidate["agent_trigger_reason"] = verdict.reason
+                candidate["agent_trigger_detail"] = verdict.detail
+                if not verdict.eligible_long:
+                    # Bearish/short or exit-caution reads surface as review-only intents
+                    # (no order, never a paper short). Neutral/no-signal symbols skip silently.
+                    if verdict.emit_review:
+                        intents.append(self._review_intent(symbol=symbol, verdict=verdict, candidate=candidate))
+                    continue
+                # Optional cross-profile opposing-exposure guard (default OFF). When the
+                # operator enables it, this profile will not open a new long while
+                # ANOTHER profile (or a manual trade) holds an opposing SHORT in the same
+                # symbol. It only blocks the new open — it never closes the other
+                # position (ownership boundary still holds).
+                if bool(settings_payload.get("prevent_opposing_agent_positions_across_profiles")):
+                    opposing_external = [
+                        p for p in external_by_symbol.get(symbol, [])
+                        if str(getattr(p, "side", "") or "").lower() == "short"
+                    ]
+                    if opposing_external:
+                        intents.append(self._cash_intent(
+                            symbol=symbol,
+                            reason="blocked_opposing_cross_profile",
+                            summary=(
+                                "cash/no trade because another position holds an opposing "
+                                "(short) side in this symbol and this Agent Profile prevents "
+                                "cross-profile opposing exposure. The other position is not closed."
+                            ),
+                            candidate=candidate,
+                        ))
+                        continue
+                planned_open_side = "long"
+                open_reason = verdict.reason
+                open_summary = verdict.summary
+                open_primary_trigger = verdict.primary_trigger
+            if planned_open_side is None:
+                continue
             if decision and decision.get("allow_new_entries") is False:
                 intents.append(self._cash_intent(symbol=symbol, reason="risk_calendar_blocks_new_entries", summary="cash/no trade because risk calendar blocks new paper opens.", candidate=candidate))
                 continue
@@ -2392,21 +2724,52 @@ class AgentModeService:
                 intents.append(self._cash_intent(symbol=symbol, reason="max_new_trades_per_day_reached", summary="cash/no trade because the Agent Mode daily new-trade cap is reached.", candidate=candidate))
                 continue
             planned_open_symbols.add(symbol)
-            intents.append(
-                {
-                    "intent": "OPEN_PAPER",
-                    "symbol": symbol,
-                    "side": "long",
-                    "status": "dry_run" if dry_run else "pending",
-                    "reason": verdict.reason,
-                    "summary": verdict.summary,
-                    "primary_trigger": verdict.primary_trigger,
-                    "agent_type": agent_type,
-                    "candidate": candidate,
-                    "paper_only": True,
-                    "no_live_routing": True,
-                }
-            )
+            open_intent: dict[str, object] = {
+                "intent": "OPEN_PAPER",
+                "symbol": symbol,
+                "side": planned_open_side,
+                "status": "dry_run" if dry_run else "pending",
+                "reason": open_reason,
+                "summary": open_summary,
+                "primary_trigger": open_primary_trigger,
+                "agent_type": agent_type,
+                "candidate": candidate,
+                "paper_only": True,
+                "no_live_routing": True,
+            }
+            if planned_open_side == "short" and open_protective_stop is not None:
+                open_intent["protective_stop"] = open_protective_stop
+            intents.append(open_intent)
+
+        # Phase 12 — flip open-legs. Each own position that flipped above is closed by
+        # its reconciled CLOSE_PAPER intent (appended earlier, so it executes first);
+        # here we append the opposite-side OPEN for the same symbol. Long legs reuse the
+        # deterministic open path; short legs use the directional short open path.
+        for flip in flip_opens:
+            fsymbol = str(flip.get("symbol") or "").upper()
+            fside = str(flip.get("open_side") or "").lower()
+            if fside not in {"long", "short"} or fsymbol in planned_open_symbols:
+                continue
+            if not bool(settings_payload.get("allow_opens", True)):
+                continue
+            planned_open_symbols.add(fsymbol)
+            flip_open_intent: dict[str, object] = {
+                "intent": "OPEN_PAPER",
+                "symbol": fsymbol,
+                "side": fside,
+                "status": "dry_run" if dry_run else "pending",
+                "reason": str(flip.get("reason") or "flip_open"),
+                "summary": str(flip.get("summary") or "Flip: open opposite side after closing the prior position."),
+                "primary_trigger": str(flip.get("primary_trigger") or ""),
+                "agent_type": agent_type,
+                "candidate": {"symbol": fsymbol},
+                "is_flip_open": True,
+                "paper_only": True,
+                "no_live_routing": True,
+            }
+            if fside == "short" and flip.get("protective_stop") is not None:
+                flip_open_intent["protective_stop"] = flip.get("protective_stop")
+            intents.append(flip_open_intent)
 
         if not any(intent.get("intent") in {"OPEN_PAPER", "CLOSE_PAPER"} for intent in intents):
             intents.append(self._cash_intent(symbol=None, reason="no_approved_paper_changes", summary="cash/no trade because no deterministic paper change passed all gates."))
@@ -2426,16 +2789,29 @@ class AgentModeService:
             if intent.get("intent") == "CLOSE_PAPER":
                 final_intents.append(self._execute_close(intent=intent, user=user))
             elif intent.get("intent") == "OPEN_PAPER":
-                executed = self._execute_open(
-                    intent=intent,
-                    candidate=dict(intent.get("candidate") or {}),
-                    user=user,
-                    bars_by_symbol=bars_by_symbol,
-                    timeframe=timeframe,
-                    settings_payload=settings_payload,
-                    open_positions=open_positions,
-                    agent_profile_id=agent_profile_id,
-                )
+                if str(intent.get("side") or "long").lower() == "short":
+                    # Directional paper short (allow_shorts profiles only).
+                    executed = self._execute_directional_short_open(
+                        intent=intent,
+                        candidate=dict(intent.get("candidate") or {}),
+                        user=user,
+                        bars_by_symbol=bars_by_symbol,
+                        timeframe=timeframe,
+                        settings_payload=settings_payload,
+                        open_positions=open_positions,
+                        agent_profile_id=agent_profile_id,
+                    )
+                else:
+                    executed = self._execute_open(
+                        intent=intent,
+                        candidate=dict(intent.get("candidate") or {}),
+                        user=user,
+                        bars_by_symbol=bars_by_symbol,
+                        timeframe=timeframe,
+                        settings_payload=settings_payload,
+                        open_positions=open_positions,
+                        agent_profile_id=agent_profile_id,
+                    )
                 if executed.get("status") == "executed":
                     executed_order_count += 1
                 final_intents.append(executed)

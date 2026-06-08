@@ -4,6 +4,14 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
 const previewProxySource = readFileSync(new URL("../../api/user/symbol-universe/preview/route.ts", import.meta.url), "utf8");
 
+describe("ATR Direction Heatmap report type", () => {
+  it("offers the ATR Direction Heatmap report type (email-only heatmap)", () => {
+    expect(source).toContain('type ReportType = "strategy_scan" | "momentum_heatmap" | "haco_heatmap" | "atr_heatmap";');
+    expect(source).toContain('{ value: "atr_heatmap", label: "ATR Direction Heatmap"');
+    expect(source).toContain('value === "atr_heatmap"');
+  });
+});
+
 describe("schedules manual symbol entry cleanup", () => {
   it("adds helper copy and parsed previews to schedule and watchlist symbol entry", () => {
     expect(source).toContain('import { SymbolEntryPreview } from "@/components/symbol-entry-preview";');

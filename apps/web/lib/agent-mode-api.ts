@@ -1,8 +1,10 @@
 import { fetchWorkflowApi } from "@/lib/api-client";
 
-export type AgentType = "standard" | "haco_direction" | "true_momentum" | "hybrid";
+export type AgentType = "standard" | "haco_direction" | "true_momentum" | "hybrid" | "atr_trailing_stop";
 export type HacoDirectionMode = "long_only" | "short_only" | "long_and_short";
 export type TrueMomentumTriggerMode = "conservative" | "balanced" | "aggressive" | "review_only";
+export type AtrTrailType = "modified" | "unmodified";
+export type AtrAverageType = "wilders" | "simple";
 
 export type AgentModeSettings = {
   // Phase 11 — Agent Profile identity + agent-type configuration.
@@ -16,6 +18,23 @@ export type AgentModeSettings = {
   true_momentum_trigger_mode?: TrueMomentumTriggerMode | string;
   use_haco_filter?: boolean;
   use_true_momentum_confirmation?: boolean;
+  // Phase 12 — ATR config + bidirectional (directional) execution controls.
+  // Exposed here so the execution settings round-trip and are testable; the
+  // cockpit controls for these land with the directional/ATR UI increment.
+  atr_trail_type?: AtrTrailType | string;
+  atr_period?: number;
+  atr_factor?: number;
+  atr_first_trade?: string;
+  atr_average_type?: AtrAverageType | string;
+  atr_decision_timeframe?: string;
+  atr_alignment_mode?: string;
+  allow_shorts?: boolean;
+  allow_direction_flip?: boolean;
+  close_opposite_before_open?: boolean;
+  close_on_opposite_signal?: boolean;
+  hedge_allowed?: boolean;
+  use_atr_filter?: boolean;
+  prevent_opposing_agent_positions_across_profiles?: boolean;
   enabled: boolean;
   paused: boolean;
   kill_switch_enabled: boolean;
@@ -355,6 +374,12 @@ export type AgentProfileOverview = {
   open_position_count?: number;
   realized_pnl?: number | null;
   trade_count?: number;
+  // Phase 12 — directional capability + current state for the cockpit card.
+  directional?: boolean;
+  allow_shorts?: boolean;
+  allow_direction_flip?: boolean;
+  current_position_side?: string | null;
+  last_action?: string | null;
 };
 
 export type AgentProfilesResponse = {

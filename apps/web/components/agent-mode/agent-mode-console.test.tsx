@@ -214,4 +214,51 @@ describe("AgentModeConsole", () => {
     expect(source).toContain("marketClosed");
     expect(source).toContain("next_trading_day");
   });
+
+  it("contains the ATR Trailing Stop agent template and collapsed ATR settings", () => {
+    // Template availability.
+    expect(source).toContain("ATR Trailing Stop");
+    expect(source).toContain('value="atr_trailing_stop"');
+    // Collapsed advanced ATR settings (uses <details>/<summary>).
+    expect(source).toContain("Advanced ATR settings");
+    expect(source).toContain("atr-config");
+    expect(source).toContain("atr_trail_type");
+    expect(source).toContain("atr_period");
+    expect(source).toContain("atr_factor");
+    expect(source).toContain("atr_first_trade");
+    expect(source).toContain("atr_average_type");
+    expect(source).toContain("atr_decision_timeframe");
+    expect(source).toContain("atr_alignment_mode");
+    expect(source).toContain("<details");
+    // Clear that ATR is both signal and stop/risk reference.
+    expect(source).toContain("both the direction signal and the protective stop");
+  });
+
+  it("exposes directional / allow-shorts / flip controls with a simulated-only warning", () => {
+    expect(source).toContain("directional-controls");
+    expect(source).toContain("allow_shorts");
+    expect(source).toContain("allow_direction_flip");
+    expect(source).toContain("close_opposite_before_open");
+    expect(source).toContain("close_on_opposite_signal");
+    expect(source).toContain("hedge_allowed");
+    expect(source).toContain("prevent_opposing_agent_positions_across_profiles");
+    // Required paper-short warning copy.
+    expect(source).toContain("Paper shorts are simulated only.");
+    // Capability shows longs/shorts/both.
+    expect(source).toContain("Opens paper longs and shorts");
+    expect(source).toContain("Opens paper longs only");
+  });
+
+  it("run preview shows side, expected action, and directional card state", () => {
+    // Expected-action column maps to open long/short, close, flip, hold, review/block.
+    expect(source).toContain("expectedActionLabel");
+    expect(source).toContain("open short");
+    expect(source).toContain("flip long→short");
+    expect(source).toContain("<th>Side</th>");
+    expect(source).toContain("<th>Expected</th>");
+    // Directional card meta: allow-shorts status, flip behavior, current side, last action.
+    expect(source).toContain("Last action:");
+    expect(source).toContain("allowed (paper, simulated only)");
+    expect(source).toContain("current_position_side");
+  });
 });

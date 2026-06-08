@@ -251,6 +251,178 @@ class HacoChartPayload(BaseModel):
     bars_returned: int | None = None
 
 
+# ── ATR Trailing Stop chart / intel (research-only, mirrors HACO chart shape) ──
+class AtrChartRequest(BaseModel):
+    symbol: str
+    timeframe: str = "1D"
+    include_markers: bool = True
+    bars: list[Bar] = Field(default_factory=list, max_length=500)
+    history_range: str = "1Y"
+    # Advanced ATR settings (math frozen; these only select inputs).
+    trail_type: str = "modified"
+    atr_period: int = 9
+    atr_factor: float = 2.9
+    first_trade: str = "long"
+    average_type: str = "wilders"
+    # Timeframes for the multi-timeframe state table.
+    multi_timeframes: list[str] = Field(default_factory=lambda: ["1W", "1D", "4H", "1H", "30M"], max_length=8)
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        return _validated_symbol(value)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_timeframe(cls, value: str) -> str:
+        return validate_chart_timeframe(value)
+
+    @field_validator("history_range")
+    @classmethod
+    def _normalize_history_range(cls, value: str) -> str:
+        return _normalize_chart_history_range(value)
+
+
+class AtrTrailingStopChartPoint(BaseModel):
+    index: int
+    time: str | int
+    close: float
+    state: str
+    trailing_stop: float
+    stop_distance: float
+    stop_distance_pct: float | None = None
+    buy_signal: bool = False
+    sell_signal: bool = False
+
+
+class AtrTimeframeState(BaseModel):
+    timeframe: str
+    status: str  # "ok" | "unavailable"
+    state: str | None = None  # "long" | "short" | None
+    trailing_stop: float | None = None
+    stop_distance_pct: float | None = None
+    bars_since_flip: int | None = None
+    last_flip_direction: str | None = None
+    last_flip_time: str | None = None
+    data_source: str | None = None
+    fallback_mode: bool | None = None
+    reason: str | None = None
+
+
+class AtrChartExplanation(BaseModel):
+    current_state: str  # "long" | "short" | "neutral"
+    latest_trailing_stop: float | None = None
+    distance_to_stop_pct: float | None = None
+    bars_since_flip: int | None = None
+    last_flip_direction: str | None = None
+    last_flip_time: str | None = None
+
+
+class AtrChartConfigEcho(BaseModel):
+    trail_type: str
+    atr_period: int
+    atr_factor: float
+    first_trade: str
+    average_type: str
+
+
+class AtrChartPayload(BaseModel):
+    symbol: str
+    timeframe: str
+    candles: list[ChartCandle]
+    trailing_stop: list[AtrTrailingStopChartPoint] = Field(default_factory=list)
+    markers: list[HacoMarker] = Field(default_factory=list)
+    explanation: AtrChartExplanation
+    timeframe_states: list[AtrTimeframeState] = Field(default_factory=list)
+    config: AtrChartConfigEcho
+    data_source: str = "request_bars"
+    fallback_mode: bool = False
+    session_policy: str | None = None
+    source_session_policy: str | None = None
+    source_timeframe: str | None = None
+    output_timeframe: str | None = None
+    first_bar_timestamp: str | None = None
+    last_bar_timestamp: str | None = None
+    history_range: str | None = None
+    lookback_days: int | None = None
+    bars_returned: int | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+# ── ATR Direction Heatmap (research-only, stateless refresh; symbols come from
+#    manual entry or an existing watchlist — no new saved-profile persistence) ──
+class AtrHeatmapRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list, max_length=60)
+    timeframes: list[str] = Field(default_factory=lambda: ["1W", "1D", "4H", "1H", "30M"], max_length=8)
+    decision_timeframe: str = "1D"
+    trail_type: str = "modified"
+    atr_period: int = 9
+    atr_factor: float = 2.9
+    first_trade: str = "long"
+    average_type: str = "wilders"
+
+    @field_validator("symbols")
+    @classmethod
+    def _normalize_symbols(cls, value: list[str]) -> list[str]:
+        seen: list[str] = []
+        for raw in value or []:
+            sym = str(raw or "").strip().upper()
+            if sym and sym not in seen:
+                seen.append(sym)
+        return seen
+
+
+class AtrHeatmapCell(BaseModel):
+    timeframe: str
+    status: str  # "ok" | "unavailable"
+    state: str | None = None  # "long" | "short" | None
+    label: str | None = None  # "LONG" | "SHORT" | None (display label)
+    trailing_stop: float | None = None
+    stop_distance_pct: float | None = None
+    bars_since_flip: int | None = None
+    last_flip_direction: str | None = None
+    last_flip_time: str | None = None
+    reason: str | None = None
+
+
+class AtrHeatmapRow(BaseModel):
+    symbol: str
+    states: dict[str, AtrHeatmapCell] = Field(default_factory=dict)
+    # Deterministic alignment: +1 per LONG timeframe, -1 per SHORT timeframe.
+    alignment_score: int = 0
+    alignment_label: str = "—"  # "LONG" | "SHORT" | "MIXED" | "—"
+    long_count: int = 0
+    short_count: int = 0
+    available_count: int = 0
+    # Single-value columns reflect the decision timeframe (default 1D, else the
+    # first available among 1D/1W/4H/1H/30M).
+    decision_timeframe: str | None = None
+    latest_trailing_stop: float | None = None
+    distance_to_stop_pct: float | None = None
+    bars_since_flip: int | None = None
+    last_flip_direction: str | None = None
+    last_flip_time: str | None = None
+    status: str = "ok"  # "ok" | "unavailable"
+    reason: str | None = None
+
+
+class AtrHeatmapSummary(BaseModel):
+    total: int = 0
+    long_count: int = 0
+    short_count: int = 0
+    mixed_count: int = 0
+    unavailable_count: int = 0
+
+
+class AtrHeatmapResponse(BaseModel):
+    rows: list[AtrHeatmapRow] = Field(default_factory=list)
+    summary: AtrHeatmapSummary = Field(default_factory=AtrHeatmapSummary)
+    timeframes: list[str] = Field(default_factory=list)
+    config: AtrChartConfigEcho
+    generated_at: str
+    notes: list[str] = Field(default_factory=list)
+
+
 class TradeSetup(BaseModel):
     setup_type: SetupType
     direction: Direction
