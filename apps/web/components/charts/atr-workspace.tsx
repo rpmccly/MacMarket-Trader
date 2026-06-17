@@ -10,6 +10,7 @@ import {
 } from "@/lib/chart-history-range";
 import { SUPPORTED_TIMEFRAME_OPTIONS, type SupportedTimeframe } from "@/lib/timeframes";
 import { fetchAtrChart, type AtrChartPayload } from "@/lib/atr-api";
+import { ATR_TRAILING_STOP_COLORS } from "@/lib/chart-indicators";
 
 const TABLE_TIMEFRAMES = ["1W", "1D", "4H", "1H", "30M"] as const;
 
@@ -38,32 +39,116 @@ function fmtTime(value: string | null | undefined): string {
   return value.length > 19 ? value.slice(0, 19).replace("T", " ") : value.replace("T", " ");
 }
 
-// Dependency-free, responsive price + trailing-stop line chart (SVG). No canvas,
+type AtrStopState = "long" | "short";
+
+type SvgStopPoint = {
+  x: number;
+  y: number;
+  state: AtrStopState;
+};
+
+function normalizeStopState(value: string | null | undefined): AtrStopState | null {
+  if (value === "long" || value === "short") return value;
+  return null;
+}
+
+function buildStopSegments(points: SvgStopPoint[]): Array<{ state: AtrStopState; points: SvgStopPoint[] }> {
+  const segments: Array<{ state: AtrStopState; points: SvgStopPoint[] }> = [];
+  let activeState: AtrStopState | null = null;
+  let activePoints: SvgStopPoint[] = [];
+
+  for (const point of points) {
+    if (activeState !== point.state) {
+      if (activeState && activePoints.length > 0) segments.push({ state: activeState, points: activePoints });
+      activeState = point.state;
+      activePoints = [];
+    }
+    activePoints.push(point);
+  }
+
+  if (activeState && activePoints.length > 0) segments.push({ state: activeState, points: activePoints });
+  return segments;
+}
+
+function buildStepPath(points: SvgStopPoint[], halfWidth: number): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    const point = points[0];
+    return `M ${Math.max(0, point.x - halfWidth).toFixed(2)} ${point.y.toFixed(2)} H ${(point.x + halfWidth).toFixed(2)}`;
+  }
+  return points
+    .slice(1)
+    .reduce(
+      (path, point) => `${path} H ${point.x.toFixed(2)} V ${point.y.toFixed(2)}`,
+      `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`,
+    );
+}
+
+// Dependency-free, responsive OHLC candle + ATR trailing-stop chart (SVG). No canvas,
 // so it renders + tests in jsdom and scales with its container via viewBox.
 function AtrPriceStopChart({ payload }: { payload: AtrChartPayload }) {
-  const points = payload.trailing_stop;
-  if (points.length < 2) return null;
+  const candles = payload.candles.slice(-180);
+  if (candles.length < 2) return null;
   const width = 720;
   const height = 260;
-  const pad = 8;
-  const closes = points.map((p) => p.close);
-  const stops = points.map((p) => p.trailing_stop);
-  const lo = Math.min(...closes, ...stops);
-  const hi = Math.max(...closes, ...stops);
+  const padX = 12;
+  const padY = 10;
+  const stopByTime = new Map(payload.trailing_stop.map((point) => [String(point.time), point]));
+  const stopValues = candles
+    .map((candle) => stopByTime.get(String(candle.time))?.trailing_stop)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const lo = Math.min(...candles.map((candle) => candle.low), ...stopValues);
+  const hi = Math.max(...candles.map((candle) => candle.high), ...stopValues);
   const range = hi - lo || 1;
-  const x = (i: number) => pad + (i / (points.length - 1)) * (width - 2 * pad);
-  const y = (v: number) => pad + (1 - (v - lo) / range) * (height - 2 * pad);
-  const priceLine = points.map((p, i) => `${x(i).toFixed(2)},${y(p.close).toFixed(2)}`).join(" ");
-  const stopLine = points.map((p, i) => `${x(i).toFixed(2)},${y(p.trailing_stop).toFixed(2)}`).join(" ");
+  const x = (idx: number) => padX + (idx / (candles.length - 1)) * (width - 2 * padX);
+  const y = (value: number) => padY + (1 - (value - lo) / range) * (height - 2 * padY);
+  const slotWidth = (width - 2 * padX) / Math.max(1, candles.length - 1);
+  const bodyWidth = Math.max(3, Math.min(9, slotWidth * 0.52));
+  const stopPoints = candles
+    .map((candle, idx): SvgStopPoint | null => {
+      const stop = stopByTime.get(String(candle.time));
+      const state = normalizeStopState(stop?.state);
+      if (!stop || !state || !Number.isFinite(stop.trailing_stop)) return null;
+      return { x: x(idx), y: y(stop.trailing_stop), state };
+    })
+    .filter((point): point is SvgStopPoint => point !== null);
+  const stopSegments = buildStopSegments(stopPoints);
   return (
     <div className="op-chart-frame" data-testid="atr-price-stop-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" role="img" aria-label="ATR price and trailing stop" preserveAspectRatio="none" style={{ maxHeight: 280 }}>
-        <polyline fill="none" stroke="#9fb0c3" strokeWidth={1.5} points={priceLine} />
-        <polyline fill="none" stroke="#f2a03f" strokeWidth={1.5} strokeDasharray="4 3" points={stopLine} />
+        {candles.map((candle, idx) => {
+          const cx = x(idx);
+          const openY = y(candle.open);
+          const closeY = y(candle.close);
+          const highY = y(candle.high);
+          const lowY = y(candle.low);
+          const up = candle.close >= candle.open;
+          const color = up ? "#2c9f5d" : "#b24f4f";
+          const top = Math.min(openY, closeY);
+          const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+          return (
+            <g key={`${candle.time}-${idx}`}>
+              <line x1={cx} x2={cx} y1={highY} y2={lowY} stroke={color} strokeWidth={1.15} opacity={0.9} />
+              <rect x={cx - bodyWidth / 2} y={top} width={bodyWidth} height={bodyHeight} fill={color} opacity={0.84} rx={0.8} />
+            </g>
+          );
+        })}
+        {stopSegments.map((segment, idx) => (
+          <path
+            key={`${segment.state}-${idx}`}
+            d={buildStepPath(segment.points, bodyWidth / 2)}
+            fill="none"
+            stroke={ATR_TRAILING_STOP_COLORS[segment.state]}
+            strokeWidth={2.2}
+            strokeLinecap="square"
+            strokeLinejoin="miter"
+          />
+        ))}
       </svg>
       <div className="op-row" style={{ gap: 14, marginTop: 4, fontSize: 12, color: "var(--muted)" }}>
-        <span><span style={{ color: "#9fb0c3" }}>──</span> Close price</span>
-        <span><span style={{ color: "#f2a03f" }}>┄┄</span> ATR trailing stop</span>
+        <span><span style={{ color: "#9fb0c3" }}>--</span> OHLC candles</span>
+        <span><span style={{ color: ATR_TRAILING_STOP_COLORS.long }}>--</span> Long/support ATR stop</span>
+        <span><span style={{ color: ATR_TRAILING_STOP_COLORS.short }}>--</span> Short/resistance ATR stop</span>
       </div>
     </div>
   );
@@ -79,7 +164,7 @@ export function AtrWorkspace() {
   const [atrPeriod, setAtrPeriod] = useState(9);
   const [atrFactor, setAtrFactor] = useState(2.9);
   const [firstTrade, setFirstTrade] = useState("long");
-  const [averageType, setAverageType] = useState("wilders");
+  const [averageType, setAverageType] = useState("exponential");
 
   const [payload, setPayload] = useState<AtrChartPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -248,6 +333,7 @@ export function AtrWorkspace() {
                 <label>
                   <span className="agent-setting-help">Average type</span>
                   <select aria-label="Average type" value={averageType} onChange={(event) => setAverageType(event.target.value)}>
+                    <option value="exponential">Exponential</option>
                     <option value="wilders">Wilders</option>
                     <option value="simple">Simple</option>
                   </select>

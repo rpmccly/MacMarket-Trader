@@ -24,6 +24,15 @@ describe('indicator framework', () => {
     expect(snapshot).toHaveProperty('relativeVolume');
   });
 
+  it('registers ATR as a selectable trailing-stop volatility indicator', () => {
+    expect(INDICATOR_REGISTRY).toContainEqual({
+      id: 'atr',
+      label: 'ATR Trailing Stop',
+      category: 'volatility',
+      defaultEnabled: false,
+    });
+  });
+
   it('registers Momentum Intelligence indicator IDs without changing existing defaults', () => {
     const ids = INDICATOR_REGISTRY.map((entry) => entry.id);
     for (const expected of [

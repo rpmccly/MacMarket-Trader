@@ -58,6 +58,11 @@ describe("AtrWorkspace", () => {
     expect(source).toContain("Bars since flip:");
     expect(source).toContain("Last flip:");
     expect(source).toContain("atr-price-stop-chart");
+    expect(source).toContain("OHLC candles");
+    expect(source).toContain("Long/support ATR stop");
+    expect(source).toContain("Short/resistance ATR stop");
+    expect(source).toContain("<rect");
+    expect(source).toContain("<path");
   });
 
   it("renders the multi-timeframe table for 1W/1D/4H/1H/30M", () => {
@@ -75,6 +80,8 @@ describe("AtrWorkspace", () => {
     expect(source).toContain("ATR factor");
     expect(source).toContain("First trade");
     expect(source).toContain("Average type");
+    expect(source).toContain('useState("exponential")');
+    expect(source).toContain('<option value="exponential">Exponential</option>');
   });
 
   it("handles no-data / unsupported symbol states", () => {

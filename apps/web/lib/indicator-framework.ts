@@ -52,7 +52,7 @@ export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
   { id: "ema200", label: "EMA 200", category: "trend", defaultEnabled: false },
   { id: "vwap", label: "VWAP", category: "trend", defaultEnabled: true },
   { id: "anchored_vwap", label: "Anchored VWAP", category: "trend", defaultEnabled: false },
-  { id: "atr", label: "ATR", category: "volatility", defaultEnabled: false },
+  { id: "atr", label: "ATR Trailing Stop", category: "volatility", defaultEnabled: false },
   { id: "bollinger", label: "Bollinger (20,2)", category: "volatility", defaultEnabled: false },
   { id: "prior_day_levels", label: "Prior Day H/L", category: "structure", defaultEnabled: true },
   { id: "opening_range", label: "Opening Range", category: "structure", defaultEnabled: false },

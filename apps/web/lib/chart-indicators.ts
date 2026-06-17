@@ -1,8 +1,9 @@
-import { LineStyle, type CandlestickData, type HistogramData, type IChartApi, type Time } from "lightweight-charts";
+import { LineStyle, LineType, type CandlestickData, type HistogramData, type IChartApi, type Time } from "lightweight-charts";
 
 import type { IndicatorId } from "@/lib/indicator-framework";
 
-type NumericPoint = { time: Time; value: number };
+type NumericPoint = { time: Time; value: number; color?: string };
+type AtrTrailingStopState = "long" | "short";
 
 export type IndicatorPane = "price" | "volume" | "momentum";
 
@@ -23,6 +24,7 @@ export type IndicatorLineDescriptor = {
   points: NumericPoint[];
   lineWidth?: number;
   lineStyle?: LineStyle;
+  lineType?: LineType;
   priceScaleId?: string;
   lastValueVisible?: boolean;
   priceLineVisible?: boolean;
@@ -60,6 +62,34 @@ export type IndicatorRenderResult = {
   momentumPanels: IndicatorPanelDescriptor[];
 };
 
+export const ATR_TRAILING_STOP_DISPLAY_DEFAULTS = {
+  trailType: "modified",
+  atrPeriod: 9,
+  atrFactor: 2.9,
+  firstTrade: "long",
+  averageType: "exponential",
+} as const;
+
+export const ATR_TRAILING_STOP_COLORS: Record<AtrTrailingStopState, string> = {
+  long: "#35d07f",
+  short: "#ff6f91",
+};
+
+export type AtrTrailingStopDisplayPoint = NumericPoint & {
+  close: number;
+  state: AtrTrailingStopState;
+};
+
+export type AtrTrailingStopDisplaySegment = {
+  state: AtrTrailingStopState;
+  points: NumericPoint[];
+};
+
+export type AtrTrailingStopDisplayModel = {
+  points: AtrTrailingStopDisplayPoint[];
+  segments: AtrTrailingStopDisplaySegment[];
+};
+
 export const FIRST_CLASS_WORKFLOW_INDICATORS: IndicatorId[] = [
   "volume",
   "sma20",
@@ -68,6 +98,7 @@ export const FIRST_CLASS_WORKFLOW_INDICATORS: IndicatorId[] = [
   "ema50",
   "ema200",
   "vwap",
+  "atr",
   "bollinger",
   "prior_day_levels",
   "rsi",
@@ -168,6 +199,131 @@ function calculateBollinger(closes: number[], period = 20) {
   return { mid, upper, lower };
 }
 
+function seededEma(values: number[], period: number): number[] {
+  if (values.length === 0) return [];
+  const multiplier = 2 / (period + 1);
+  const output = [values[0]];
+  for (let idx = 1; idx < values.length; idx += 1) {
+    output.push(values[idx] * multiplier + output[idx - 1] * (1 - multiplier));
+  }
+  return output;
+}
+
+function rollingSimple(values: number[], period: number): number[] {
+  const output: number[] = [];
+  let running = 0;
+  for (let idx = 0; idx < values.length; idx += 1) {
+    running += values[idx];
+    if (idx >= period) running -= values[idx - period];
+    output.push(running / Math.min(idx + 1, period));
+  }
+  return output;
+}
+
+function calculateModifiedTrueRange(highs: number[], lows: number[], closes: number[], period: number): number[] {
+  const highLow = highs.map((high, idx) => high - lows[idx]);
+  const highLowAverage = rollingSimple(highLow, period);
+  return highs.map((high, idx) => {
+    const low = lows[idx];
+    if (idx === 0) return Math.max(0, high - low);
+    const prevClose = closes[idx - 1];
+    const prevHigh = highs[idx - 1];
+    const prevLow = lows[idx - 1];
+    const hiLo = Math.min(high - low, 1.5 * highLowAverage[idx]);
+    const hRef = low <= prevHigh ? high - prevClose : high - prevClose - 0.5 * (low - prevHigh);
+    const lRef = high >= prevLow ? prevClose - low : prevClose - low - 0.5 * (prevLow - high);
+    return Math.max(hiLo, hRef, lRef);
+  });
+}
+
+function isFiniteNumber(value: number): boolean {
+  return Number.isFinite(value) && !Number.isNaN(value);
+}
+
+function segmentAtrTrailingStop(points: AtrTrailingStopDisplayPoint[]): AtrTrailingStopDisplaySegment[] {
+  const segments: AtrTrailingStopDisplaySegment[] = [];
+  let activeState: AtrTrailingStopState | null = null;
+  let activePoints: NumericPoint[] = [];
+
+  for (const point of points) {
+    if (activeState !== point.state) {
+      if (activeState && activePoints.length > 0) {
+        segments.push({ state: activeState, points: activePoints });
+      }
+      activeState = point.state;
+      activePoints = [];
+    }
+    activePoints.push({ time: point.time, value: point.value });
+  }
+
+  if (activeState && activePoints.length > 0) {
+    segments.push({ state: activeState, points: activePoints });
+  }
+
+  return segments;
+}
+
+// Frontend-only display model for workflow charts. ATR Intel and Agent Mode
+// continue to use the frozen backend ATR engine and persisted backend defaults.
+export function buildAtrTrailingStopDisplayModel(candles: CandlestickData<Time>[]): AtrTrailingStopDisplayModel {
+  const highs = candles.map((item) => Number(item.high));
+  const lows = candles.map((item) => Number(item.low));
+  const closes = candles.map((item) => Number(item.close));
+  if (
+    candles.length === 0 ||
+    !highs.every(isFiniteNumber) ||
+    !lows.every(isFiniteNumber) ||
+    !closes.every(isFiniteNumber)
+  ) {
+    return { points: [], segments: [] };
+  }
+
+  const { atrPeriod, atrFactor, firstTrade } = ATR_TRAILING_STOP_DISPLAY_DEFAULTS;
+  const trueRanges = calculateModifiedTrueRange(highs, lows, closes, atrPeriod);
+  const losses = seededEma(trueRanges, atrPeriod).map((value) => value * atrFactor);
+  const points: AtrTrailingStopDisplayPoint[] = [];
+
+  let previousState: AtrTrailingStopState | null = null;
+  let previousTrail: number | null = null;
+
+  for (let idx = 0; idx < candles.length; idx += 1) {
+    const close = closes[idx];
+    const loss = losses[idx];
+    let state: AtrTrailingStopState;
+    let trail: number;
+
+    if (!previousState || previousTrail == null) {
+      state = firstTrade;
+      trail = state === "long" ? close - loss : close + loss;
+    } else if (previousState === "long") {
+      if (close > previousTrail) {
+        state = "long";
+        trail = Math.max(previousTrail, close - loss);
+      } else {
+        state = "short";
+        trail = close + loss;
+      }
+    } else if (close < previousTrail) {
+      state = "short";
+      trail = Math.min(previousTrail, close + loss);
+    } else {
+      state = "long";
+      trail = close - loss;
+    }
+
+    points.push({
+      time: candles[idx].time,
+      value: Number(trail.toFixed(6)),
+      close,
+      state,
+    });
+    previousState = state;
+    previousTrail = trail;
+  }
+
+  return { points, segments: segmentAtrTrailingStop(points) };
+}
+
 function calculateRsi(closes: number[], period = 14): Array<number | null> {
   if (closes.length === 0) return [];
   const gains: number[] = [0];
@@ -264,6 +420,35 @@ export function buildWorkflowIndicatorModel(
     legendEntries.push(buildLegendEntry("vwap", "VWAP", "#4dd0c6", "price", points));
   }
 
+  if (selectedIndicators.includes("atr")) {
+    const atrModel = buildAtrTrailingStopDisplayModel(candles);
+    const coloredPoints: NumericPoint[] = atrModel.points.map((point) => ({
+      time: point.time,
+      value: point.value,
+      color: ATR_TRAILING_STOP_COLORS[point.state],
+    }));
+    if (coloredPoints.length > 0) {
+      priceOverlays.push({
+        id: "atr",
+        label: "ATR Trailing Stop",
+        color: coloredPoints.at(-1)?.color ?? ATR_TRAILING_STOP_COLORS.long,
+        pane: "price",
+        points: coloredPoints,
+        lineWidth: 2,
+        lineType: LineType.WithSteps,
+        priceLineVisible: false,
+      });
+    }
+    const longPoints = atrModel.points.filter((point) => point.state === "long");
+    const shortPoints = atrModel.points.filter((point) => point.state === "short");
+    if (longPoints.length > 0) {
+      legendEntries.push(buildLegendEntry("atr", "ATR Long Stop", ATR_TRAILING_STOP_COLORS.long, "price", longPoints));
+    }
+    if (shortPoints.length > 0) {
+      legendEntries.push(buildLegendEntry("atr", "ATR Short Stop", ATR_TRAILING_STOP_COLORS.short, "price", shortPoints));
+    }
+  }
+
   if (selectedIndicators.includes("bollinger")) {
     const bands = calculateBollinger(closes, 20);
     const upperPoints = buildSeries(times, bands.upper);
@@ -350,6 +535,7 @@ export function applyIndicatorsToChart(
         color: overlay.color,
         lineWidth: (overlay.lineWidth ?? 2) as 1 | 2 | 3 | 4,
         lineStyle: overlay.lineStyle,
+        lineType: overlay.lineType,
         priceScaleId: overlay.priceScaleId,
         lastValueVisible: overlay.lastValueVisible,
         priceLineVisible: overlay.priceLineVisible,
@@ -365,6 +551,7 @@ export function applyIndicatorsToChart(
           color: line.color,
           lineWidth: (line.lineWidth ?? 2) as 1 | 2 | 3 | 4,
           lineStyle: line.lineStyle,
+          lineType: line.lineType,
           priceScaleId: line.priceScaleId,
           lastValueVisible: line.lastValueVisible,
           priceLineVisible: line.priceLineVisible,

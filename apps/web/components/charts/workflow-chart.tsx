@@ -105,6 +105,7 @@ function renderLineSeries(chart: IChartApi, line: IndicatorLineDescriptor) {
       color: line.color,
       lineWidth: (line.lineWidth ?? 2) as 1 | 2 | 3 | 4,
       lineStyle: line.lineStyle,
+      lineType: line.lineType,
       priceScaleId: line.priceScaleId,
       lastValueVisible: line.lastValueVisible,
       priceLineVisible: line.priceLineVisible,
@@ -496,7 +497,7 @@ export function WorkflowChart({
       </div>
 
       <div style={{ color: "var(--op-muted, #7a8999)", fontSize: "0.8rem", lineHeight: 1.5 }}>
-        Hover any panel to inspect one synchronized bar context across price, volume, and momentum. Values without enough history remain Unavailable. MACD, ATR, HACO parity, and richer interactive coverage remain deferred for a later chart pass.
+        Hover any panel to inspect one synchronized bar context across price, volume, and momentum. Values without enough history remain Unavailable. MACD, HACO parity, and richer interactive coverage remain deferred for a later chart pass.
       </div>
     </div>
   );

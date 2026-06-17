@@ -12,7 +12,7 @@ import type { IndicatorLegendEntry } from "@/lib/chart-indicators";
 import type { HacoChartPayload } from "@/lib/haco-api";
 import type { IndicatorId } from "@/lib/indicator-framework";
 
-const supportedIndicators: IndicatorId[] = ["volume", "sma20", "sma50", "ema20", "ema50", "ema200", "vwap", "bollinger", "prior_day_levels", "rsi"];
+const supportedIndicators: IndicatorId[] = ["volume", "sma20", "sma50", "ema20", "ema50", "ema200", "vwap", "atr", "bollinger", "prior_day_levels", "rsi"];
 
 describe("workflow chart presets", () => {
   it("defaults workflow charts to the trend preset when no stored selection exists", () => {
@@ -36,15 +36,18 @@ describe("workflow chart presets", () => {
   it("detects exact preset matches and falls back to custom otherwise", () => {
     expect(detectWorkflowIndicatorPreset(["volume"], supportedIndicators)).toBe("clean");
     expect(detectWorkflowIndicatorPreset(["volume", "rsi"], supportedIndicators)).toBe("momentum");
+    expect(detectWorkflowIndicatorPreset(["atr", "bollinger"], supportedIndicators)).toBe("volatility");
     expect(detectWorkflowIndicatorPreset(["ema20", "volume"], supportedIndicators)).toBe("custom");
   });
 
   it("filters preset indicators to only those supported by the current chart", () => {
-    expect(getWorkflowPresetIndicators("all", ["volume", "sma20", "rsi"])).toEqual(["volume", "sma20", "rsi"]);
+    expect(getWorkflowPresetIndicators("all", ["volume", "sma20", "atr", "rsi"])).toEqual(["volume", "sma20", "atr", "rsi"]);
+    expect(getWorkflowPresetIndicators("volatility", supportedIndicators)).toEqual(["atr", "bollinger"]);
   });
 
   it("splits volume and momentum indicators into dedicated lower panels", () => {
     expect(getWorkflowPanelState(["sma20", "volume", "rsi"])).toEqual({ showVolume: true, showMomentum: true });
+    expect(getWorkflowPanelState(["atr", "bollinger"])).toEqual({ showVolume: false, showMomentum: false });
     expect(getWorkflowPanelState(["sma20", "sma50"])).toEqual({ showVolume: false, showMomentum: false });
   });
 

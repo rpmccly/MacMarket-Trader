@@ -50,12 +50,12 @@ export const WORKFLOW_INDICATOR_PRESETS: WorkflowIndicatorPreset[] = [
   { id: "clean", label: "Clean", description: "Price + volume only", indicators: ["volume"] },
   { id: "trend", label: "Trend", description: "Price + SMA 20 + SMA 50", indicators: ["sma20", "sma50"] },
   { id: "momentum", label: "Momentum", description: "Price + volume + RSI 14", indicators: ["volume", "rsi"] },
-  { id: "volatility", label: "Volatility", description: "Price + Bollinger", indicators: ["bollinger"] },
+  { id: "volatility", label: "Volatility", description: "Price + ATR trailing stop + Bollinger", indicators: ["atr", "bollinger"] },
   {
     id: "all",
     label: "All",
     description: "Manual review with every supported indicator",
-    indicators: ["volume", "sma20", "sma50", "ema20", "ema50", "ema200", "vwap", "bollinger", "prior_day_levels", "rsi"],
+    indicators: ["volume", "sma20", "sma50", "ema20", "ema50", "ema200", "vwap", "atr", "bollinger", "prior_day_levels", "rsi"],
   },
 ];
 

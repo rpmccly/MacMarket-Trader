@@ -1,6 +1,29 @@
 # MacMarket-Trader Product Roadmap Status (Private Alpha)
 
-Last updated: 2026-06-07
+Last updated: 2026-06-17
+
+## 2026-06-17 Update - ATR Trailing Stop Chart Rendering
+
+Completed in the current Phase 1 chart/workflow trust hardening track:
+- Promoted the workflow `atr` indicator to a first-class selectable price
+  overlay and added it to the Volatility preset alongside Bollinger Bands.
+- Added a clearly named frontend ATR trailing-stop display model for generic
+  workflow charts using modified trail type, period 9, factor 2.9, long first
+  trade, and exponential averaging, without claiming exact Thinkorswim parity
+  for backend workflow semantics.
+- Rendered ATR on workflow charts as a stepped price-overlay trailing-stop line
+  with long/support points colored green and short/resistance points colored
+  red/pink, independent of candle up/down coloring.
+- Updated ATR Intel to render OHLC candles with backend-calculated ATR
+  trailing-stop segments overlaid by ATR state color, while preserving existing
+  snapshot, multi-timeframe, source/fallback, and settings UI.
+- Focused frontend validation passed: targeted Vitest chart/indicator tests and
+  `npx tsc --noEmit`.
+
+Open/deferred:
+- Backend ATR defaults, Agent Mode ATR settings, recommendation generation,
+  risk, replay, orders, provider defaults, broker routing, live trading, and
+  production data remain unchanged.
 
 ## 2026-06-07 Update - Phase 11 Agent Profiles (multi-agent)
 
