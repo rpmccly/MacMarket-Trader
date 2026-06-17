@@ -798,11 +798,17 @@ def build_index_context_summary(
     now: datetime | None = None,
 ) -> IndexContextSummary:
     current = now or utc_now()
-    mode = "polygon" if settings.polygon_enabled else "disabled"
+    configured_mode = settings.market_data_provider.strip().lower() or "fallback"
+    if settings.market_data_enabled and configured_mode not in {"fallback", ""}:
+        mode = "polygon" if configured_mode in {"massive", "polygon/massive", "polygon_massive"} else configured_mode
+    elif settings.polygon_enabled:
+        mode = "polygon"
+    else:
+        mode = "disabled"
     summary = IndexContextSummary(mode=mode, generated_at=current)
-    if mode != "polygon":
-        summary.missing_data.append("polygon_not_selected")
-        summary.warnings.append("Index context unavailable because Polygon/Massive market data is not selected.")
+    if mode == "disabled":
+        summary.missing_data.append("provider_not_selected")
+        summary.warnings.append("Index context unavailable because provider-backed market data is not selected.")
         return summary
 
     try:
@@ -839,7 +845,7 @@ def build_index_context_summary(
                 day_change_pct=_safe_float(getattr(snapshot, "day_change_pct", None)),
                 as_of=getattr(snapshot, "as_of", None).isoformat() if getattr(snapshot, "as_of", None) else None,
                 stale=bool(getattr(snapshot, "stale", False)),
-                provider=str(getattr(snapshot, "provider", "polygon") or "polygon"),
+                provider=str(getattr(snapshot, "provider", mode) or mode),
                 missing_data=[str(item) for item in (getattr(snapshot, "missing_data", None) or []) if str(item).strip()],
             )
             if point.latest_value is None:
@@ -871,7 +877,12 @@ def build_provider_context_summary(
     missing: list[str] = []
     if not market_data_source:
         missing.append("market_data_source")
-    if market_mode == "options" and not settings.polygon_api_key:
+    configured_mode = settings.market_data_provider.strip().lower() or "fallback"
+    options_provider_configured = (
+        settings.market_data_enabled
+        and configured_mode in {"schwab", "polygon", "massive", "polygon/massive", "polygon_massive"}
+    ) or settings.polygon_enabled
+    if market_mode == "options" and not options_provider_configured:
         missing.append("options_provider_config")
     return ProviderContextSummary(
         market_data_source=market_data_source,

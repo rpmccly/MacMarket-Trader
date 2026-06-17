@@ -309,9 +309,11 @@ Keep these distinctions clear:
 - **Assignment/exercise automation** is not available.
 - **Naked shorts** are blocked.
 - **Live routing** is not available.
-- **Provider option marks** depend on Polygon/Massive option snapshot
-  entitlement. If the provider returns `Not entitled to this data`, MacMarket
-  shows `mark_unavailable` and does not fabricate leg marks or P&L.
+- **Provider option marks** depend on the selected market-data provider's
+  option snapshot entitlement. Schwab/Thinkorswim is primary; legacy
+  Polygon/Massive may still appear in cutover comparisons. If the provider
+  returns `Not entitled to this data`, MacMarket shows `mark_unavailable` and
+  does not fabricate leg marks or P&L.
 
 Current supported operator expectation:
 
@@ -387,9 +389,9 @@ Practical operator notes:
   for research and workflow testing
 - options chain rows, option snapshot marks, Greeks, IV, and open interest
   depend on provider plan coverage
-- Provider Health can honestly show `options_data` as degraded when
-  Polygon/Massive says `Not entitled to this data`; that means option marks
-  are unavailable, not that live trading is enabled or disabled
+- Provider Health can honestly show `options_data` as degraded when the selected
+  provider says `Not entitled to this data`; that means option marks are
+  unavailable, not that live trading is enabled or disabled
 - missing options data is often a provider/plan limitation unless the app
   explicitly shows a different error
 - the Recommendations options risk surface and Analysis options preview now

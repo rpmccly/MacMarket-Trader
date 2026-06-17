@@ -89,6 +89,7 @@ export type DataParityRunResponse = {
   readOnly: boolean;
   brokerRoutingEnabled: boolean;
   productionProviderUnchanged: boolean;
+  comparisonMode?: string;
 };
 
 export type DataParitySnapshotSummary = {

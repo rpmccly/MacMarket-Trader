@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError
 
 import pytest
@@ -81,6 +81,28 @@ def _candles() -> list[dict[str, object]]:
     ]
 
 
+def _intraday_end_candles() -> list[dict[str, object]]:
+    stamps = [
+        datetime(2026, 1, 2, 15, 0, tzinfo=UTC),
+        datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+        datetime(2026, 1, 2, 16, 0, tzinfo=UTC),
+        datetime(2026, 1, 2, 16, 30, tzinfo=UTC),
+        datetime(2026, 1, 2, 19, 0, tzinfo=UTC),
+        datetime(2026, 1, 2, 19, 30, tzinfo=UTC),
+    ]
+    return [
+        {
+            "datetime": int(stamp.timestamp() * 1000),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100.5 + index,
+            "volume": 1000 + index,
+        }
+        for index, stamp in enumerate(stamps)
+    ]
+
+
 def test_parses_pricehistory_payload_into_bars(monkeypatch) -> None:
     cfg = _cfg()
     repo = _repo()
@@ -102,6 +124,47 @@ def test_parses_pricehistory_payload_into_bars(monkeypatch) -> None:
     assert metadata["source_timeframe"] == "1D"
 
 
+def test_schwab_historical_bars_normalize_supported_timeframes(monkeypatch) -> None:
+    cfg = _cfg()
+    repo = _repo()
+    _seed_token(repo, cfg)
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        if "frequencyType=minute" in request.full_url:
+            return FakeResponse({"candles": _intraday_end_candles()})
+        return FakeResponse({"candles": _candles()})
+
+    monkeypatch.setattr("macmarket_trader.data.providers.schwab.urlopen", fake_urlopen)
+
+    provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
+
+    daily = provider.fetch_historical_bars("SPY", "1D", 2)
+    weekly = provider.fetch_historical_bars("SPY", "1W", 2)
+    half_hour = provider.fetch_historical_bars("SPY", "30M", 2)
+    hourly = provider.fetch_historical_bars("SPY", "1H", 2)
+    four_hour = provider.fetch_historical_bars("SPY", "4H", 2)
+
+    assert len(daily) == 2
+    assert len(weekly) == 2
+    assert [bar.source_timeframe for bar in half_hour] == ["30M", "30M"]
+    assert [bar.timestamp for bar in half_hour] == [
+        datetime(2026, 1, 2, 18, 30, tzinfo=UTC),
+        datetime(2026, 1, 2, 19, 0, tzinfo=UTC),
+    ]
+    assert [bar.timestamp for bar in hourly] == [
+        datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
+        datetime(2026, 1, 2, 18, 30, tzinfo=UTC),
+    ]
+    assert [bar.timestamp for bar in four_hour] == [
+        datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
+        datetime(2026, 1, 2, 18, 30, tzinfo=UTC),
+    ]
+    assert all(
+        bar.session_policy == "regular_hours"
+        for bar in [*daily, *weekly, *half_hour, *hourly, *four_hour]
+    )
+
+
 def test_parses_quotes_payload(monkeypatch) -> None:
     cfg = _cfg()
     repo = _repo()
@@ -114,6 +177,77 @@ def test_parses_quotes_payload(monkeypatch) -> None:
 
     provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
     assert provider.quotes(["spy"]) == {"SPY": {"quote": {"lastPrice": 500.25}}}
+
+
+def test_latest_snapshot_uses_complete_schwab_quote(monkeypatch) -> None:
+    cfg = _cfg()
+    repo = _repo()
+    _seed_token(repo, cfg)
+    quote_time = int(datetime(2026, 1, 2, 20, 30, tzinfo=UTC).timestamp() * 1000)
+
+    monkeypatch.setattr(
+        "macmarket_trader.data.providers.schwab.urlopen",
+        lambda request, timeout: FakeResponse(
+            {
+                "SPY": {
+                    "quote": {
+                        "lastPrice": 501.25,
+                        "openPrice": 499.0,
+                        "highPrice": 502.0,
+                        "lowPrice": 498.5,
+                        "totalVolume": 1234567,
+                        "quoteTime": quote_time,
+                    }
+                }
+            }
+        ),
+    )
+
+    provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
+    snapshot = provider.fetch_latest_snapshot("SPY", "1D")
+
+    assert snapshot.source == "schwab"
+    assert snapshot.close == 501.25
+    assert snapshot.open == 499.0
+    assert snapshot.volume == 1234567
+    assert snapshot.as_of == datetime(2026, 1, 2, 20, 30, tzinfo=UTC)
+
+
+def test_index_symbol_mapping_returns_schwab_snapshot(monkeypatch) -> None:
+    cfg = _cfg()
+    repo = _repo()
+    _seed_token(repo, cfg)
+    seen_urls: list[str] = []
+    quote_time = int(datetime(2026, 1, 2, 20, 30, tzinfo=UTC).timestamp() * 1000)
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        seen_urls.append(request.full_url)
+        return FakeResponse(
+            {
+                "$SPX": {
+                    "quote": {
+                        "lastPrice": 5000.0,
+                        "closePrice": 4975.0,
+                        "netChange": 25.0,
+                        "netPercentChange": 0.5025,
+                        "quoteTime": quote_time,
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr("macmarket_trader.data.providers.schwab.urlopen", fake_urlopen)
+
+    provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
+    snapshot = provider.fetch_index_snapshot("SPX")
+
+    assert "symbols=%24SPX" in seen_urls[0]
+    assert snapshot.provider == "schwab"
+    assert snapshot.symbol == "SPX"
+    assert snapshot.latest_value == 5000.0
+    assert snapshot.previous_close == 4975.0
+    assert snapshot.day_change_pct == 0.5025
+    assert snapshot.missing_data == []
 
 
 def test_handles_empty_candles_without_fabricating_bars(monkeypatch) -> None:
@@ -206,6 +340,88 @@ def test_handles_entitlement_errors_without_leaking_authorization(monkeypatch) -
     redacted = redact_schwab_text("Authorization: Bearer unit-test-access-token-placeholder", cfg)
     assert "unit-test-access-token-placeholder" not in redacted
     assert "Authorization header" in redacted
+
+
+def test_schwab_option_chain_snapshot_and_resolution(monkeypatch) -> None:
+    cfg = _cfg()
+    repo = _repo()
+    _seed_token(repo, cfg)
+    quote_time = int(datetime.now(tz=UTC).timestamp() * 1000)
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        if "/chains" in request.full_url:
+            return FakeResponse(
+                {
+                    "callExpDateMap": {
+                        "2026-05-15:30": {
+                            "500.0": [
+                                {
+                                    "symbol": "SPY  260515C00500000",
+                                    "putCall": "CALL",
+                                    "strikePrice": 500.0,
+                                    "expirationDate": "2026-05-15",
+                                    "openInterest": 100,
+                                }
+                            ]
+                        }
+                    },
+                    "putExpDateMap": {
+                        "2026-05-15:30": {
+                            "495.0": [
+                                {
+                                    "symbol": "SPY  260515P00495000",
+                                    "putCall": "PUT",
+                                    "strikePrice": 495.0,
+                                    "expirationDate": "2026-05-15",
+                                    "openInterest": 90,
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
+        return FakeResponse(
+            {
+                "SPY  260515C00500000": {
+                    "quote": {
+                        "bidPrice": 10.0,
+                        "askPrice": 11.0,
+                        "lastPrice": 10.4,
+                        "openInterest": 100,
+                        "volatility": 0.2,
+                        "delta": 0.5,
+                        "quoteTime": quote_time,
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr("macmarket_trader.data.providers.schwab.urlopen", fake_urlopen)
+
+    provider = SchwabMarketDataProvider(repo=repo, cfg=cfg)
+    contracts = provider.fetch_option_contracts(
+        underlying_symbol="SPY",
+        expiration=date(2026, 5, 15),
+        option_type="call",
+    )
+    preview = provider.fetch_options_chain_preview("SPY")
+    resolution = provider.resolve_option_contract(
+        underlying_symbol="SPY",
+        expiration=date(2026, 5, 15),
+        option_type="call",
+        target_strike=501.0,
+    )
+    snapshot = provider.fetch_option_contract_snapshot("SPY", "SPY  260515C00500000")
+
+    assert contracts[0]["ticker"] == "SPY  260515C00500000"
+    assert preview["source"] == "schwab_options_chain"
+    assert preview["calls"][0]["ticker"] == "SPY  260515C00500000"
+    assert resolution.resolved is True
+    assert resolution.provider == "schwab"
+    assert resolution.option_symbol == "SPY  260515C00500000"
+    assert snapshot.mark_price == 10.5
+    assert snapshot.mark_method == "quote_mid"
+    assert snapshot.open_interest == 100
 
 
 def test_refreshes_access_token_near_expiry(monkeypatch) -> None:

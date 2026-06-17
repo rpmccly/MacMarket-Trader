@@ -125,6 +125,15 @@ class StubMarketDataService:
         return SimpleNamespace(status="ok")
 
 
+class StubSchwabMarketDataService:
+    def __init__(self) -> None:
+        self._provider = SimpleNamespace(name="schwab")
+
+    def provider_health(self, sample_symbol: str):
+        del sample_symbol
+        return SimpleNamespace(status="ok")
+
+
 class StubSchwabProvider:
     def __init__(self, raw_bars: list[Bar], canonical_bars: list[Bar] | None = None) -> None:
         self.raw_bars = raw_bars
@@ -700,6 +709,83 @@ def test_intraday_raw_layer_uses_shared_30m_source_for_current_and_schwab(monkey
     assert raw["current_metadata"]["requested_output_timeframe"] == "4H"
     assert raw["current_metadata"]["rth_bucket_boundaries"] == ["09:30-13:30", "13:30-16:00"]
     assert response["results"][0]["canonicalBars"]["current_metadata"]["output_timeframe"] == "4H"
+
+
+def test_schwab_primary_without_legacy_provider_returns_clear_no_comparison(monkeypatch) -> None:
+    app_user_id = _seed_user()
+    monkeypatch.setattr(
+        "macmarket_trader.data_parity.service.schwab_connection_status",
+        lambda *, repo, cfg: {
+            "provider": "schwab_market_data",
+            "mode": "primary_market_data",
+            "status": "ok",
+            "configured": True,
+            "oauth_connected": True,
+            "token_status": "connected",
+            "details": "connected",
+        },
+    )
+    cfg = _cfg()
+    cfg.polygon_api_key = ""
+    service = ProviderParityService(
+        current_market_data_service=StubSchwabMarketDataService(),
+        schwab_provider=StubSchwabProvider(_bars()),
+        oauth_repo=ProviderOAuthRepository(SessionLocal),
+        snapshot_repo=ProviderParitySnapshotRepository(SessionLocal),
+        cfg=cfg,
+    )
+
+    response = service.run(_request(saveSnapshot=True), app_user_id=app_user_id)
+
+    assert response["comparisonMode"] == "schwab_primary_no_legacy"
+    assert response["providers"]["current"]["provider"] == "schwab_primary"
+    assert response["results"] == []
+    assert "no legacy Polygon/Massive API key" in response["warnings"][0]
+    with SessionLocal() as session:
+        row = session.execute(select(ProviderParitySnapshotModel).where(ProviderParitySnapshotModel.run_id == response["runId"])).scalar_one()
+        assert row.provider_current == "schwab_primary"
+        assert row.provider_candidate == "schwab"
+
+
+def test_schwab_primary_uses_legacy_polygon_when_configured(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "macmarket_trader.data_parity.service.schwab_connection_status",
+        lambda *, repo, cfg: {
+            "provider": "schwab_market_data",
+            "mode": "primary_market_data",
+            "status": "ok",
+            "configured": True,
+            "oauth_connected": True,
+            "token_status": "connected",
+            "details": "connected",
+        },
+    )
+    captured: dict[str, object] = {}
+
+    class LegacyPolygonProvider(StubProvider):
+        name = "polygon"
+
+        def fetch_historical_bars(self, *, symbol: str, timeframe: str, limit: int) -> list[Bar]:
+            captured["provider_called"] = "legacy_polygon"
+            return super().fetch_historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
+
+    cfg = _cfg()
+    cfg.polygon_api_key = "legacy-key"
+    service = ProviderParityService(
+        current_market_data_service=StubSchwabMarketDataService(),
+        schwab_provider=StubSchwabProvider(_bars()),
+        oauth_repo=ProviderOAuthRepository(SessionLocal),
+        snapshot_repo=ProviderParitySnapshotRepository(SessionLocal),
+        cfg=cfg,
+    )
+    service.legacy_polygon_provider = LegacyPolygonProvider(_bars())
+
+    response = service.run(_request(saveSnapshot=False), app_user_id=1)
+
+    assert captured["provider_called"] == "legacy_polygon"
+    assert response["comparisonMode"] == "legacy_polygon_vs_schwab"
+    assert response["providers"]["current"]["provider"] == "polygon_legacy"
+    assert "primary_provider_is_schwab_using_legacy_polygon_for_cutover_comparison" in response["results"][0]["warnings"]
 
 
 def test_parity_response_and_snapshot_redact_sensitive_keys(monkeypatch) -> None:

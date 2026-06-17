@@ -4,7 +4,7 @@ MacMarket-Trader keeps vendor SDKs behind interface boundaries so deterministic 
 
 ## Provider interfaces
 
-- `MarketDataProvider` (deterministic fallback + Alpaca adapter)
+- `MarketDataProvider` (Schwab primary + Polygon legacy/comparison + deterministic fallback + Alpaca scaffold)
 - `NewsProvider`
 - `MacroCalendarProvider`
 - `BrokerProvider` (paper-only in v1)
@@ -17,7 +17,8 @@ Provider mode is selected from config:
 
 - `AUTH_PROVIDER=mock|clerk`
 - `EMAIL_PROVIDER=console|resend`
-- `MARKET_DATA_PROVIDER=fallback|alpaca` + `MARKET_DATA_ENABLED=true|false`
+- `MARKET_DATA_PROVIDER=fallback|schwab|polygon|alpaca` + `MARKET_DATA_ENABLED=true|false`
+- Schwab/Thinkorswim is the primary read-only market-data provider; Polygon/Massive remains legacy rollback/cutover comparison.
 - Alpaca auth headers map from `.env`: `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`
 
 Deployment default should be `clerk` + production email provider; local mode can explicitly opt into `mock` + `console`.
@@ -27,7 +28,7 @@ Mock auth is fail-closed outside `ENVIRONMENT in {dev, local, test}`.
 
 - Auth: `MockAuthProvider`, `ClerkAuthProvider`
 - Email: `ConsoleEmailProvider`, `ResendEmailProvider`
-- Market data: `DeterministicFallbackMarketDataProvider`, `AlpacaMarketDataProvider` via `MarketDataService`
+- Market data: `SchwabMarketDataProvider`, `PolygonMarketDataProvider` (legacy), `DeterministicFallbackMarketDataProvider`, `AlpacaMarketDataProvider` via `MarketDataService`
 
 ## Persistence support tables
 

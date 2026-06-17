@@ -163,7 +163,19 @@ CORS_ALLOWED_ORIGINS=https://macmarket.io
 # Keep existing settings
 EMAIL_PROVIDER=resend
 RESEND_API_KEY=
-POLYGON_ENABLED=true
+
+# Schwab/Thinkorswim is the primary read-only market-data provider.
+MARKET_DATA_PROVIDER=schwab
+MARKET_DATA_ENABLED=true
+SCHWAB_ENABLED=true
+SCHWAB_CLIENT_ID=
+SCHWAB_CLIENT_SECRET=
+SCHWAB_REDIRECT_URI=https://api.macmarket.io/auth/schwab/callback
+SCHWAB_TOKEN_ENCRYPTION_KEY=
+
+# Polygon/Massive is legacy cutover comparison only; keep it disabled for
+# Schwab-first production.
+POLYGON_ENABLED=false
 POLYGON_API_KEY=
 ```
 

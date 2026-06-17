@@ -1,4 +1,4 @@
-"""Market-data provider abstraction with Polygon + Alpaca scaffolds + deterministic fallback."""
+"""Market-data provider abstraction with Schwab, Polygon legacy, Alpaca scaffold, and fallback."""
 
 from __future__ import annotations
 
@@ -71,6 +71,35 @@ OPTION_ETF_UNDERLYINGS = {
     "XLV",
 }
 OPTION_CONTRACT_REFERENCE_MAX_PAGES = 8
+LEGACY_POLYGON_PROVIDER_ALIASES = {"polygon", "massive", "polygon/massive", "polygon_massive"}
+
+
+def configured_market_data_provider_name() -> str:
+    """Resolve the selected provider without allowing Polygon to override explicit modes."""
+    mode = settings.market_data_provider.strip().lower() or "fallback"
+    if not settings.market_data_enabled:
+        if settings.polygon_enabled and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
+            # Legacy compatibility for older deployments that only set POLYGON_ENABLED=true.
+            return "polygon"
+        return "fallback"
+    if mode in {"schwab", "alpaca"}:
+        return mode
+    if mode in LEGACY_POLYGON_PROVIDER_ALIASES:
+        return "polygon"
+    if settings.polygon_enabled and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
+        # Legacy compatibility for older deployments that only set POLYGON_ENABLED=true.
+        return "polygon"
+    if mode not in {"fallback", ""}:
+        return "fallback"
+    return "fallback"
+
+
+def provider_backed_market_data_expected() -> bool:
+    return configured_market_data_provider_name() != "fallback"
+
+
+def workflow_demo_fallback_allowed() -> bool:
+    return settings.workflow_demo_fallback and settings.environment.strip().lower() in {"dev", "local", "test"}
 
 
 def _format_rth_bucket_boundaries(output_timeframe: str) -> list[str]:
@@ -145,6 +174,9 @@ def _redact_provider_text(value: object) -> str:
         settings.alpaca_api_key_id,
         settings.alpaca_api_secret_key,
         settings.fred_api_key,
+        settings.schwab_client_id,
+        settings.schwab_client_secret,
+        settings.schwab_token_encryption_key,
     ):
         if secret and secret.strip():
             text = text.replace(secret.strip(), "[redacted]")
@@ -1438,13 +1470,31 @@ class MarketDataService:
         self.last_historical_metadata: dict[str, object] | None = None
 
     def _build_provider(self) -> MarketDataProvider:
-        if settings.polygon_enabled:
-            return PolygonMarketDataProvider()
+        mode = configured_market_data_provider_name()
+        if mode == "schwab":
+            from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider
 
-        mode = settings.market_data_provider.strip().lower()
-        if settings.market_data_enabled and mode == "alpaca":
+            return SchwabMarketDataProvider()
+        if mode == "polygon":
+            return PolygonMarketDataProvider()
+        if mode == "alpaca":
             return AlpacaMarketDataProvider()
         return DeterministicFallbackMarketDataProvider()
+
+    def _provider_is_configured(self) -> bool:
+        checker = getattr(self._provider, "is_configured", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return self._provider.name == "fallback"
+
+    def _allow_exception_fallback(self) -> bool:
+        return self._provider.name == "fallback" or workflow_demo_fallback_allowed()
+
+    def _provider_error(self, action: str, exc: Exception) -> ProviderUnavailableError:
+        return ProviderUnavailableError(f"{self._provider.name} {action} unavailable: {_redact_provider_text(exc)}")
 
     def _metadata_from_bars(
         self,
@@ -1534,7 +1584,9 @@ class MarketDataService:
                 result = (bars, source, self._provider.name == "fallback", metadata)
         except (SymbolNotFoundError, DataNotEntitledError):
             raise
-        except Exception:
+        except Exception as exc:
+            if not self._allow_exception_fallback():
+                raise self._provider_error("historical bars", exc) from exc
             result = self._fallback_result(symbol=symbol, timeframe=timeframe, limit=limit)
 
         bars, source, fallback_mode, metadata = result
@@ -1564,7 +1616,9 @@ class MarketDataService:
             snapshot = self._provider.fetch_latest_snapshot(symbol=symbol, timeframe=timeframe)
         except (SymbolNotFoundError, DataNotEntitledError):
             raise
-        except Exception:
+        except Exception as exc:
+            if not self._allow_exception_fallback():
+                raise self._provider_error("latest snapshot", exc) from exc
             snapshot = self._fallback_provider.fetch_latest_snapshot(symbol=symbol, timeframe=timeframe)
 
         self._latest_cache.set(cache_key, snapshot, settings.market_data_latest_cache_ttl_seconds)
@@ -1577,7 +1631,7 @@ class MarketDataService:
         cached = self._latest_cache.get(cache_key)
         if cached is not None:
             return cached
-        if not isinstance(self._provider, PolygonMarketDataProvider) or not self._provider.is_configured():
+        if self._provider.name == "fallback" or not self._provider_is_configured():
             snapshot = IndexMarketSnapshot(
                 symbol=normalized,
                 label=INDEX_LABELS.get(normalized, normalized),
@@ -1603,22 +1657,22 @@ class MarketDataService:
         if cached is not None:
             return cached
 
-        if not settings.polygon_enabled:
+        if provider_key == "fallback":
             result: dict[str, object] = {
                 "probe_state": "skipped",
                 "probe_status": "skipped",
-                "details": "Indices data readiness is disabled because Polygon/Massive market data is not selected.",
+                "details": "Indices data readiness is disabled because provider-backed market data is not selected.",
                 "samples": [],
                 "entitlement_status": "unknown",
                 "latency_ms": None,
             }
             self._options_health_cache.set(cache_key, result, settings.market_data_latest_cache_ttl_seconds)
             return result
-        if not isinstance(self._provider, PolygonMarketDataProvider) or not self._provider.is_configured():
+        if not self._provider_is_configured():
             result = {
                 "probe_state": "unavailable",
                 "probe_status": "unavailable",
-                "details": "Indices data readiness requires Polygon/Massive API key and base URL configuration.",
+                "details": f"Indices data readiness requires configured {provider_key} market data.",
                 "samples": [],
                 "entitlement_status": "unknown",
                 "latency_ms": None,
@@ -1686,16 +1740,20 @@ class MarketDataService:
             "entitlement_status": entitlement_status,
             "errors": [_redact_provider_text(error) for error in errors][:4],
             "latency_ms": elapsed,
-            "last_success_at": self._provider._last_success_at.isoformat() if self._provider._last_success_at else None,
+            "last_success_at": (
+                self._provider._last_success_at.isoformat()
+                if getattr(self._provider, "_last_success_at", None)
+                else None
+            ),
         }
         self._options_health_cache.set(cache_key, result, settings.market_data_latest_cache_ttl_seconds)
         return result
 
     def options_chain_preview(self, symbol: str, limit: int = 50) -> dict[str, Any] | None:
-        """Returns options chain preview dict if provider is Polygon; None otherwise."""
-        if not isinstance(self._provider, PolygonMarketDataProvider):
+        fetcher = getattr(self._provider, "fetch_options_chain_preview", None)
+        if not callable(fetcher) or self._provider.name == "fallback" or not self._provider_is_configured():
             return None
-        return self._provider.fetch_options_chain_preview(symbol=symbol, limit=limit)
+        return fetcher(symbol=symbol, limit=limit)
 
     def resolve_option_contract(
         self,
@@ -1708,7 +1766,7 @@ class MarketDataService:
         normalized_underlying = option_reference_underlying_ticker(underlying_symbol)
         normalized_type = "call" if str(option_type).strip().lower().startswith("c") else "put"
         target = float(target_strike)
-        if not isinstance(self._provider, PolygonMarketDataProvider):
+        if self._provider.name == "fallback" or not callable(getattr(self._provider, "resolve_option_contract", None)):
             return OptionContractResolution(
                 requested_underlying=normalized_underlying,
                 underlying_asset_type=option_underlying_asset_type(normalized_underlying),
@@ -1720,9 +1778,9 @@ class MarketDataService:
                 option_symbol=None,
                 provider=self._provider.name,
                 contract_selection_method="provider_reference_not_supported",
-                unavailable_reason="Listed option contract resolution requires Polygon/Massive reference data.",
+                unavailable_reason=f"Listed option contract resolution is not supported by {self._provider.name} market data.",
             )
-        if not self._provider.is_configured():
+        if not self._provider_is_configured():
             return OptionContractResolution(
                 requested_underlying=normalized_underlying,
                 underlying_asset_type=option_underlying_asset_type(normalized_underlying),
@@ -1732,9 +1790,9 @@ class MarketDataService:
                 target_strike=target,
                 selected_strike=None,
                 option_symbol=None,
-                provider="polygon",
+                provider=self._provider.name,
                 contract_selection_method="provider_reference_missing_config",
-                unavailable_reason="Polygon/Massive API key or base URL is missing.",
+                unavailable_reason=f"{self._provider.name} market-data configuration or OAuth is missing.",
             )
         return self._provider.resolve_option_contract(
             underlying_symbol=normalized_underlying,
@@ -1754,9 +1812,9 @@ class MarketDataService:
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
         normalized_underlying = option_reference_underlying_ticker(underlying_symbol)
-        if not isinstance(self._provider, PolygonMarketDataProvider):
+        if self._provider.name == "fallback":
             return []
-        if not self._provider.is_configured():
+        if not self._provider_is_configured():
             return []
         fetcher = getattr(self._provider, "fetch_option_contracts", None)
         if not callable(fetcher):
@@ -1779,7 +1837,7 @@ class MarketDataService:
         if cached is not None:
             return cached
 
-        if not isinstance(self._provider, PolygonMarketDataProvider):
+        if self._provider.name == "fallback" or not callable(getattr(self._provider, "fetch_option_contract_snapshot", None)):
             snapshot = unavailable_option_contract_snapshot(
                 underlying_symbol=normalized_underlying,
                 option_symbol=normalized_option,
@@ -1787,11 +1845,11 @@ class MarketDataService:
                 missing_fields=["provider_option_snapshot_not_supported"],
                 fallback_mode=self._provider.name == "fallback",
             )
-        elif not self._provider.is_configured():
+        elif not self._provider_is_configured():
             snapshot = unavailable_option_contract_snapshot(
                 underlying_symbol=normalized_underlying,
                 option_symbol=normalized_option,
-                provider="polygon",
+                provider=self._provider.name,
                 missing_fields=["provider_option_snapshot_missing_config"],
             )
         else:
@@ -1804,8 +1862,8 @@ class MarketDataService:
                 snapshot = unavailable_option_contract_snapshot(
                     underlying_symbol=normalized_underlying,
                     option_symbol=normalized_option,
-                    provider="polygon",
-                    endpoint="/v3/snapshot/options/{underlying}/{option}",
+                    provider=self._provider.name,
+                    endpoint="provider_option_snapshot",
                     missing_fields=["provider_option_snapshot_not_entitled"],
                     provider_error=str(exc)[:300],
                 )
@@ -1813,8 +1871,8 @@ class MarketDataService:
                 snapshot = unavailable_option_contract_snapshot(
                     underlying_symbol=normalized_underlying,
                     option_symbol=normalized_option,
-                    provider="polygon",
-                    endpoint="/v3/snapshot/options/{underlying}/{option}",
+                    provider=self._provider.name,
+                    endpoint="provider_option_snapshot",
                     missing_fields=["provider_option_snapshot_not_found"],
                     provider_error=str(exc)[:300],
                 )
@@ -1822,8 +1880,8 @@ class MarketDataService:
                 snapshot = unavailable_option_contract_snapshot(
                     underlying_symbol=normalized_underlying,
                     option_symbol=normalized_option,
-                    provider="polygon",
-                    endpoint="/v3/snapshot/options/{underlying}/{option}",
+                    provider=self._provider.name,
+                    endpoint="provider_option_snapshot",
                     missing_fields=["provider_option_snapshot_unavailable"],
                     provider_error=str(exc)[:300],
                 )
@@ -1903,7 +1961,77 @@ class MarketDataService:
 
     def _discover_options_health_samples(self, sample_symbol: str) -> OptionsHealthDiscovery:
         if not isinstance(self._provider, PolygonMarketDataProvider):
-            return OptionsHealthDiscovery(samples=[], error="Options sample discovery requires Polygon/Massive market data.")
+            if self._provider.name == "fallback":
+                return OptionsHealthDiscovery(samples=[], error="Options sample discovery requires provider-backed market data.")
+            if not self._provider_is_configured():
+                return OptionsHealthDiscovery(samples=[], error=f"{self._provider.name} market-data configuration or OAuth is missing.")
+            fetch_contracts = getattr(self._provider, "fetch_option_contracts", None)
+            if not callable(fetch_contracts):
+                return OptionsHealthDiscovery(samples=[], error=f"{self._provider.name} does not expose option chain/reference data.")
+
+            errors: list[str] = []
+            today = date.today()
+            for underlying in self._options_health_underlyings(sample_symbol):
+                asset_type = option_underlying_asset_type(underlying)
+                underlying_price: float | None = None
+                try:
+                    underlying_price = _positive_float(self._provider.fetch_latest_snapshot(underlying, "1D").close)
+                except (DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                    reason = _redact_provider_text(exc)
+                    if _is_entitlement_error_text(reason):
+                        if asset_type == "index":
+                            return OptionsHealthDiscovery(
+                                samples=[],
+                                underlying_error=reason,
+                                underlying_entitlement_error=True,
+                            )
+                        return OptionsHealthDiscovery(samples=[], error=reason, entitlement_error=True)
+                    if asset_type == "index":
+                        return OptionsHealthDiscovery(samples=[], underlying_error=reason)
+                    errors.append(f"{underlying}: {reason}")
+
+                strike_gte = None
+                strike_lte = None
+                if underlying_price is not None:
+                    strike_window = max(250.0 if asset_type == "index" else 25.0, underlying_price * 0.12)
+                    strike_gte = max(0.0, underlying_price - strike_window)
+                    strike_lte = underlying_price + strike_window
+                try:
+                    rows = fetch_contracts(
+                        underlying_symbol=underlying,
+                        expiration=None,
+                        option_type=None,
+                        strike_gte=strike_gte,
+                        strike_lte=strike_lte,
+                        limit=1000,
+                    )
+                except (DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                    reason = _redact_provider_text(exc)
+                    if _is_entitlement_error_text(reason):
+                        return OptionsHealthDiscovery(samples=[], error=reason, entitlement_error=True, underlying_price=underlying_price)
+                    errors.append(f"{underlying}: {reason}")
+                    continue
+
+                samples = [
+                    sample
+                    for item in rows or []
+                    if isinstance(item, dict)
+                    if (sample := self._option_health_sample_from_row(
+                        underlying=underlying,
+                        item=item,
+                        selection_method="discovered",
+                        today=today,
+                    )) is not None
+                ]
+                ranked = self._rank_options_health_samples(samples, underlying_price=underlying_price)
+                if ranked:
+                    return OptionsHealthDiscovery(samples=ranked, underlying_price=underlying_price)
+                errors.append(f"{underlying}: no active option contracts returned")
+
+            return OptionsHealthDiscovery(
+                samples=[],
+                error="; ".join(errors)[:300] if errors else "No active option contracts returned for sample underlyings.",
+            )
 
         errors: list[str] = []
         today = date.today()
@@ -2027,7 +2155,7 @@ class MarketDataService:
         elif snapshot.mark_method == "prior_close_fallback":
             sanitized = None
             result = "prior_close"
-        elif snapshot.mark_method in {"quote_mid", "last_trade"}:
+        elif snapshot.mark_method in {"quote_mid", "provider_mark", "last_trade"}:
             sanitized = None
             result = snapshot.mark_method
         else:
@@ -2085,7 +2213,11 @@ class MarketDataService:
             "entitlement_status": entitlement_status,
             "candidate_attempts": candidate_attempts or [],
             "latency_ms": elapsed_ms,
-            "last_success_at": self._provider._last_success_at.isoformat() if isinstance(self._provider, PolygonMarketDataProvider) and self._provider._last_success_at else None,
+            "last_success_at": (
+                self._provider._last_success_at.isoformat()
+                if getattr(self._provider, "_last_success_at", None)
+                else None
+            ),
         }
 
     def options_data_health(self, sample_symbol: str = "SPY") -> dict[str, object]:
@@ -2097,20 +2229,20 @@ class MarketDataService:
         if cached is not None:
             return cached
 
-        if not settings.polygon_enabled:
+        if provider_key == "fallback":
             result = self._options_health_result(
                 sample_symbol=sample_symbol,
                 probe_state="skipped",
-                details="Options data readiness is disabled because Polygon market data is not selected.",
+                details="Options data readiness is disabled because provider-backed market data is not selected.",
                 elapsed_ms=None,
             )
             self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
             return result
-        if not isinstance(self._provider, PolygonMarketDataProvider) or not self._provider.is_configured():
+        if not self._provider_is_configured():
             result = self._options_health_result(
                 sample_symbol=sample_symbol,
                 probe_state="unavailable",
-                details="Options data readiness requires Polygon API key and base URL configuration.",
+                details=f"Options data readiness requires configured {provider_key} market data.",
                 elapsed_ms=None,
             )
             self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
@@ -2232,12 +2364,12 @@ class MarketDataService:
                     )
                     self._options_health_cache.set(cache_key, result, settings.market_data_option_snapshot_cache_ttl_seconds)
                     return result
-                if snapshot.mark_method in {"quote_mid", "last_trade"} and not snapshot.stale:
+                if snapshot.mark_method in {"quote_mid", "provider_mark", "last_trade"} and not snapshot.stale:
                     elapsed = round((monotonic() - started) * 1000, 2)
                     result = self._options_health_result(
                         sample_symbol=sample_symbol,
                         probe_state="ok",
-                        details=f"Polygon options snapshot probe succeeded using {snapshot.mark_method}.",
+                        details=f"{self._provider.name} options snapshot probe succeeded using {snapshot.mark_method}.",
                         elapsed_ms=elapsed,
                         sample=sample,
                         snapshot=snapshot,
@@ -2317,7 +2449,10 @@ class MarketDataService:
             return health
         if self._provider.name != "fallback":
             fallback = self._fallback_provider.health_check(sample_symbol=sample_symbol)
-            fallback.details = f"{health.details} Fallback remains available and active for chart/snapshot reads."
+            if workflow_demo_fallback_allowed():
+                fallback.details = f"{health.details} Explicit local/dev demo fallback is enabled for chart/snapshot reads."
+            else:
+                fallback.details = f"{health.details} Demo fallback is not activated for workflows while WORKFLOW_DEMO_FALLBACK=false."
             return MarketProviderHealth(
                 provider=health.provider,
                 mode=health.mode,

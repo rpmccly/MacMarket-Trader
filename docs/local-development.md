@@ -19,39 +19,52 @@
 
 ## Market data provider (backend `.env`)
 
-MacMarket-Trader can run in deterministic fallback mode, Polygon mode (preferred live provider), or Alpaca mode (scaffold retained).
+MacMarket-Trader can run in deterministic fallback mode, Schwab/Thinkorswim mode (primary read-only market data), legacy Polygon/Massive comparison mode, or Alpaca mode (scaffold retained).
 
-### Live market data via Polygon.io
+### Live market data via Schwab/Thinkorswim
 
-Polygon is the recommended path for real bar data. The free Starter tier provides delayed data (15-minute delay) which is sufficient for research-preview analysis and replay validation.
+Schwab/Thinkorswim is the production-capable path for read-only bar, quote, index, and options-research data. It does not enable Schwab broker execution, live trading, order placement, assignment/exercise automation, or paper OMS behavior changes.
 
 **Setup:**
-1. Create a free account and API key at [https://polygon.io/dashboard/signup](https://polygon.io/dashboard/signup)
-2. In your `.env` file set:
+1. Create/configure a Schwab developer app and register the local or deployed OAuth callback documented in `docs/data-parity-lab.md`.
+2. In your backend `.env` file set:
    ```
-   POLYGON_ENABLED=true
+   MARKET_DATA_PROVIDER=schwab
+   MARKET_DATA_ENABLED=true
+   SCHWAB_ENABLED=true
+   SCHWAB_CLIENT_ID=
+   SCHWAB_CLIENT_SECRET=
+   SCHWAB_REDIRECT_URI=http://127.0.0.1:9510/auth/schwab/callback
+   SCHWAB_TOKEN_ENCRYPTION_KEY=
+   POLYGON_ENABLED=false
    POLYGON_API_KEY=
    ```
-   Paste your key only into your local `.env`; do not commit it.
+   Keep Schwab secrets only in `.env`; do not commit them.
 3. Restart the backend: `python -m uvicorn macmarket_trader.api.main:app --reload --port 9510`
+4. Open Admin -> Data Parity Lab and connect Schwab OAuth.
 
 **What changes in the UI when live data is active:**
-- The source chip in the Analysis workbench changes from `fallback (...)` to `polygon`
-- Dashboard "Latest market snapshot" shows a real recent price with a current `as_of` timestamp
-- Workflow banner shows `via polygon` instead of `via fallback`
+- The source chip in the Analysis workbench changes from `fallback (...)` to `schwab`
+- Dashboard "Latest market snapshot" shows Schwab-backed data with a provider timestamp
+- Workflow banner shows `via schwab` instead of `via fallback`
+- Provider Health shows Schwab OAuth, entitlement, index, options, latency, and workflow mode
 
 **Verify it's working:**
-- Navigate to `/admin/provider-health` — `Configured provider` should show `polygon`, `Workflow execution mode` should show `provider`
-- Run the Analysis workbench on any equities symbol — the source chip at the top right should read `polygon` (not `fallback`)
-- The provider-health card on the Dashboard should show "ok" status
+- Navigate to `/admin/provider-health`; `Configured provider` and `Effective read mode` should show `schwab`, and `Workflow execution mode` should show `provider`
+- Run the Analysis workbench on any equities symbol; the source chip at the top right should read `schwab` (not `fallback`)
+- The provider-health card on the Dashboard should show a non-blocked Schwab status
 
 **Other modes:**
 - Fallback-only (default):
-  - `POLYGON_ENABLED=false`
   - `MARKET_DATA_PROVIDER=fallback`
   - `MARKET_DATA_ENABLED=false`
-- Alpaca (alternate scaffold):
+  - `WORKFLOW_DEMO_FALLBACK=true` only for local/dev/test demo workflow use
+- Legacy Polygon/Massive cutover comparison:
+  - `MARKET_DATA_PROVIDER=schwab`
+  - `SCHWAB_ENABLED=true`
   - `POLYGON_ENABLED=false`
+  - `POLYGON_API_KEY=` may be populated only if you want the Data Parity Lab to compare legacy Polygon/Massive bars against Schwab during cutover validation
+- Alpaca (alternate scaffold):
   - `MARKET_DATA_PROVIDER=alpaca`
   - `MARKET_DATA_ENABLED=true`
   - `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`

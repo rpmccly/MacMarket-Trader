@@ -627,7 +627,7 @@ Implemented operator-console areas:
 - lower row for replay runs, orders, pending admin actions, provider health details, and alerts/event log
 
 Known constrained area:
-- market-data provider adapter remains deterministic fallback until provider-backed adapter wiring is completed (explicitly labeled in UI and provider health).
+- Schwab/Thinkorswim can be selected as the primary read-only market-data provider; deterministic fallback remains explicit and provider health labels provider versus fallback workflow mode.
 
 ## Operator-console acceptance criteria
 

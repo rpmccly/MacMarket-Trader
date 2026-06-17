@@ -1,76 +1,113 @@
-# Market Data Setup (Polygon/Alpaca + deterministic fallback)
+# Market Data Setup (Schwab/Thinkorswim Primary)
 
-MacMarket-Trader v1 supports real market-data providers: **Polygon** (preferred) and **Alpaca** (alternate scaffold).
+MacMarket-Trader v1 now treats **Schwab/Thinkorswim** as the primary read-only
+market-data provider. Polygon/Massive remains a legacy rollback or optional
+cutover-comparison provider only.
 
-If Alpaca is not configured, disabled, or temporarily unavailable, the backend stays operational in explicit **deterministic fallback** mode.
+Schwab market data does not add Schwab broker execution, live trading, order
+routing, assignment/exercise automation, or any change to recommendation,
+sizing, replay, paper OMS, or LLM behavior beyond normal reads through the
+market-data provider abstraction.
 
 ## Backend `.env` variables (repo root)
 
 ```bash
-POLYGON_ENABLED=true
-POLYGON_API_KEY=...
-
-# Optional Polygon tuning
-POLYGON_BASE_URL=https://api.polygon.io
-POLYGON_TIMEOUT_SECONDS=8
-
-# Alternate provider scaffold
-POLYGON_ENABLED=false
-MARKET_DATA_PROVIDER=alpaca
+MARKET_DATA_PROVIDER=schwab
 MARKET_DATA_ENABLED=true
-APCA_API_KEY_ID=...
-APCA_API_SECRET_KEY=...
+SCHWAB_ENABLED=true
 
-# Optional provider tuning
-ALPACA_MARKET_DATA_BASE_URL=https://data.alpaca.markets
-ALPACA_MARKET_DATA_FEED=iex        # iex | sip | delayed_sip
-MARKET_DATA_REQUEST_TIMEOUT_SECONDS=8
-MARKET_DATA_LATEST_CACHE_TTL_SECONDS=10
-MARKET_DATA_HISTORICAL_CACHE_TTL_SECONDS=120
+SCHWAB_CLIENT_ID=
+SCHWAB_CLIENT_SECRET=
+SCHWAB_REDIRECT_URI=https://api.macmarket.io/auth/schwab/callback
+SCHWAB_BASE_URL=https://api.schwabapi.com
+SCHWAB_AUTH_URL=https://api.schwabapi.com/v1/oauth/authorize
+SCHWAB_TOKEN_URL=https://api.schwabapi.com/v1/oauth/token
+SCHWAB_MARKET_DATA_BASE_URL=https://api.schwabapi.com/marketdata/v1
+SCHWAB_REQUEST_TIMEOUT_SECONDS=8
+SCHWAB_ACCESS_TOKEN_REFRESH_LEEWAY_SECONDS=90
+SCHWAB_TOKEN_ENCRYPTION_KEY=
+
+POLYGON_ENABLED=false
+POLYGON_API_KEY=
 ```
 
-## Feed selection guidance (Alpaca)
+Generate `SCHWAB_TOKEN_ENCRYPTION_KEY` with:
 
-- `iex` (default): dev-friendly and safest default for paper-first local workflows.
-- `sip`: full SIP feed when entitlement is available.
-- `delayed_sip`: delayed SIP data for environments without real-time SIP entitlement.
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
-## Fallback behavior
+After setting server-side Schwab credentials, connect OAuth from
+Admin -> Data Parity Lab. Schwab access and refresh tokens remain encrypted and
+server-side only.
 
-Fallback mode is used when:
-- `MARKET_DATA_ENABLED=false`, or
-- `MARKET_DATA_PROVIDER` is not `alpaca`, or
-- Alpaca credentials are missing, or
-- Alpaca fetch/probe calls fail.
+## Supported Schwab Reads
 
-In fallback mode:
-- HACO chart payloads still render with deterministic bars.
-- Dashboard latest snapshot still resolves using deterministic market data.
-- Provider-health shows:
-  - configured provider (`polygon` or `alpaca`)
-  - effective chart/snapshot read mode
-  - workflow execution mode (`provider`, `demo_fallback`, or `blocked`)
-  - failure reason when probe/dependency checks fail.
+- Equity historical bars for `1W`, `1D`, `4H`, `1H`, and `30M`.
+- Regular-hours-only equity bars using the New York market timezone.
+- Intraday normalization from Schwab 30-minute bar-end labels into MacMarket
+  RTH buckets for `30M`, `1H`, and `4H`.
+- Latest equity snapshots from complete Schwab quote OHLCV when available,
+  otherwise the normalized latest historical bar.
+- Index snapshots through mapped Schwab/TOS symbols for `SPX`, `NDX`, `RUT`,
+  `VIX`, `DJI`, and `COMP` when the account is entitled.
+- Options research chain, contract resolution, and mark snapshots when the
+  Schwab account is entitled.
 
-## Workflow execution truth
+Unsupported or unentitled Schwab features must report explicit unavailable,
+blocked, or warning states. The app must not silently fall back to
+Polygon/Massive or deterministic demo data in production workflows.
 
-- Healthy provider probe: workflows run on provider-backed bars.
-- Degraded provider probe + `WORKFLOW_DEMO_FALLBACK=false`: workflows are **blocked** (no silent fallback execution).
-- Degraded provider probe + `WORKFLOW_DEMO_FALLBACK=true` in `dev/local/test`: workflows run on explicit deterministic demo fallback bars.
+## Fallback Behavior
 
-## UI indicators (live vs fallback)
+Fallback mode is explicit. It is used when:
 
-Use these operator-console cues:
-- **Dashboard provider summary**: shows workflow execution mode (`provider`, `demo_fallback`, or `blocked`) plus configured provider + effective read mode.
-- **Dashboard alert log**: mirrors provider-health operational impact messaging for blocked-vs-demo-fallback states.
-- **HACO workspace**: `Data source` and `(deterministic fallback active)` labeling make source mode explicit.
-- **Provider health page**: market-data card includes configured provider, effective read mode, workflow execution mode, feed/configuration details, failure reason, and operational impact text.
+- `MARKET_DATA_PROVIDER=fallback`, or
+- provider-backed market data is disabled, or
+- `WORKFLOW_DEMO_FALLBACK=true` in `dev`, `local`, or `test` and the selected
+  provider is degraded.
 
-## Operator-facing provider mode guidance
+When provider-backed market data is configured and degraded:
 
-- Provider health page now summarizes configured-vs-effective-vs-workflow mode, latency, sample symbol, and last successful fetch.
-- If provider requests are rejected (for example 403), UI explains whether workflows are blocked or running on explicit demo fallback based on `WORKFLOW_DEMO_FALLBACK`.
+- With `WORKFLOW_DEMO_FALLBACK=false`, user-facing workflows are blocked.
+- With `WORKFLOW_DEMO_FALLBACK=true` in `dev/local/test`, workflows may use
+  deterministic demo bars and must label that source clearly.
 
-## Workflow source coherence for indicator workbench
+## Legacy Polygon/Massive
 
-Strategy Workbench, Recommendations, and HACO Context now expose operator-selected indicators on a shared canonical time axis. Workflow source badges must continue to show provider vs fallback mode explicitly on each page.
+Keep this disabled for Schwab-first production:
+
+```bash
+POLYGON_ENABLED=false
+POLYGON_API_KEY=
+```
+
+If a legacy Polygon/Massive key is still configured, the Market Data Parity Lab
+can use it as an optional legacy-vs-Schwab comparison source during cutover
+validation. It should not be required for Dashboard, charts, HACO/momentum
+workflows, Recommendations, Replay, risk/index checks, or provider health.
+
+## UI Indicators
+
+- Dashboard provider summary shows configured provider, effective read mode,
+  workflow execution mode, and failure reason.
+- Provider Health shows Schwab/Thinkorswim OAuth, entitlement, sample latency,
+  index readiness, options readiness, and last successful fetch.
+- Strategy Workbench, Recommendations, Replay, Orders, HACO Context, and
+  related charts must label provider-backed versus fallback data consistently.
+
+## Alternate Scaffold
+
+Alpaca market data remains an alternate scaffold:
+
+```bash
+MARKET_DATA_PROVIDER=alpaca
+MARKET_DATA_ENABLED=true
+APCA_API_KEY_ID=
+APCA_API_SECRET_KEY=
+ALPACA_MARKET_DATA_BASE_URL=https://data.alpaca.markets
+ALPACA_MARKET_DATA_FEED=iex
+```
+
+Alpaca paper-provider readiness remains separate from market-data provider
+selection and does not enable live brokerage execution.

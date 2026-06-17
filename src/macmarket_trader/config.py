@@ -111,9 +111,10 @@ class Settings(BaseSettings):
     polygon_timeout_seconds: int = 8
     workflow_demo_fallback: bool = False
 
-    # Schwab Trader API market-data diagnostics. Schwab is diagnostic-only in
-    # this repo slice; it is not part of primary provider selection, broker
-    # routing, recommendation generation, replay, or paper order behavior.
+    # Schwab Trader API market data. Schwab can be selected as the read-only
+    # production market-data provider with MARKET_DATA_PROVIDER=schwab, and is
+    # also used by the admin Market Data Parity Lab. This does not enable
+    # broker routing, live trading, or order placement.
     schwab_enabled: bool = False
     schwab_client_id: str = ""
     schwab_client_secret: str = ""

@@ -12,6 +12,7 @@ from macmarket_trader.config import Settings, settings
 from macmarket_trader.data.providers.market_data import (
     DataNotEntitledError,
     MarketDataService,
+    PolygonMarketDataProvider,
     ProviderUnavailableError,
     RTH_BUCKETS_BY_TIMEFRAME,
     RTH_SOURCE_TIMEFRAME,
@@ -1605,16 +1606,106 @@ class ProviderParityService:
         self.oauth_repo = oauth_repo or ProviderOAuthRepository(SessionLocal)
         self.schwab_provider = schwab_provider or SchwabMarketDataProvider(repo=self.oauth_repo, cfg=cfg)
         self.snapshot_repo = snapshot_repo or ProviderParitySnapshotRepository(SessionLocal)
+        self.legacy_polygon_provider = PolygonMarketDataProvider() if cfg.polygon_api_key.strip() else None
 
     def _current_provider_name(self) -> str:
+        if self._current_provider_is_schwab() and self.legacy_polygon_provider is not None:
+            return "polygon_legacy"
         provider = getattr(self.current_market_data_service, "_provider", None)
         return str(getattr(provider, "name", None) or "market_data")
+
+    def _current_provider_is_schwab(self) -> bool:
+        provider = getattr(self.current_market_data_service, "_provider", None)
+        return str(getattr(provider, "name", "")).lower() == "schwab"
+
+    def _schwab_primary_without_legacy_payload(
+        self,
+        *,
+        symbols: list[str],
+        timeframes: list[str],
+        lookback: int,
+        session_policy: str,
+        include_extended: bool,
+        completed_bars_only: bool,
+        save_snapshot: bool,
+        tos_reference_count: int,
+        as_of: str,
+        run_id: str,
+        schwab_status: dict[str, object],
+        app_user_id: int,
+    ) -> dict[str, object]:
+        message = (
+            "Schwab/Thinkorswim is the primary market-data provider and no legacy "
+            "Polygon/Massive API key is configured for cutover comparison."
+        )
+        response: dict[str, object] = {
+            "runId": run_id,
+            "asOf": as_of,
+            "providers": {
+                "current": {
+                    "provider": "schwab_primary",
+                    "status": getattr(self.current_market_data_service.provider_health(sample_symbol="SPY"), "status", "unknown"),
+                    "productionProviderUnchanged": True,
+                    "comparison_mode": "schwab_primary_no_legacy",
+                },
+                "candidate": schwab_status,
+            },
+            "request": {
+                "symbols": symbols,
+                "timeframes": timeframes,
+                "lookbackBars": lookback,
+                "sessionPolicy": session_policy,
+                "includeExtendedHours": include_extended,
+                "completedBarsOnly": completed_bars_only,
+                "saveSnapshot": save_snapshot,
+                "tosReferencesProvided": tos_reference_count,
+            },
+            "summary": {"total": 0, "match": 0},
+            "results": [],
+            "warnings": [message],
+            "errors": [],
+            "readOnly": True,
+            "brokerRoutingEnabled": False,
+            "productionProviderUnchanged": True,
+            "comparisonMode": "schwab_primary_no_legacy",
+        }
+        sanitized_response = _sanitize_snapshot_payload(response)
+        response = dict(sanitized_response) if isinstance(sanitized_response, dict) else response
+        if save_snapshot and symbols:
+            snapshot_request = _sanitize_snapshot_payload(response["request"])
+            snapshot_response = _sanitize_snapshot_payload(response)
+            self.snapshot_repo.create(
+                app_user_id=app_user_id,
+                run_id=run_id,
+                request_json=dict(snapshot_request) if isinstance(snapshot_request, dict) else {},
+                response_json=dict(snapshot_response) if isinstance(snapshot_response, dict) else {},
+                provider_current="schwab_primary",
+                provider_candidate="schwab",
+            )
+        return response
 
     def _fetch_current_raw(self, *, symbol: str, timeframe: str, limit: int) -> ProviderBars:
         provider = getattr(self.current_market_data_service, "_provider", None)
         warnings: list[str] = []
         source_timeframe = _raw_source_timeframe(timeframe)
         source_limit = _raw_source_limit(timeframe, limit)
+        if self._current_provider_is_schwab() and self.legacy_polygon_provider is not None:
+            provider = self.legacy_polygon_provider
+            bars = provider.fetch_historical_bars(symbol=symbol, timeframe=source_timeframe, limit=source_limit)
+            metadata = getattr(provider, "last_aggregate_request_metadata", None)
+            warnings.append("primary_provider_is_schwab_using_legacy_polygon_for_cutover_comparison")
+            return ProviderBars(
+                bars=sorted(bars, key=_bar_sort_key),
+                provider="polygon_legacy",
+                fallback_mode=False,
+                metadata=_annotate_raw_metadata(
+                    dict(metadata) if isinstance(metadata, dict) else _metadata_from_bars(bars, provider="polygon_legacy", timeframe=source_timeframe, fallback_mode=False),
+                    requested_timeframe=timeframe,
+                    source_timeframe=source_timeframe,
+                    source_limit=source_limit,
+                ),
+                warnings=warnings,
+            )
         if provider is not None and callable(getattr(provider, "fetch_historical_bars", None)):
             bars = provider.fetch_historical_bars(symbol=symbol, timeframe=source_timeframe, limit=source_limit)
             provider_name = str(getattr(provider, "name", "market_data"))
@@ -1724,6 +1815,21 @@ class ProviderParityService:
         as_of = run_at.isoformat()
         status_payload = _sanitize_snapshot_payload(schwab_connection_status(repo=self.oauth_repo, cfg=self.cfg))
         schwab_status = status_payload if isinstance(status_payload, dict) else {}
+        if self._current_provider_is_schwab() and self.legacy_polygon_provider is None:
+            return self._schwab_primary_without_legacy_payload(
+                symbols=symbols,
+                timeframes=timeframes,
+                lookback=lookback,
+                session_policy=session_policy,
+                include_extended=include_extended,
+                completed_bars_only=completed_bars_only,
+                save_snapshot=save_snapshot,
+                tos_reference_count=len(tos_by_key),
+                as_of=as_of,
+                run_id=run_id,
+                schwab_status=schwab_status,
+                app_user_id=app_user_id,
+            )
         results: list[dict[str, object]] = []
         summary: dict[str, int] = {
             "total": 0,
@@ -1884,6 +1990,7 @@ class ProviderParityService:
                     "provider": self._current_provider_name(),
                     "status": getattr(self.current_market_data_service.provider_health(sample_symbol="SPY"), "status", "unknown"),
                     "productionProviderUnchanged": True,
+                    "comparison_mode": "legacy_polygon_vs_schwab" if self._current_provider_is_schwab() else "current_vs_schwab",
                 },
                 "candidate": schwab_status,
             },
@@ -1904,6 +2011,7 @@ class ProviderParityService:
             "readOnly": True,
             "brokerRoutingEnabled": False,
             "productionProviderUnchanged": True,
+            "comparisonMode": "legacy_polygon_vs_schwab" if self._current_provider_is_schwab() else "current_vs_schwab",
         }
 
         sanitized_response = _sanitize_snapshot_payload(response)

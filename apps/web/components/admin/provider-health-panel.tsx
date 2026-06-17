@@ -21,6 +21,11 @@ type ProviderHealth = {
     probe_state?: "ok" | "failed" | "skipped" | "unavailable" | string;
     configured?: boolean;
     credentials_present?: boolean;
+    oauth_connected?: boolean;
+    token_status?: string | null;
+    access_state?: string | null;
+    refresh_state?: string | null;
+    active_production_provider?: boolean;
     paper_routing_enabled?: boolean;
     account_probe_endpoint?: string | null;
     account_status?: string | null;
@@ -315,7 +320,7 @@ export function ProviderHealthPanel() {
         {market?.failure_reason ? <p style={{ ...muted, margin: "6px 0 0" }}>Failure reason: {market.failure_reason}</p> : null}
         <p style={{ ...muted, margin: "6px 0 0" }}>{market?.operational_impact ?? "Market-data mode determines whether recommendations, replay, and orders run on provider-backed bars or explicit fallback bars."}</p>
         <p style={{ ...muted, margin: "6px 0 0" }}>
-          Market data is healthy only when the Polygon probe succeeds. Optional providers can be configured while their probe is unavailable; that is readiness context, not health.
+          Market data is healthy only when the selected provider probe succeeds. Optional providers can be configured while their probe is unavailable; that is readiness context, not active workflow health.
           {llm?.fallback_active ? " LLM fallback is currently active or degraded; deterministic recommendations still run." : ""}
         </p>
         <p style={{ ...muted, margin: "6px 0 0" }}>
@@ -361,6 +366,19 @@ export function ProviderHealthPanel() {
                 {p.credentials_present !== undefined ? (
                   <div style={{ fontSize: "0.8rem" }}>
                     <span style={muted}>credentials present: </span>{p.credentials_present ? "yes" : "no"}
+                  </div>
+                ) : null}
+                {p.oauth_connected !== undefined ? (
+                  <div style={{ fontSize: "0.8rem" }}>
+                    <span style={muted}>OAuth connected: </span>{p.oauth_connected ? "yes" : "no"}
+                  </div>
+                ) : null}
+                {p.token_status ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>token status: </span>{p.token_status}</div> : null}
+                {p.access_state ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>access token: </span>{p.access_state}</div> : null}
+                {p.refresh_state ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>refresh token: </span>{p.refresh_state}</div> : null}
+                {p.active_production_provider !== undefined ? (
+                  <div style={{ fontSize: "0.8rem" }}>
+                    <span style={muted}>active market data: </span>{p.active_production_provider ? "yes" : "no"}
                   </div>
                 ) : null}
                 {p.paper_routing_enabled !== undefined ? (

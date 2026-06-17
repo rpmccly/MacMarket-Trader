@@ -42,10 +42,14 @@ from macmarket_trader.data.providers.base import EmailMessage
 from macmarket_trader.data.providers.market_data import (
     DataNotEntitledError,
     DeterministicFallbackMarketDataProvider,
+    ProviderUnavailableError,
     SymbolNotFoundError,
     build_polygon_option_ticker,
+    configured_market_data_provider_name,
     option_underlying_asset_type,
+    provider_backed_market_data_expected,
     unavailable_option_contract_snapshot,
+    workflow_demo_fallback_allowed,
 )
 from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider, schwab_connection_status
 from macmarket_trader.data.providers.registry import build_email_provider, build_market_data_service
@@ -511,6 +515,20 @@ def _workflow_bars(symbol: str, limit: int = 60, timeframe: str = "1D") -> tuple
                 "message": f"No data found for symbol {symbol}. Verify the ticker is correct and supported.",
             },
         )
+    except ProviderUnavailableError as exc:
+        provider = configured_market_data_provider_name()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "provider_unavailable",
+                "message": (
+                    f"{provider} market data is unavailable for this operator workflow. "
+                    "Verify provider health, OAuth/entitlements, and retry; production workflows do not silently use demo fallback."
+                ),
+                "provider": provider,
+                "sanitized_error": _sanitize_provider_error(exc),
+            },
+        )
     if not bars:
         raise HTTPException(
             status_code=503,
@@ -520,8 +538,8 @@ def _workflow_bars(symbol: str, limit: int = 60, timeframe: str = "1D") -> tuple
             ),
         )
 
-    provider_is_expected = settings.market_data_enabled or settings.polygon_enabled
-    allow_dev_demo_fallback = settings.workflow_demo_fallback and settings.environment.strip().lower() in {"dev", "local", "test"}
+    provider_is_expected = provider_backed_market_data_expected()
+    allow_dev_demo_fallback = workflow_demo_fallback_allowed()
     if provider_is_expected and fallback_mode and not allow_dev_demo_fallback:
         raise HTTPException(
             status_code=503,
@@ -563,11 +581,11 @@ def _workflow_session_metadata(bars: list[Bar], *, timeframe: str) -> dict[str, 
 
 
 def _workflow_allows_demo_fallback() -> bool:
-    return settings.workflow_demo_fallback and settings.environment.strip().lower() in {"dev", "local", "test"}
+    return workflow_demo_fallback_allowed()
 
 
 def _provider_mark_is_required() -> bool:
-    return bool(settings.market_data_enabled or settings.polygon_enabled)
+    return provider_backed_market_data_expected()
 
 
 @user_router.get("/me")
@@ -6394,19 +6412,15 @@ def list_invites(_admin=Depends(require_admin)):
 
 def provider_health_summary() -> dict[str, str]:
     market_health = market_data_service.provider_health(sample_symbol="SPY")
-    configured_provider = "fallback"
-    if settings.polygon_enabled:
-        configured_provider = "polygon"
-    elif settings.market_data_enabled:
-        configured_provider = settings.market_data_provider.strip().lower() or "fallback"
+    configured_provider = configured_market_data_provider_name()
 
-    env = settings.environment.strip().lower()
-    allow_demo_fallback = settings.workflow_demo_fallback and env in {"dev", "local", "test"}
+    allow_demo_fallback = workflow_demo_fallback_allowed()
     provider_degraded = market_health.status != "ok"
 
     effective_read_mode = configured_provider if not provider_degraded else "fallback"
     if provider_degraded and configured_provider != "fallback" and not allow_demo_fallback:
         workflow_execution_mode = "blocked"
+        effective_read_mode = "unavailable"
     elif configured_provider == "fallback" or (provider_degraded and allow_demo_fallback):
         workflow_execution_mode = "demo_fallback"
     else:
@@ -6452,6 +6466,33 @@ def _readiness_status(*, config_state: str, probe_state: str) -> str:
     if config_state == "missing_config":
         return "unconfigured"
     return "configured"
+
+
+def _active_market_data_provider() -> str:
+    return configured_market_data_provider_name()
+
+
+def _active_market_data_provider_configured() -> bool:
+    mode = _active_market_data_provider()
+    provider = getattr(market_data_service, "_provider", None)
+    checker = getattr(provider, "is_configured", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    if mode == "polygon":
+        return bool(settings.polygon_enabled and settings.polygon_api_key.strip() and settings.polygon_base_url.strip())
+    if mode == "schwab":
+        return bool(
+            settings.schwab_enabled
+            and settings.schwab_client_id.strip()
+            and settings.schwab_client_secret.strip()
+            and settings.schwab_token_encryption_key.strip()
+        )
+    if mode == "alpaca":
+        return bool(settings.alpaca_api_key_id.strip() and settings.alpaca_api_secret_key.strip())
+    return mode == "fallback"
 
 
 def _auth_readiness() -> dict[str, object]:
@@ -6724,10 +6765,11 @@ def _news_readiness() -> dict[str, object]:
 
 
 def _indices_data_readiness() -> dict[str, object]:
-    mode = "polygon" if settings.polygon_enabled else "disabled"
-    configured = bool(settings.polygon_enabled and settings.polygon_api_key.strip() and settings.polygon_base_url.strip())
-    config_state = _config_state(enabled=settings.polygon_enabled, configured=configured)
-    probe_state = "skipped" if not settings.polygon_enabled else "unavailable"
+    mode = _active_market_data_provider()
+    enabled = mode != "fallback"
+    configured = bool(enabled and _active_market_data_provider_configured())
+    config_state = _config_state(enabled=enabled, configured=configured)
+    probe_state = "skipped" if not enabled else "unavailable"
     probe_payload: dict[str, object] = {}
     if configured:
         health_fn = getattr(market_data_service, "indices_data_health", None)
@@ -6751,9 +6793,13 @@ def _indices_data_readiness() -> dict[str, object]:
         details = str(
             probe_payload.get("details")
             or (
-                "Indices data readiness requires Polygon/Massive index snapshots for SPX, NDX, RUT, and VIX."
-                if settings.polygon_enabled
-                else "Indices data readiness is disabled because Polygon/Massive market data is not selected."
+                "Indices data readiness requires selected-provider index snapshots for SPX, NDX, RUT, and VIX."
+                if mode == "polygon"
+                else (
+                    f"Indices data readiness requires {mode} index snapshots for SPX, NDX, RUT, and VIX."
+                    if enabled
+                    else "Indices data readiness is disabled because provider-backed market data is not selected."
+                )
             )
         )
     details = _sanitize_provider_error(details)
@@ -6766,7 +6812,7 @@ def _indices_data_readiness() -> dict[str, object]:
         "config_state": config_state,
         "probe_state": probe_state,
         "configured": configured,
-        "selected_provider": "polygon" if settings.polygon_enabled else "none",
+        "selected_provider": mode if enabled else "none",
         "probe_status": probe_state,
         "readiness_scope": "index_context_research_only",
         "sample_symbol": probe_payload.get("sample_symbol") or "SPX",
@@ -6790,10 +6836,11 @@ def _options_data_readiness(
     readiness_scope: str = "options_research_marks_only",
     index_probe: bool = False,
 ) -> dict[str, object]:
-    mode = "polygon" if settings.polygon_enabled else "disabled"
-    configured = bool(settings.polygon_enabled and settings.polygon_api_key.strip() and settings.polygon_base_url.strip())
-    config_state = _config_state(enabled=settings.polygon_enabled, configured=configured)
-    probe_state = "skipped" if not settings.polygon_enabled else "unavailable"
+    mode = _active_market_data_provider()
+    enabled = mode != "fallback"
+    configured = bool(enabled and _active_market_data_provider_configured())
+    config_state = _config_state(enabled=enabled, configured=configured)
+    probe_state = "skipped" if not enabled else "unavailable"
     probe_payload: dict[str, object] = {}
     sample_symbol = sample_symbol.upper().strip() or "SPY"
     if configured:
@@ -6812,15 +6859,15 @@ def _options_data_readiness(
         probe_payload.get("details")
         or (
             (
-                "Index options data readiness requires Polygon/Massive SPX option reference and snapshot access."
+                f"Index options data readiness requires {mode} SPX option reference and snapshot access."
                 if index_probe
-                else "Options data readiness requires Polygon/Massive option contract snapshot access."
+                else f"Options data readiness requires {mode} option contract snapshot access."
             )
-            if settings.polygon_enabled
+            if enabled
             else (
-                "Index options data readiness is disabled because Polygon/Massive market data is not selected."
+                "Index options data readiness is disabled because provider-backed market data is not selected."
                 if index_probe
-                else "Options data readiness is disabled because Polygon/Massive market data is not selected."
+                else "Options data readiness is disabled because provider-backed market data is not selected."
             )
         )
     )
@@ -6883,7 +6930,7 @@ def _options_data_readiness(
         "config_state": config_state,
         "probe_state": probe_state,
         "configured": configured,
-        "selected_provider": "polygon" if settings.polygon_enabled else "none",
+        "selected_provider": mode if enabled else "none",
         "probe_status": probe_state,
         "sample_underlying": probe_payload.get("sample_underlying") or sample_symbol,
         "sample_option_symbol": probe_payload.get("sample_option_symbol"),
@@ -6931,6 +6978,9 @@ def _sanitize_provider_error(value: object) -> str:
         settings.clerk_secret_key,
         settings.resend_api_key,
         settings.fred_api_key,
+        settings.schwab_client_id,
+        settings.schwab_client_secret,
+        settings.schwab_token_encryption_key,
     ):
         if secret and secret.strip():
             text = text.replace(secret.strip(), "[redacted]")
@@ -7024,6 +7074,7 @@ def _llm_readiness(*, probe: bool = False) -> dict[str, object]:
 
 def _schwab_market_data_readiness() -> dict[str, object]:
     status = schwab_connection_status(repo=provider_oauth_repo, cfg=settings)
+    active = _active_market_data_provider() == "schwab"
     latency_ms = None
     last_success_at = None
     probe_state = "skipped"
@@ -7045,7 +7096,7 @@ def _schwab_market_data_readiness() -> dict[str, object]:
     config_state = _config_state(enabled=bool(status.get("enabled")), configured=bool(status.get("configured")))
     return {
         "provider": "schwab_market_data",
-        "mode": "diagnostic",
+        "mode": "primary_market_data" if active else "diagnostic",
         "status": status.get("status"),
         "configured": bool(status.get("configured")),
         "credentials_present": bool(status.get("credentials_present")),
@@ -7059,11 +7110,15 @@ def _schwab_market_data_readiness() -> dict[str, object]:
         "last_success_at": last_success_at,
         "details": status.get("details"),
         "operational_impact": (
-            "Schwab is diagnostic-only in the Market Data Parity Lab. It is not the active production provider "
-            "and does not enable broker execution, live trading, or order routing."
+            "Schwab/Thinkorswim is the active read-only market-data provider. It does not enable broker execution, live trading, or order routing."
+            if active
+            else (
+                "Schwab can be used by the Market Data Parity Lab or selected as read-only market data. "
+                "It does not enable broker execution, live trading, or order routing."
+            )
         ),
-        "readiness_scope": "read_only_market_data_diagnostics",
-        "active_production_provider": False,
+        "readiness_scope": "read_only_market_data_primary" if active else "read_only_market_data_diagnostics",
+        "active_production_provider": active,
     }
 
 

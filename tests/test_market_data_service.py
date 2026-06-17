@@ -4,6 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -30,6 +31,14 @@ from macmarket_trader.data.providers.market_data import (
     normalize_polygon_ticker,
     option_underlying_asset_type,
 )
+from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider
+
+
+@pytest.fixture(autouse=True)
+def _stable_market_data_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_provider", "fallback")
+    monkeypatch.setattr(settings, "market_data_enabled", False)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
 
 
 class _FakeProviderHealthProbeResponse:
@@ -72,6 +81,52 @@ def test_market_data_fallback_when_polygon_disabled(monkeypatch) -> None:
     assert fallback_mode is True
 
 
+def test_market_data_provider_schwab_explicit_selection_beats_polygon_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", True)
+    monkeypatch.setattr(settings, "polygon_api_key", "legacy-polygon-key")
+
+    service = MarketDataService()
+
+    assert isinstance(service._provider, SchwabMarketDataProvider)
+    assert service._provider.name == "schwab"
+
+
+def test_market_data_provider_schwab_with_polygon_disabled_does_not_use_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+
+    service = MarketDataService()
+
+    assert isinstance(service._provider, SchwabMarketDataProvider)
+    assert not isinstance(service._provider, DeterministicFallbackMarketDataProvider)
+
+
+def test_market_data_service_does_not_silently_fallback_when_schwab_unavailable(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "workflow_demo_fallback", False)
+    monkeypatch.setattr(settings, "environment", "production")
+
+    service = MarketDataService()
+
+    def fail_fetch(symbol: str, timeframe: str, limit: int) -> list:
+        raise RuntimeError("schwab unavailable")
+
+    monkeypatch.setattr(service._provider, "fetch_historical_bars", fail_fetch)
+
+    with pytest.raises(ProviderUnavailableError, match="schwab historical bars unavailable"):
+        service.historical_bars("AAPL", "1D", 10)
+
+
 def test_market_data_cache_keys_include_provider_identity(monkeypatch) -> None:
     monkeypatch.setattr(settings, "polygon_enabled", False)
     monkeypatch.setattr(settings, "market_data_provider", "fallback")
@@ -83,6 +138,36 @@ def test_market_data_cache_keys_include_provider_identity(monkeypatch) -> None:
 
     assert "hist::fallback::AAPL::1D::5::session=provider_session::adjusted=provider_default" in service._historical_cache._store
     assert "latest::fallback::AAPL::1D" in service._latest_cache._store
+
+
+def test_market_data_cache_keys_include_schwab_provider_identity(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "workflow_demo_fallback", False)
+    monkeypatch.setattr(settings, "environment", "test")
+
+    service = MarketDataService()
+    bars = DeterministicFallbackMarketDataProvider().fetch_historical_bars("AAPL", "1D", 5)
+    monkeypatch.setattr(service._provider, "fetch_historical_bars", lambda symbol, timeframe, limit: bars[-limit:])
+    monkeypatch.setattr(service._provider, "fetch_latest_snapshot", lambda symbol, timeframe: MarketSnapshot(
+        symbol=symbol,
+        timeframe=timeframe,
+        as_of=datetime(2026, 4, 2, tzinfo=UTC),
+        open=100,
+        high=101,
+        low=99,
+        close=100.5,
+        volume=1000,
+        source="schwab",
+        fallback_mode=False,
+    ))
+
+    service.historical_bars("AAPL", "1D", 5)
+    service.latest_snapshot("AAPL", "1D")
+
+    assert "hist::schwab::AAPL::1D::5::session=provider_session::adjusted=provider_default" in service._historical_cache._store
+    assert "latest::schwab::AAPL::1D" in service._latest_cache._store
 
 
 def test_polygon_historical_bars_normalization(monkeypatch) -> None:
@@ -1186,7 +1271,7 @@ def test_provider_health_reports_blocked_workflows_when_probe_fails_and_demo_fal
 
     summary = admin_routes.provider_health_summary()
     assert summary["configured_provider"] == "polygon"
-    assert summary["effective_read_mode"] == "fallback"
+    assert summary["effective_read_mode"] == "unavailable"
     assert summary["workflow_execution_mode"] == "blocked"
 
     payload = admin_routes.provider_health()
@@ -1195,6 +1280,43 @@ def test_provider_health_reports_blocked_workflows_when_probe_fails_and_demo_fal
     assert market_entry["config_state"] == "configured"
     assert market_entry["probe_state"] == "failed"
     assert "blocked" in market_entry["operational_impact"].lower()
+
+
+def test_provider_health_reports_schwab_as_configured_effective_provider(monkeypatch) -> None:
+    class StubMarketDataService:
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
+            return MarketProviderHealth(
+                provider="market_data",
+                mode="schwab",
+                status="ok",
+                details="Schwab/Thinkorswim market-data probe succeeded.",
+                configured=True,
+                feed="stocks",
+                sample_symbol=sample_symbol,
+                latency_ms=22.5,
+                last_success_at=datetime(2026, 6, 1, tzinfo=UTC),
+            )
+
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketDataService())
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "workflow_demo_fallback", False)
+    monkeypatch.setattr(settings, "environment", "local")
+
+    summary = admin_routes.provider_health_summary()
+    assert summary["configured_provider"] == "schwab"
+    assert summary["effective_read_mode"] == "schwab"
+    assert summary["workflow_execution_mode"] == "provider"
+
+    payload = admin_routes.provider_health()
+    market_entry = next(item for item in payload["providers"] if item["provider"] == "market_data")
+    assert market_entry["configured_provider"] == "schwab"
+    assert market_entry["effective_read_mode"] == "schwab"
+    assert market_entry["workflow_execution_mode"] == "provider"
+    assert market_entry["mode"] == "schwab"
+    assert market_entry["latency_ms"] == 22.5
 
 
 def test_provider_health_separates_config_state_from_probe_state_for_optional_providers(monkeypatch) -> None:

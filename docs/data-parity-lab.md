@@ -1,14 +1,21 @@
 # Market Data Parity Lab
 
 The Market Data Parity Lab is an admin-only diagnostic surface for comparing
-MacMarket's current market-data provider with Schwab Trader API market data.
-It is read-only and exists to isolate whether Thinkorswim/MacMarket differences
-come from raw provider bars, MacMarket normalization/resampling, deterministic
-indicator math, or Thinkorswim chart/study settings.
+MacMarket's active or legacy market-data provider with Schwab/Thinkorswim
+market data. It is read-only and exists to isolate whether
+Thinkorswim/MacMarket differences come from raw provider bars, MacMarket
+normalization/resampling, deterministic indicator math, or Thinkorswim
+chart/study settings.
+
+Schwab/Thinkorswim can now be the primary read-only market-data provider with
+`MARKET_DATA_PROVIDER=schwab`. When Schwab is already primary, the lab compares
+legacy Polygon/Massive to Schwab only if a legacy key is still configured.
+Without a legacy provider, the lab reports that no useful comparison target is
+configured instead of comparing Schwab to itself.
 
 ## What It Adds
 
-- Schwab OAuth connection for diagnostic market data only.
+- Schwab OAuth connection for read-only market data.
 - Schwab quotes and historical OHLCV bars for `1W`, `1D`, `4H`, `1H`, and
   `30M` parity runs.
 - Admin page at `/admin/data-parity`.
@@ -18,13 +25,15 @@ indicator math, or Thinkorswim chart/study settings.
 
 It does not add Schwab order endpoints, broker routing, live trading, automatic
 position close, recommendation scoring changes, replay changes, paper order
-lifecycle changes, or a primary-provider default change.
+lifecycle changes, or hidden fallback behavior.
 
 ## Schwab Setup
 
 Configure these variables server-side only:
 
 ```env
+MARKET_DATA_PROVIDER=schwab
+MARKET_DATA_ENABLED=true
 SCHWAB_ENABLED=true
 SCHWAB_CLIENT_ID=
 SCHWAB_CLIENT_SECRET=
@@ -36,6 +45,9 @@ SCHWAB_MARKET_DATA_BASE_URL=https://api.schwabapi.com/marketdata/v1
 SCHWAB_REQUEST_TIMEOUT_SECONDS=8
 SCHWAB_ACCESS_TOKEN_REFRESH_LEEWAY_SECONDS=90
 SCHWAB_TOKEN_ENCRYPTION_KEY=
+
+POLYGON_ENABLED=false
+POLYGON_API_KEY=
 ```
 
 `SCHWAB_TOKEN_ENCRYPTION_KEY` must be a Fernet key, for example:
@@ -112,11 +124,11 @@ Intraday comparisons use MacMarket's regular-hours buckets in
 frequency as the source anchor; the parity response exposes that source metadata
 instead of implying a custom Thinkorswim weekly anchor.
 
-Polygon/Massive weekly requests ask for the newest weekly aggregates first and
-then sort by canonical timestamp before returning the latest requested window.
-The expanded metadata includes the redacted request path/query, `from`/`to`,
-`sort`, `adjusted`, result count, pages followed, and returned first/latest
-timestamps.
+Legacy Polygon/Massive weekly comparison requests ask for the newest weekly
+aggregates first and then sort by canonical timestamp before returning the
+latest requested window. The expanded metadata includes the redacted request
+path/query, `from`/`to`, `sort`, `adjusted`, result count, pages followed, and
+returned first/latest timestamps when a legacy provider is configured.
 
 Daily and weekly parity alignment is diagnostic-normalized before comparing
 OHLCV and indicator bundles:
@@ -245,11 +257,14 @@ rather than labeled as an indicator mismatch.
 ## Testing Workflow
 
 1. Connect Schwab from Admin -> Data Parity Lab.
-2. Run `SPY`, `QQQ`, and `MTUM` across `1W`, `1D`, `4H`, `1H`, and `30M`.
-3. Review raw provider bars first.
-4. Review canonical bars after MacMarket normalization/resampling.
-5. Enter manual TOS reference values from a screenshot or TOS study readout.
-6. Use the root-cause verdict and expanded row details to classify the mismatch.
+2. If Schwab is primary and no legacy key is configured, confirm the lab reports
+   `schwab_primary_no_legacy`.
+3. If a legacy Polygon/Massive key is configured for cutover validation, run
+   `SPY`, `QQQ`, and `MTUM` across `1W`, `1D`, `4H`, `1H`, and `30M`.
+4. Review raw provider bars first.
+5. Review canonical bars after MacMarket normalization/resampling.
+6. Enter manual TOS reference values from a screenshot or TOS study readout.
+7. Use the root-cause verdict and expanded row details to classify the mismatch.
 
 Saved snapshots are optional and contain request/response diagnostics only. They
 must not contain Schwab tokens, client secrets, authorization headers, or broker

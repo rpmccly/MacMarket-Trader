@@ -70,6 +70,9 @@ describe("DataParityLab", () => {
     expect(source).toContain("buildDataParityCsv");
     expect(source).toContain("fetchDataParitySnapshot");
     expect(source).toContain("/api/admin/schwab/start");
+    expect(source).toContain("Schwab is already primary");
+    expect(source).toContain("Legacy Polygon/Massive");
+    expect(source).toContain("no useful legacy-vs-Schwab comparison target");
     expect(source).not.toContain("SCHWAB_CLIENT_SECRET");
     expect(source).not.toContain("access_token");
     expect(source).not.toContain("refresh_token");

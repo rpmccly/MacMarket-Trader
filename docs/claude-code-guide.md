@@ -29,7 +29,7 @@ Your project is a **research-first, event-driven trading intelligence console** 
 - ✅ Phase 1 (domain model + hardening) — FUNCTIONALLY COMPLETE (78 backend tests pass)
 - ✅ Phase 2 (alpha differentiators: Symbol Analyze, ranked queue, scheduled reports) — COMPLETE
 - 🔄 Phase 3 (paid beta) — IN PROGRESS
-- ⬜ Phase 4 (vendor integrations: Polygon, real brokers)
+- ⬜ Phase 4 (vendor integrations: Schwab market data, legacy Polygon comparison, real brokers)
 - ⬜ Phase 5 (full operator console polish)
 
 ---
@@ -75,7 +75,7 @@ Claude Code can:
 
 Claude Code CANNOT:
 - Push to GitHub for you (you still use GitHub Desktop)
-- Access external services (Polygon, Clerk dashboard, etc.)
+- Access external services (Schwab developer portal, Clerk dashboard, etc.)
 - See your `.env` secrets unless you paste relevant parts
 
 ---
@@ -267,12 +267,15 @@ Tell me what already exists and what needs to be built new.
 Read README.md, docs/market-data.md, and docs/provider-architecture.md.
 
 We're doing Phase 4 - replacing mock providers with real ones.
-The goal is to wire up Polygon.io for market data while keeping the same interfaces.
+The goal is to keep Schwab/Thinkorswim as the primary read-only market-data
+provider while preserving legacy Polygon/Massive only as rollback or cutover
+comparison support.
 
 Review:
 - src/macmarket_trader/data/providers/base.py (the interface)
 - src/macmarket_trader/data/providers/mock.py (what we're replacing)
-- src/macmarket_trader/data/providers/market_data.py (current Polygon scaffold)
+- src/macmarket_trader/data/providers/market_data.py (provider selection, legacy Polygon, fallback)
+- src/macmarket_trader/data/providers/schwab.py (Schwab/Thinkorswim market data)
 
 Tell me what's already been scaffolded vs what needs to be built.
 ```

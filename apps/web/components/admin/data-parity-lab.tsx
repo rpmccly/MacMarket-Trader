@@ -146,6 +146,9 @@ function formatTimestamp(value: unknown): string {
 function formatProviderLabel(value: unknown, fallback = "Polygon/Massive"): string {
   const text = String(value ?? "").trim();
   if (!text || text === "not run" || text === "unknown") return fallback;
+  if (text === "polygon_legacy") return "Legacy Polygon/Massive";
+  if (text === "schwab_primary") return "Schwab primary";
+  if (text === "schwab") return "Schwab/Thinkorswim";
   return text;
 }
 
@@ -672,6 +675,8 @@ export function DataParityLab() {
   const statusTone = statusLoading ? "neutral" : schwabConnected ? "good" : verdictTone(schwabStatus?.token_status ?? schwabStatus?.status);
   const currentProviderName = String(asRecord(result?.providers.current).provider ?? "not run");
   const providerAName = formatProviderLabel(currentProviderName);
+  const comparisonMode = String(result?.comparisonMode ?? asRecord(result?.providers.current).comparison_mode ?? "not_run");
+  const noLegacyComparison = comparisonMode === "schwab_primary_no_legacy";
   const trueMismatchCount = countResults(result, (item) => TRUE_MISMATCH_VERDICTS.has(item.rootCause));
   const notComparableCount = countResults(result, (item) => NOT_COMPARABLE_VERDICTS.has(item.rootCause));
   const comparableCount = countResults(result, (item) => !NOT_COMPARABLE_VERDICTS.has(item.rootCause));
@@ -680,7 +685,7 @@ export function DataParityLab() {
     <section className="dp-stack">
       <PageHeader
         title="Market Data Parity Lab"
-        subtitle="Compare current MacMarket provider vs Schwab market data and derived MacMarket analytics. Read-only diagnostics only."
+        subtitle="Compare the active or legacy market-data provider against Schwab/Thinkorswim bars and derived MacMarket analytics. Read-only diagnostics only."
         actions={
           <>
             <button type="button" className="op-btn op-btn-primary" onClick={() => void loadStatus()} disabled={statusLoading}>
@@ -713,10 +718,31 @@ export function DataParityLab() {
         <p className="dp-muted">{schwabStatus?.operational_impact ?? "Diagnostic market-data comparison only."}</p>
       </Card>
 
+      {noLegacyComparison ? (
+        <Card title="Comparison mode">
+          <EmptyState
+            title="Schwab is already primary"
+            hint="No legacy Polygon/Massive API key is configured, so there is no useful legacy-vs-Schwab comparison target. Saved historical snapshots remain available below."
+          />
+        </Card>
+      ) : result?.warnings?.length ? (
+        <Card title="Comparison mode">
+          <div className="dp-status-grid">
+            <div><span>mode</span><strong>{formatValue(comparisonMode)}</strong></div>
+            <div><span>provider A</span><strong>{providerAName}</strong></div>
+            <div><span>provider B</span><strong>Schwab/Thinkorswim</strong></div>
+          </div>
+          {result.warnings.map((warning) => (
+            <p key={warning} className="dp-muted">{warning}</p>
+          ))}
+        </Card>
+      ) : null}
+
       <div className="dp-summary-strip dp-cockpit-strip">
         {[
           ["Schwab status", statusBadge],
           ["Current provider", providerAName],
+          ["Comparison mode", comparisonMode === "not_run" ? "-" : comparisonMode],
           ["Symbols", parseParitySymbols(symbolsText).join(", ") || "-"],
           ["Timeframes", selectedTfList.join(", ") || "-"],
           ["Comparable rows", comparableCount],

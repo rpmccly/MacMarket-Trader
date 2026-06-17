@@ -1,8 +1,9 @@
-"""Schwab Trader API market-data diagnostics.
+"""Schwab Trader API market-data provider and parity diagnostics.
 
-Schwab support in this repo is intentionally read-only and diagnostic-only:
-OAuth tokens are stored encrypted server-side, market-data calls are used by
-the Market Data Parity Lab, and no broker/order endpoints are implemented.
+Schwab support in this repo is intentionally read-only for market data:
+OAuth tokens are stored encrypted server-side, market-data calls may back the
+production market-data provider or the Market Data Parity Lab, and no
+broker/order endpoints are implemented.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -23,17 +24,30 @@ from cryptography.fernet import Fernet, InvalidToken
 from macmarket_trader.config import Settings, settings
 from macmarket_trader.data.providers.market_data import (
     DataNotEntitledError,
+    INDEX_LABELS,
+    IndexMarketSnapshot,
     MarketDataProvider,
     MarketProviderHealth,
     MarketSnapshot,
+    OptionContractResolution,
+    OptionContractSnapshot,
     ProviderUnavailableError,
     RTH_BUCKETS_BY_TIMEFRAME,
     RTH_SOURCE_TIMEFRAME,
     SymbolNotFoundError,
     US_EQUITY_TIMEZONE,
     _aggregate_regular_hours_intraday_bars,
+    _finite_float,
     _format_rth_bucket_boundaries,
+    _is_stale,
+    _parse_expiration_date,
+    _positive_float,
     _rth_source_page_target_count,
+    _timestamp_from_provider_object,
+    _timestamp_from_provider_value,
+    option_reference_underlying_ticker,
+    option_underlying_asset_type,
+    unavailable_option_contract_snapshot,
 )
 from macmarket_trader.domain.schemas import Bar
 from macmarket_trader.domain.timeframes import validate_chart_timeframe
@@ -42,6 +56,14 @@ from macmarket_trader.storage.repositories import ProviderOAuthRepository
 
 
 SCHWAB_PROVIDER = "schwab"
+SCHWAB_INDEX_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "SPX": ("$SPX",),
+    "NDX": ("$NDX",),
+    "RUT": ("$RUT",),
+    "VIX": ("$VIX",),
+    "DJI": ("$DJI",),
+    "COMP": ("$COMPX", "$COMPQ"),
+}
 
 
 class SchwabConfigurationError(Exception):
@@ -327,9 +349,13 @@ def schwab_connection_status(
                 token_status = "reconnect_required"
                 access_state = "expired"
     oauth_connected = bool(token_row is not None and token_status == "connected")
+    selected_for_market_data = (
+        cfg.market_data_enabled
+        and cfg.market_data_provider.strip().lower() == SCHWAB_PROVIDER
+    )
     return {
         "provider": "schwab_market_data",
-        "mode": "diagnostic",
+        "mode": "primary_market_data" if selected_for_market_data else "diagnostic",
         "status": "ok" if configured and token_status == "connected" else ("expired" if token_status in {"expired", "reconnect_required"} else "unconfigured" if not configured else "configured"),
         "configured": configured,
         "enabled": bool(cfg.schwab_enabled),
@@ -345,11 +371,19 @@ def schwab_connection_status(
         "last_refresh_at": token_row.last_refresh_at.isoformat() if token_row and token_row.last_refresh_at else None,
         "last_error": redact_schwab_text(token_row.last_error, cfg) if token_row and token_row.last_error else None,
         "details": (
-            "Schwab diagnostic market data is connected. It is not the active production provider and does not enable broker execution."
-            if configured and oauth_connected
-            else "Schwab diagnostic market data is not connected or not fully configured. It is not the active production provider and does not enable broker execution."
+            "Schwab/Thinkorswim market data is connected as the active production market-data provider. It does not enable broker execution."
+            if configured and oauth_connected and selected_for_market_data
+            else (
+                "Schwab diagnostic market data is connected. It can be selected for production market data with MARKET_DATA_PROVIDER=schwab and does not enable broker execution."
+                if configured and oauth_connected
+                else "Schwab market data is not connected or not fully configured. It does not enable broker execution."
+            )
         ),
-        "operational_impact": "Diagnostic read-only comparison only. No broker routing, order placement, live trading, or production provider default changes.",
+        "operational_impact": (
+            "Read-only Schwab/Thinkorswim market data may feed workflows when explicitly selected. No broker routing, order placement, or live trading is enabled."
+            if selected_for_market_data
+            else "Diagnostic read-only comparison only unless explicitly selected as market-data provider. No broker routing, order placement, or live trading is enabled."
+        ),
     }
 
 
@@ -647,6 +681,27 @@ class SchwabMarketDataProvider(MarketDataProvider):
         return normalized
 
     def fetch_latest_snapshot(self, symbol: str, timeframe: str) -> MarketSnapshot:
+        normalized = option_reference_underlying_ticker(symbol)
+        if normalized in SCHWAB_INDEX_SYMBOLS:
+            index_snapshot = self.fetch_index_snapshot(normalized)
+            if index_snapshot.latest_value is None:
+                raise SymbolNotFoundError(f"No Schwab index value returned for {normalized}")
+            value = float(index_snapshot.latest_value)
+            return MarketSnapshot(
+                symbol=normalized,
+                timeframe=timeframe,
+                as_of=index_snapshot.as_of or _utc_now(),
+                open=index_snapshot.previous_close or value,
+                high=value,
+                low=value,
+                close=value,
+                volume=0,
+                source=self.name,
+                fallback_mode=False,
+            )
+        quote_snapshot = self._latest_snapshot_from_quote(normalized, timeframe=timeframe)
+        if quote_snapshot is not None:
+            return quote_snapshot
         bars = self.fetch_historical_bars(symbol=symbol, timeframe=timeframe, limit=1)
         if not bars:
             raise SymbolNotFoundError(f"No Schwab latest bar returned for {symbol}")
@@ -664,22 +719,501 @@ class SchwabMarketDataProvider(MarketDataProvider):
             fallback_mode=False,
         )
 
-    def quotes(self, symbols: list[str]) -> dict[str, dict[str, object]]:
+    def quotes(self, symbols: list[str], *, fields: str = "quote") -> dict[str, dict[str, object]]:
         cleaned = ",".join(sorted({str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()}))
         if not cleaned:
             return {}
-        payload = self._request_json("/quotes", {"symbols": cleaned, "fields": "quote"})
+        payload = self._request_json("/quotes", {"symbols": cleaned, "fields": fields})
         return {str(key).upper(): value for key, value in payload.items() if isinstance(value, dict)}
 
-    def fetch_index_snapshot(self, symbol: str):  # noqa: ANN201
-        raise NotImplementedError("Schwab diagnostic provider does not implement index snapshots in this pass.")
+    @staticmethod
+    def _quote_section(payload: dict[str, object]) -> dict[str, object]:
+        quote = payload.get("quote")
+        return quote if isinstance(quote, dict) else payload
+
+    @staticmethod
+    def _reference_section(payload: dict[str, object]) -> dict[str, object]:
+        reference = payload.get("reference")
+        return reference if isinstance(reference, dict) else {}
+
+    @staticmethod
+    def _float_from(payload: dict[str, object], *keys: str) -> float | None:
+        for key in keys:
+            value = _finite_float(payload.get(key))
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _positive_from(payload: dict[str, object], *keys: str) -> float | None:
+        for key in keys:
+            value = _positive_float(payload.get(key))
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _timestamp_from_quote(payload: dict[str, object]) -> datetime | None:
+        quote = SchwabMarketDataProvider._quote_section(payload)
+        return (
+            _timestamp_from_provider_object(quote, "quoteTime", "tradeTime", "lastTradeTime", "regularMarketTradeTime")
+            or _timestamp_from_provider_object(payload, "quoteTime", "tradeTime", "lastTradeTime", "regularMarketTradeTime")
+            or _timestamp_from_provider_value(quote.get("lastUpdated"))
+            or _timestamp_from_provider_value(payload.get("lastUpdated"))
+        )
+
+    def _quote_payload_for_symbol(self, symbol: str, *, fields: str = "quote") -> dict[str, object] | None:
+        quotes = self.quotes([symbol], fields=fields)
+        normalized = symbol.upper().strip()
+        if normalized in quotes:
+            return quotes[normalized]
+        return next(iter(quotes.values()), None)
+
+    def _latest_snapshot_from_quote(self, symbol: str, *, timeframe: str) -> MarketSnapshot | None:
+        payload = self._quote_payload_for_symbol(symbol, fields="quote")
+        if not payload:
+            return None
+        quote = self._quote_section(payload)
+        close = self._positive_from(quote, "lastPrice", "mark", "markPrice")
+        open_price = self._positive_from(quote, "openPrice", "regularMarketOpen")
+        high = self._positive_from(quote, "highPrice", "regularMarketDayHigh")
+        low = self._positive_from(quote, "lowPrice", "regularMarketDayLow")
+        volume = self._float_from(quote, "totalVolume", "volume")
+        as_of = self._timestamp_from_quote(payload)
+        if close is None or open_price is None or high is None or low is None or volume is None:
+            return None
+        return MarketSnapshot(
+            symbol=symbol.upper(),
+            timeframe=timeframe,
+            as_of=as_of or _utc_now(),
+            open=float(open_price),
+            high=float(high),
+            low=float(low),
+            close=float(close),
+            volume=int(volume),
+            source=self.name,
+            fallback_mode=False,
+        )
+
+    def fetch_index_snapshot(self, symbol: str) -> IndexMarketSnapshot:
+        normalized = option_reference_underlying_ticker(symbol)
+        candidates = SCHWAB_INDEX_SYMBOLS.get(normalized)
+        if not candidates:
+            raise SymbolNotFoundError(f"Schwab index symbol mapping is not configured for {normalized}")
+        errors: list[str] = []
+        for schwab_symbol in candidates:
+            try:
+                payload = self._quote_payload_for_symbol(schwab_symbol, fields="quote")
+            except DataNotEntitledError:
+                raise
+            except (ProviderUnavailableError, SymbolNotFoundError, SchwabAuthRequiredError, SchwabConfigurationError, ValueError, KeyError, OSError) as exc:
+                errors.append(redact_schwab_text(exc, self.cfg))
+                continue
+            if not payload:
+                errors.append(f"{schwab_symbol}: no quote payload")
+                continue
+            quote = self._quote_section(payload)
+            latest_value = self._positive_from(quote, "lastPrice", "mark", "markPrice", "closePrice")
+            previous_close = self._positive_from(quote, "closePrice", "previousClose", "regularMarketPreviousClose")
+            day_change = self._float_from(quote, "netChange", "regularMarketNetChange", "change")
+            day_change_pct = self._float_from(quote, "netPercentChange", "regularMarketPercentChangeInDouble", "changePercent")
+            if day_change is None and latest_value is not None and previous_close is not None:
+                day_change = latest_value - previous_close
+            if day_change_pct is None and day_change is not None and previous_close is not None and previous_close > 0:
+                day_change_pct = (day_change / previous_close) * 100
+            as_of = self._timestamp_from_quote(payload)
+            missing_data: list[str] = []
+            if latest_value is None:
+                missing_data.append("index_latest_value")
+            if previous_close is None:
+                missing_data.append("index_previous_close")
+            if day_change is None:
+                missing_data.append("index_day_change")
+            if day_change_pct is None:
+                missing_data.append("index_day_change_pct")
+            if as_of is None:
+                missing_data.append("index_as_of")
+            return IndexMarketSnapshot(
+                symbol=normalized,
+                label=INDEX_LABELS.get(normalized, normalized),
+                latest_value=latest_value,
+                previous_close=previous_close,
+                day_change=round(day_change, 4) if day_change is not None else None,
+                day_change_pct=round(day_change_pct, 4) if day_change_pct is not None else None,
+                as_of=as_of,
+                stale=_is_stale(as_of) if as_of is not None else True,
+                provider=self.name,
+                missing_data=missing_data,
+            )
+        raise SymbolNotFoundError(f"No Schwab index quote returned for {normalized}: {'; '.join(errors)[:200]}")
+
+    @staticmethod
+    def _expiration_from_chain_key(expiration_key: str) -> date | None:
+        raw = str(expiration_key or "").split(":", 1)[0]
+        return _parse_expiration_date(raw)
+
+    @staticmethod
+    def _option_type_from_row(row: dict[str, object], fallback: str) -> str:
+        raw = str(row.get("putCall") or row.get("contractType") or row.get("option_type") or fallback).lower()
+        return "call" if raw.startswith("c") else "put" if raw.startswith("p") else raw
+
+    def _option_rows_from_chain(self, payload: dict[str, object]) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for map_key, fallback_type in (("callExpDateMap", "call"), ("putExpDateMap", "put")):
+            exp_map = payload.get(map_key)
+            if not isinstance(exp_map, dict):
+                continue
+            for expiration_key, strikes in exp_map.items():
+                expiration = self._expiration_from_chain_key(str(expiration_key))
+                if not isinstance(strikes, dict):
+                    continue
+                for strike_key, contracts in strikes.items():
+                    strike = _finite_float(strike_key)
+                    if not isinstance(contracts, list):
+                        continue
+                    for contract in contracts:
+                        if not isinstance(contract, dict):
+                            continue
+                        row = dict(contract)
+                        row_type = self._option_type_from_row(row, fallback_type)
+                        selected_expiration = (
+                            _parse_expiration_date(row.get("expirationDate"))
+                            or _parse_expiration_date(row.get("expiration"))
+                            or expiration
+                        )
+                        selected_strike = _finite_float(row.get("strikePrice") or row.get("strike") or strike)
+                        option_symbol = str(row.get("symbol") or row.get("optionSymbol") or row.get("ticker") or "").strip()
+                        if not option_symbol or selected_expiration is None or selected_strike is None:
+                            continue
+                        row.update(
+                            {
+                                "ticker": option_symbol,
+                                "contract_type": row_type,
+                                "option_type": row_type,
+                                "strike_price": float(selected_strike),
+                                "strike": float(selected_strike),
+                                "expiration_date": selected_expiration.isoformat(),
+                                "expiry": selected_expiration.isoformat(),
+                                "bid": _finite_float(row.get("bid") or row.get("bidPrice")),
+                                "ask": _finite_float(row.get("ask") or row.get("askPrice")),
+                                "last_price": _finite_float(row.get("last") or row.get("lastPrice")),
+                                "mark": _finite_float(row.get("mark") or row.get("markPrice")),
+                                "volume": _finite_float(row.get("totalVolume") or row.get("volume")),
+                                "open_interest": _finite_float(row.get("openInterest")),
+                                "implied_volatility": _finite_float(row.get("volatility") or row.get("impliedVolatility")),
+                                "delta": _finite_float(row.get("delta")),
+                                "gamma": _finite_float(row.get("gamma")),
+                                "theta": _finite_float(row.get("theta")),
+                                "vega": _finite_float(row.get("vega")),
+                            }
+                        )
+                        rows.append(row)
+        return rows
+
+    def fetch_option_contracts(
+        self,
+        *,
+        underlying_symbol: str,
+        expiration: date | None = None,
+        option_type: str | None = None,
+        strike_gte: float | None = None,
+        strike_lte: float | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        underlying = option_reference_underlying_ticker(underlying_symbol)
+        normalized_type = str(option_type or "ALL").strip().lower()
+        contract_type = "ALL"
+        if normalized_type.startswith("c"):
+            contract_type = "CALL"
+        elif normalized_type.startswith("p"):
+            contract_type = "PUT"
+        query: dict[str, str] = {
+            "symbol": underlying,
+            "contractType": contract_type,
+            "strategy": "SINGLE",
+            "includeQuotes": "TRUE",
+        }
+        if expiration is not None:
+            query["fromDate"] = expiration.isoformat()
+            query["toDate"] = expiration.isoformat()
+        if strike_gte is not None and strike_lte is not None:
+            midpoint = (float(strike_gte) + float(strike_lte)) / 2.0
+            query["strike"] = str(round(midpoint, 4))
+            query["range"] = "ALL"
+        payload = self._request_json("/chains", query)
+        rows = self._option_rows_from_chain(payload)
+        if expiration is not None:
+            rows = [row for row in rows if _parse_expiration_date(row.get("expiration_date")) == expiration]
+        if option_type:
+            desired = "call" if str(option_type).lower().startswith("c") else "put"
+            rows = [row for row in rows if str(row.get("contract_type") or "").lower() == desired]
+        if strike_gte is not None:
+            rows = [row for row in rows if (_finite_float(row.get("strike_price")) or -1.0) >= float(strike_gte)]
+        if strike_lte is not None:
+            rows = [row for row in rows if (_finite_float(row.get("strike_price")) or float("inf")) <= float(strike_lte)]
+        rows.sort(
+            key=lambda row: (
+                _parse_expiration_date(row.get("expiration_date")) or date.max,
+                _finite_float(row.get("strike_price")) or float("inf"),
+                str(row.get("contract_type") or ""),
+                str(row.get("ticker") or ""),
+            )
+        )
+        return rows[: max(1, int(limit or 1))]
+
+    def fetch_options_chain_preview(self, symbol: str, limit: int = 50) -> dict[str, Any]:
+        try:
+            rows = self.fetch_option_contracts(
+                underlying_symbol=symbol,
+                expiration=None,
+                option_type=None,
+                limit=max(50, int(limit or 50)),
+            )
+        except SymbolNotFoundError:
+            return {"underlying": symbol, "reason": f"No Schwab options contracts found for {symbol}", "calls": None, "puts": None}
+        except DataNotEntitledError:
+            return {"underlying": symbol, "reason": "Schwab options chain endpoint is not entitled for this account.", "calls": None, "puts": None}
+        except (ProviderUnavailableError, SchwabAuthRequiredError, SchwabConfigurationError, ValueError, KeyError, OSError) as exc:
+            return {"underlying": symbol, "reason": f"Schwab options endpoint unavailable: {redact_schwab_text(exc, self.cfg)}", "calls": None, "puts": None}
+        if not rows:
+            return {"underlying": symbol, "reason": "No Schwab options contracts returned for this symbol", "calls": None, "puts": None}
+
+        today = date.today()
+        upcoming = [row for row in rows if (_parse_expiration_date(row.get("expiration_date")) or date.min) >= today]
+        selected_rows = upcoming or rows
+        nearest_expiry = min(
+            (_parse_expiration_date(row.get("expiration_date")) for row in selected_rows if _parse_expiration_date(row.get("expiration_date"))),
+            default=None,
+        )
+        if nearest_expiry is None:
+            return {"underlying": symbol, "reason": "Could not determine nearest Schwab expiry date", "calls": None, "puts": None}
+        expiry_rows = [row for row in selected_rows if _parse_expiration_date(row.get("expiration_date")) == nearest_expiry]
+
+        def _row(row: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "ticker": row.get("ticker"),
+                "strike": row.get("strike_price"),
+                "expiry": row.get("expiration_date"),
+                "option_type": row.get("contract_type"),
+                "last_price": row.get("last_price"),
+                "volume": row.get("volume"),
+            }
+
+        calls = [_row(row) for row in expiry_rows if row.get("contract_type") == "call"][:5]
+        puts = [_row(row) for row in expiry_rows if row.get("contract_type") == "put"][:5]
+        return {
+            "underlying": option_reference_underlying_ticker(symbol),
+            "expiry": nearest_expiry.isoformat(),
+            "calls": calls if calls else None,
+            "puts": puts if puts else None,
+            "data_as_of": today.isoformat(),
+            "source": "schwab_options_chain",
+        }
+
+    def fetch_option_contract_snapshot(self, underlying_symbol: str, option_symbol: str) -> OptionContractSnapshot:
+        underlying = option_reference_underlying_ticker(underlying_symbol)
+        option_ticker = str(option_symbol or "").strip()
+        if not option_ticker:
+            return unavailable_option_contract_snapshot(
+                underlying_symbol=underlying,
+                option_symbol=option_ticker,
+                provider=self.name,
+                endpoint="/quotes",
+                missing_fields=["option_symbol"],
+            )
+        payload = self._quote_payload_for_symbol(option_ticker, fields="quote,reference,fundamental")
+        if not payload:
+            raise SymbolNotFoundError(f"No Schwab option quote returned for {option_ticker}")
+        quote = self._quote_section(payload)
+        reference = self._reference_section(payload)
+        bid = self._positive_from(quote, "bidPrice", "bid")
+        ask = self._positive_from(quote, "askPrice", "ask")
+        provider_mark = self._positive_from(quote, "mark", "markPrice")
+        last_price = self._positive_from(quote, "lastPrice", "last")
+        prior_close = self._positive_from(quote, "closePrice", "previousClose")
+        quote_as_of = self._timestamp_from_quote(payload)
+        trade_as_of = (
+            _timestamp_from_provider_object(quote, "tradeTime", "lastTradeTime")
+            or _timestamp_from_provider_object(payload, "tradeTime", "lastTradeTime")
+        )
+        missing_fields: list[str] = []
+        mark_price: float | None = None
+        mark_method = "unavailable"
+        as_of: datetime | None = None
+        stale = False
+        quote_is_stale = _is_stale(quote_as_of)
+        trade_is_stale = _is_stale(trade_as_of)
+
+        if bid is not None and ask is not None and ask >= bid and not quote_is_stale:
+            mark_price = round((bid + ask) / 2, 4)
+            mark_method = "quote_mid"
+            as_of = quote_as_of
+            if quote_as_of is None:
+                missing_fields.append("quote_timestamp")
+        elif provider_mark is not None and not quote_is_stale:
+            mark_price = round(provider_mark, 4)
+            mark_method = "provider_mark"
+            as_of = quote_as_of
+            if quote_as_of is None:
+                missing_fields.append("quote_timestamp")
+        elif last_price is not None and not trade_is_stale:
+            mark_price = round(last_price, 4)
+            mark_method = "last_trade"
+            as_of = trade_as_of or quote_as_of
+            if trade_as_of is None:
+                missing_fields.append("trade_timestamp")
+        elif prior_close is not None:
+            mark_price = round(prior_close, 4)
+            mark_method = "prior_close_fallback"
+            as_of = quote_as_of
+            stale = True
+            missing_fields.append("fresh_option_mark")
+        else:
+            stale = quote_is_stale or trade_is_stale
+            missing_fields.append("option_mark_data")
+
+        if bid is None:
+            missing_fields.append("bid")
+        if ask is None:
+            missing_fields.append("ask")
+        if last_price is None:
+            missing_fields.append("latest_trade_price")
+        if provider_mark is None:
+            missing_fields.append("provider_mark")
+        if quote_as_of is not None and quote_is_stale:
+            missing_fields.append("stale_quote")
+        if trade_as_of is not None and trade_is_stale:
+            missing_fields.append("stale_trade")
+
+        open_interest_value = self._float_from(quote, "openInterest") or self._float_from(reference, "openInterest")
+        return OptionContractSnapshot(
+            option_symbol=option_ticker,
+            underlying_symbol=underlying,
+            provider=self.name,
+            endpoint="/quotes",
+            mark_price=mark_price,
+            mark_method=mark_method,
+            as_of=as_of,
+            stale=stale,
+            bid=bid,
+            ask=ask,
+            latest_trade_price=last_price,
+            prior_close=prior_close,
+            implied_volatility=self._float_from(quote, "volatility", "impliedVolatility", "theoreticalVolatility"),
+            open_interest=int(open_interest_value) if open_interest_value is not None else None,
+            delta=self._float_from(quote, "delta"),
+            gamma=self._float_from(quote, "gamma"),
+            theta=self._float_from(quote, "theta"),
+            vega=self._float_from(quote, "vega"),
+            underlying_price=self._float_from(quote, "underlyingPrice", "underlyingMark"),
+            fallback_mode=False,
+            missing_fields=sorted(set(missing_fields)),
+        )
+
+    def resolve_option_contract(
+        self,
+        *,
+        underlying_symbol: str,
+        expiration: date,
+        option_type: str,
+        target_strike: float,
+    ) -> OptionContractResolution:
+        normalized_underlying = option_reference_underlying_ticker(underlying_symbol)
+        normalized_type = "call" if str(option_type).strip().lower().startswith("c") else "put"
+        target = float(target_strike)
+        asset_type = option_underlying_asset_type(normalized_underlying)
+        strike_window = max(25.0, abs(target) * 0.10)
+
+        def _unresolved(reason: str, *, method: str = "unavailable") -> OptionContractResolution:
+            return OptionContractResolution(
+                requested_underlying=normalized_underlying,
+                underlying_asset_type=asset_type,
+                target_expiration=expiration,
+                selected_expiration=None,
+                option_type=normalized_type,
+                target_strike=target,
+                selected_strike=None,
+                option_symbol=None,
+                provider=self.name,
+                contract_selection_method=method,
+                unavailable_reason=redact_schwab_text(reason, self.cfg),
+            )
+
+        try:
+            candidates = self.fetch_option_contracts(
+                underlying_symbol=normalized_underlying,
+                expiration=expiration,
+                option_type=normalized_type,
+                strike_gte=max(0.0, target - strike_window),
+                strike_lte=target + strike_window,
+                limit=1000,
+            )
+        except (DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, SchwabAuthRequiredError, SchwabConfigurationError, ValueError, KeyError, OSError) as exc:
+            return _unresolved(str(exc), method="provider_reference_unavailable")
+
+        selection_method = "provider_reference_exact_expiration"
+        warnings: list[str] = []
+        if not candidates:
+            try:
+                candidates = self.fetch_option_contracts(
+                    underlying_symbol=normalized_underlying,
+                    expiration=None,
+                    option_type=normalized_type,
+                    strike_gte=max(0.0, target - strike_window),
+                    strike_lte=target + strike_window,
+                    limit=1000,
+                )
+            except (DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, SchwabAuthRequiredError, SchwabConfigurationError, ValueError, KeyError, OSError) as exc:
+                return _unresolved(str(exc), method="provider_reference_unavailable")
+            selection_method = "provider_reference_nearest_expiration"
+            warnings.append("Exact expiration was unavailable; selected closest listed expiration from provider chain data.")
+
+        normalized_candidates: list[tuple[date, float, str, dict[str, Any]]] = []
+        for item in candidates:
+            contract_type = str(item.get("contract_type") or item.get("option_type") or "").lower()
+            if contract_type != normalized_type:
+                continue
+            option_symbol = str(item.get("ticker") or "").strip()
+            selected_expiration = _parse_expiration_date(item.get("expiration_date") or item.get("expiry"))
+            selected_strike = _finite_float(item.get("strike_price") or item.get("strike"))
+            if not option_symbol or selected_expiration is None or selected_strike is None:
+                continue
+            normalized_candidates.append((selected_expiration, selected_strike, option_symbol, item))
+
+        if not normalized_candidates:
+            return _unresolved("No listed Schwab option contracts matched requested type/expiration.", method=selection_method)
+
+        def _sort_key(item: tuple[date, float, str, dict[str, Any]]) -> tuple[int, float, float, str]:
+            selected_expiration, selected_strike, option_symbol, row = item
+            expiration_distance = abs((selected_expiration - expiration).days)
+            strike_distance = abs(selected_strike - target)
+            liquidity = max(_finite_float(row.get("open_interest")) or 0.0, _finite_float(row.get("volume")) or 0.0)
+            return (expiration_distance, strike_distance, -liquidity, option_symbol)
+
+        selected_expiration, selected_strike, option_symbol, _row = sorted(normalized_candidates, key=_sort_key)[0]
+        if selected_expiration != expiration and not warnings:
+            warnings.append("Selected option contract uses closest available Schwab expiration.")
+        return OptionContractResolution(
+            requested_underlying=normalized_underlying,
+            underlying_asset_type=asset_type,
+            target_expiration=expiration,
+            selected_expiration=selected_expiration,
+            option_type=normalized_type,
+            target_strike=target,
+            selected_strike=round(float(selected_strike), 4),
+            option_symbol=option_symbol,
+            provider=self.name,
+            contract_selection_method=selection_method,
+            strike_snap_distance=round(abs(float(selected_strike) - target), 4),
+            warnings=tuple(warnings),
+        )
 
     def health_check(self, sample_symbol: str) -> MarketProviderHealth:
         status = schwab_connection_status(repo=self.repo, cfg=self.cfg)
         if not status.get("configured"):
             return MarketProviderHealth(
-                provider="schwab_market_data",
-                mode="diagnostic",
+                provider="market_data",
+                mode=self.name,
                 status="warning",
                 details=str(status["details"]),
                 configured=False,
@@ -688,8 +1222,8 @@ class SchwabMarketDataProvider(MarketDataProvider):
             )
         if status.get("token_status") != "connected":
             return MarketProviderHealth(
-                provider="schwab_market_data",
-                mode="diagnostic",
+                provider="market_data",
+                mode=self.name,
                 status="warning",
                 details=str(status["details"]),
                 configured=True,
@@ -701,10 +1235,10 @@ class SchwabMarketDataProvider(MarketDataProvider):
             self.fetch_latest_snapshot(sample_symbol, "1D")
             elapsed = round((monotonic() - started) * 1000, 2)
             return MarketProviderHealth(
-                provider="schwab_market_data",
-                mode="diagnostic",
+                provider="market_data",
+                mode=self.name,
                 status="ok",
-                details="Schwab diagnostic market-data probe succeeded. This does not enable broker execution.",
+                details="Schwab/Thinkorswim market-data probe succeeded. This does not enable broker execution.",
                 configured=True,
                 feed="stocks",
                 sample_symbol=sample_symbol,
@@ -714,10 +1248,10 @@ class SchwabMarketDataProvider(MarketDataProvider):
         except (SchwabAuthRequiredError, SchwabConfigurationError, DataNotEntitledError, ProviderUnavailableError, SymbolNotFoundError, HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
             elapsed = round((monotonic() - started) * 1000, 2)
             return MarketProviderHealth(
-                provider="schwab_market_data",
-                mode="diagnostic",
+                provider="market_data",
+                mode=self.name,
                 status="warning",
-                details=f"Schwab diagnostic probe failed: {redact_schwab_text(exc, self.cfg)}",
+                details=f"Schwab/Thinkorswim market-data probe failed: {redact_schwab_text(exc, self.cfg)}",
                 configured=True,
                 feed="stocks",
                 sample_symbol=sample_symbol,

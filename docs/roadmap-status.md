@@ -2,6 +2,34 @@
 
 Last updated: 2026-06-17
 
+## 2026-06-17 Update - Schwab Market-Data Provider Cutover
+
+Completed in the current Phase 1 provider/workflow trust hardening track:
+- Promoted Schwab/Thinkorswim from parity diagnostics into the selectable
+  read-only market-data provider via `MARKET_DATA_PROVIDER=schwab`, without
+  adding Schwab broker execution, live trading, order routing, recommendation
+  scoring, sizing, paper OMS, replay, or LLM behavior changes.
+- Made explicit Schwab selection take precedence over legacy Polygon/Massive
+  compatibility flags and blocked production workflow reads instead of silently
+  using deterministic fallback when Schwab is degraded and demo fallback is not
+  explicitly allowed.
+- Added Schwab contract coverage for historical bars, latest equity snapshots,
+  index snapshots, option contract listing/resolution, option mark snapshots,
+  and provider-health probes where Schwab API/account entitlements allow them.
+- Updated Provider Health, Data Parity Lab, environment templates, setup docs,
+  deployment docs, and the Schwab cutover engineering note so Schwab is the
+  primary market-data setup and Polygon/Massive is legacy rollback or optional
+  cutover comparison only.
+
+Open/deferred:
+- Schwab index and options availability still depends on account entitlement
+  and must be manually verified against the live Schwab account before
+  canceling the Massive plan.
+- Polygon/Massive provider and news code remains as legacy/comparison support;
+  removal is deferred until after Schwab production soak validation.
+- Final validation evidence for this pass is recorded in the Codex handoff and
+  should not be treated as live Schwab account entitlement proof.
+
 ## 2026-06-17 Update - ATR Trailing Stop Chart Rendering
 
 Completed in the current Phase 1 chart/workflow trust hardening track:
