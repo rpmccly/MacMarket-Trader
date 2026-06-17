@@ -33,8 +33,16 @@ function coerceMessage(payload: unknown, fallback: string): string {
   if (payload && typeof payload === "object") {
     const detail = (payload as Record<string, unknown>).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const nestedMessage = (detail as Record<string, unknown>).message;
+      if (typeof nestedMessage === "string" && nestedMessage.trim()) return nestedMessage;
+      const nestedCode = (detail as Record<string, unknown>).code;
+      if (typeof nestedCode === "string" && nestedCode.trim()) return nestedCode;
+    }
     const message = (payload as Record<string, unknown>).message;
     if (typeof message === "string" && message.trim()) return message;
+    const code = (payload as Record<string, unknown>).code;
+    if (typeof code === "string" && code.trim()) return code;
     const error = (payload as Record<string, unknown>).error;
     if (typeof error === "string" && error.trim()) return error;
   }

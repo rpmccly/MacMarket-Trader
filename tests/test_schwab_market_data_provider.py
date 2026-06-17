@@ -14,6 +14,7 @@ from macmarket_trader.data.providers.schwab import (
     parse_schwab_token_payload,
     redact_schwab_text,
     save_schwab_token_bundle,
+    schwab_market_data_status,
 )
 from macmarket_trader.domain.models import ProviderOAuthTokenModel
 from macmarket_trader.storage.db import SessionLocal
@@ -422,6 +423,29 @@ def test_schwab_option_chain_snapshot_and_resolution(monkeypatch) -> None:
     assert snapshot.mark_price == 10.5
     assert snapshot.mark_method == "quote_mid"
     assert snapshot.open_interest == 100
+
+
+def test_schwab_market_data_status_marks_reconnect_when_live_probe_401(monkeypatch) -> None:
+    cfg = _cfg()
+    cfg.market_data_enabled = True
+    cfg.market_data_provider = "schwab"
+    repo = _repo()
+    _seed_token(repo, cfg)
+
+    def unauthorized(request, timeout):  # noqa: ANN001
+        raise HTTPError(request.full_url, 401, "unauthorized", None, None)
+
+    monkeypatch.setattr("macmarket_trader.data.providers.schwab.urlopen", unauthorized)
+
+    status = schwab_market_data_status(repo=repo, cfg=cfg, include_probe=True, sample_symbol="SPY")
+
+    assert status["mode"] == "primary_market_data"
+    assert status["active_production_provider"] is True
+    assert status["live_probe_status"] == "degraded"
+    assert status["token_status"] == "reconnect_required"
+    assert status["requires_reconnect"] is True
+    assert status["action"] == "reconnect_schwab"
+    assert "reconnect_required" in str(status["details"])
 
 
 def test_refreshes_access_token_near_expiry(monkeypatch) -> None:

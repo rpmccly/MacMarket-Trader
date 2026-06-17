@@ -1,6 +1,6 @@
 """Protected chart routes."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from macmarket_trader.api.deps.auth import require_approved_user
 from macmarket_trader.charts.atr_heatmap_reporting import atr_heatmap_csv, atr_heatmap_html, build_atr_report_payload
@@ -9,6 +9,12 @@ from macmarket_trader.charts.atr_service import AtrChartService
 from macmarket_trader.charts.haco_service import HacoChartService
 from macmarket_trader.charts.momentum_heatmap_service import MomentumHeatmapService
 from macmarket_trader.charts.momentum_service import MomentumChartService
+from macmarket_trader.data.providers.market_data import (
+    DataNotEntitledError,
+    ProviderUnavailableError,
+    SymbolNotFoundError,
+    configured_market_data_provider_name,
+)
 from macmarket_trader.data.providers.registry import build_market_data_service
 from macmarket_trader.domain.schemas import (
     AtrChartPayload,
@@ -38,6 +44,34 @@ market_data_service = build_market_data_service()
 # Bars per timeframe for the ATR Intel multi-timeframe state table (bounded so a
 # single page load stays fast; the primary timeframe gets the full chart history).
 ATR_TABLE_TIMEFRAME_BAR_LIMIT = 180
+
+
+def _market_data_action(provider: str) -> str:
+    if provider == "schwab":
+        return "reconnect_schwab"
+    if provider == "polygon":
+        return "check_polygon_market_data"
+    if provider == "alpaca":
+        return "check_alpaca_market_data"
+    return "configure_market_data_provider"
+
+
+def _chart_market_data_unavailable(symbol: str, exc: Exception | None = None) -> HTTPException:
+    provider = configured_market_data_provider_name()
+    detail: dict[str, object] = {
+        "ok": False,
+        "code": "MARKET_DATA_PROVIDER_UNAVAILABLE",
+        "provider": provider,
+        "symbol": symbol.upper(),
+        "message": (
+            f"{provider} market data is unavailable for {symbol.upper()} chart context. "
+            "No hidden fallback data was used; reconnect or restore provider health and retry."
+        ),
+        "action": _market_data_action(provider),
+    }
+    if exc is not None:
+        detail["sanitized_error"] = str(exc).replace("\n", " ").replace("\r", " ")[:300]
+    return HTTPException(status_code=503, detail=detail)
 
 
 def _bar_metadata(bars: list[Bar], *, source: str, timeframe: str, fallback_mode: bool) -> dict[str, object]:
@@ -75,11 +109,36 @@ def _resolve_bars(
 
     limit = chart_history_range_bar_limit(timeframe, history_range)
 
-    provider_bars, provider_source, provider_fallback = market_data_service.historical_bars(
-        symbol=symbol,
-        timeframe=timeframe,
-        limit=limit,
-    )
+    try:
+        provider_bars, provider_source, provider_fallback = market_data_service.historical_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit,
+        )
+    except DataNotEntitledError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "ok": False,
+                "code": "MARKET_DATA_NOT_ENTITLED",
+                "provider": configured_market_data_provider_name(),
+                "symbol": symbol.upper(),
+                "message": f"Current market-data entitlement does not include {symbol.upper()} chart context.",
+            },
+        ) from exc
+    except SymbolNotFoundError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "code": "MARKET_DATA_SYMBOL_NOT_FOUND",
+                "provider": configured_market_data_provider_name(),
+                "symbol": symbol.upper(),
+                "message": f"No provider bars found for {symbol.upper()}. Verify the ticker and retry.",
+            },
+        ) from exc
+    except ProviderUnavailableError as exc:
+        raise _chart_market_data_unavailable(symbol, exc) from exc
     if provider_bars:
         provider_metadata = getattr(market_data_service, "last_historical_metadata", None)
         return provider_bars, provider_source, provider_fallback, dict(provider_metadata or _bar_metadata(
@@ -109,7 +168,10 @@ def _resolve_bars(
             {},
         )
 
-    bars, source, fallback = market_data_service.historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
+    try:
+        bars, source, fallback = market_data_service.historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
+    except ProviderUnavailableError as exc:
+        raise _chart_market_data_unavailable(symbol, exc) from exc
     provider_metadata = getattr(market_data_service, "last_historical_metadata", None)
     return bars, source, fallback, dict(provider_metadata or _bar_metadata(
         bars,

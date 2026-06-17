@@ -174,14 +174,16 @@ def _cfg() -> Settings:
 
 def _service(monkeypatch, *, current: list[Bar], schwab_raw: list[Bar], schwab_canonical: list[Bar] | None = None) -> ProviderParityService:
     monkeypatch.setattr(
-        "macmarket_trader.data_parity.service.schwab_connection_status",
-        lambda *, repo, cfg: {
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
             "provider": "schwab_market_data",
             "mode": "diagnostic",
             "status": "ok",
             "configured": True,
             "oauth_connected": True,
             "token_status": "connected",
+            "live_probe_status": "ok",
+            "probe_state": "ok",
             "details": "connected",
         },
     )
@@ -224,6 +226,40 @@ def _seed_user() -> int:
         session.commit()
         session.refresh(user)
         return user.id
+
+
+def test_data_parity_blocks_schwab_when_live_probe_is_degraded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
+            "provider": "schwab_market_data",
+            "mode": "primary_market_data",
+            "status": "degraded",
+            "configured": True,
+            "oauth_connected": True,
+            "token_status": "connected",
+            "live_probe_status": "degraded",
+            "probe_state": "degraded",
+            "requires_reconnect": True,
+            "action": "reconnect_schwab",
+            "details": "Schwab/Thinkorswim market-data probe failed: reconnect_required",
+        },
+    )
+    service = ProviderParityService(
+        current_market_data_service=StubMarketDataService(_bars()),
+        schwab_provider=StubSchwabProvider(_bars()),
+        oauth_repo=ProviderOAuthRepository(SessionLocal),
+        snapshot_repo=ProviderParitySnapshotRepository(SessionLocal),
+        cfg=_cfg(),
+    )
+
+    response = service.run(_request(lookbackBars=5), app_user_id=1)
+
+    assert response["providers"]["candidate"]["live_probe_status"] == "degraded"
+    assert response["providers"]["candidate"]["action"] == "reconnect_schwab"
+    assert response["summary"]["provider_unavailable"] == 1
+    assert response["results"][0]["rootCause"] == "provider_unavailable"
+    assert "reconnect_required" in response["results"][0]["errors"][0]
 
 
 def test_raw_provider_mismatch_classification(monkeypatch) -> None:
@@ -680,14 +716,16 @@ def test_intraday_raw_layer_uses_shared_30m_source_for_current_and_schwab(monkey
             return SimpleNamespace(status="ok")
 
     monkeypatch.setattr(
-        "macmarket_trader.data_parity.service.schwab_connection_status",
-        lambda *, repo, cfg: {
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
             "provider": "schwab_market_data",
             "mode": "diagnostic",
             "status": "ok",
             "configured": True,
             "oauth_connected": True,
             "token_status": "connected",
+            "live_probe_status": "ok",
+            "probe_state": "ok",
             "details": "connected",
         },
     )
@@ -714,14 +752,16 @@ def test_intraday_raw_layer_uses_shared_30m_source_for_current_and_schwab(monkey
 def test_schwab_primary_without_legacy_provider_returns_clear_no_comparison(monkeypatch) -> None:
     app_user_id = _seed_user()
     monkeypatch.setattr(
-        "macmarket_trader.data_parity.service.schwab_connection_status",
-        lambda *, repo, cfg: {
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
             "provider": "schwab_market_data",
             "mode": "primary_market_data",
             "status": "ok",
             "configured": True,
             "oauth_connected": True,
             "token_status": "connected",
+            "live_probe_status": "ok",
+            "probe_state": "ok",
             "details": "connected",
         },
     )
@@ -749,14 +789,16 @@ def test_schwab_primary_without_legacy_provider_returns_clear_no_comparison(monk
 
 def test_schwab_primary_uses_legacy_polygon_when_configured(monkeypatch) -> None:
     monkeypatch.setattr(
-        "macmarket_trader.data_parity.service.schwab_connection_status",
-        lambda *, repo, cfg: {
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
             "provider": "schwab_market_data",
             "mode": "primary_market_data",
             "status": "ok",
             "configured": True,
             "oauth_connected": True,
             "token_status": "connected",
+            "live_probe_status": "ok",
+            "probe_state": "ok",
             "details": "connected",
         },
     )
@@ -791,14 +833,16 @@ def test_schwab_primary_uses_legacy_polygon_when_configured(monkeypatch) -> None
 def test_parity_response_and_snapshot_redact_sensitive_keys(monkeypatch) -> None:
     app_user_id = _seed_user()
     monkeypatch.setattr(
-        "macmarket_trader.data_parity.service.schwab_connection_status",
-        lambda *, repo, cfg: {
+        "macmarket_trader.data_parity.service.schwab_market_data_status",
+        lambda *, repo, cfg, include_probe=True, sample_symbol="SPY": {
             "provider": "schwab_market_data",
             "mode": "diagnostic",
             "status": "ok",
             "configured": True,
             "oauth_connected": True,
             "token_status": "connected",
+            "live_probe_status": "ok",
+            "probe_state": "ok",
             "access_token": "unit-test-raw-access-token-placeholder",
             "last_error": "Authorization: Bearer unit-test-raw-access-token-placeholder",
             "details": "connected",

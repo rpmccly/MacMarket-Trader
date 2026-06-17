@@ -28,7 +28,7 @@ from macmarket_trader.data.providers.schwab import (
     SchwabConfigurationError,
     SchwabMarketDataProvider,
     redact_schwab_text,
-    schwab_connection_status,
+    schwab_market_data_status,
 )
 from macmarket_trader.domain.schemas import Bar
 from macmarket_trader.domain.timeframes import SUPPORTED_CHART_TIMEFRAMES, validate_chart_timeframe
@@ -1634,10 +1634,17 @@ class ProviderParityService:
         schwab_status: dict[str, object],
         app_user_id: int,
     ) -> dict[str, object]:
+        schwab_probe_ok = str(schwab_status.get("live_probe_status") or schwab_status.get("probe_state") or "") == "ok"
         message = (
             "Schwab/Thinkorswim is the primary market-data provider and no legacy "
             "Polygon/Massive API key is configured for cutover comparison."
         )
+        warnings = [message]
+        if not schwab_probe_ok:
+            warnings.insert(
+                0,
+                "Schwab/Thinkorswim primary market-data probe is not healthy; production reads remain blocked until reconnect/health recovers.",
+            )
         response: dict[str, object] = {
             "runId": run_id,
             "asOf": as_of,
@@ -1662,7 +1669,7 @@ class ProviderParityService:
             },
             "summary": {"total": 0, "match": 0},
             "results": [],
-            "warnings": [message],
+            "warnings": warnings,
             "errors": [],
             "readOnly": True,
             "brokerRoutingEnabled": False,
@@ -1813,7 +1820,9 @@ class ProviderParityService:
         run_id = f"dpar_{uuid4().hex[:16]}"
         run_at = _utc_now()
         as_of = run_at.isoformat()
-        status_payload = _sanitize_snapshot_payload(schwab_connection_status(repo=self.oauth_repo, cfg=self.cfg))
+        status_payload = _sanitize_snapshot_payload(
+            schwab_market_data_status(repo=self.oauth_repo, cfg=self.cfg, include_probe=True, sample_symbol="SPY")
+        )
         schwab_status = status_payload if isinstance(status_payload, dict) else {}
         if self._current_provider_is_schwab() and self.legacy_polygon_provider is None:
             return self._schwab_primary_without_legacy_payload(
@@ -1861,6 +1870,8 @@ class ProviderParityService:
                 try:
                     if str(schwab_status.get("token_status") or "") != "connected":
                         raise SchwabAuthRequiredError("schwab_not_connected")
+                    if str(schwab_status.get("live_probe_status") or schwab_status.get("probe_state") or "") != "ok":
+                        raise ProviderUnavailableError(str(schwab_status.get("details") or "schwab_probe_unavailable"))
                     current_raw = self._fetch_current_raw(symbol=symbol, timeframe=timeframe, limit=lookback)
                     schwab_raw = self._fetch_schwab_raw(symbol=symbol, timeframe=timeframe, limit=lookback)
                     result_warnings.extend(current_raw.warnings)

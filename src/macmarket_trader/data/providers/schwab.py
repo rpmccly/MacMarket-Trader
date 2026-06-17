@@ -47,6 +47,7 @@ from macmarket_trader.data.providers.market_data import (
     _timestamp_from_provider_value,
     option_reference_underlying_ticker,
     option_underlying_asset_type,
+    resolve_market_data_provider_selection,
     unavailable_option_contract_snapshot,
 )
 from macmarket_trader.domain.schemas import Bar
@@ -349,10 +350,7 @@ def schwab_connection_status(
                 token_status = "reconnect_required"
                 access_state = "expired"
     oauth_connected = bool(token_row is not None and token_status == "connected")
-    selected_for_market_data = (
-        cfg.market_data_enabled
-        and cfg.market_data_provider.strip().lower() == SCHWAB_PROVIDER
-    )
+    selected_for_market_data = resolve_market_data_provider_selection(cfg).effective_provider == SCHWAB_PROVIDER
     return {
         "provider": "schwab_market_data",
         "mode": "primary_market_data" if selected_for_market_data else "diagnostic",
@@ -1260,6 +1258,87 @@ class SchwabMarketDataProvider(MarketDataProvider):
             )
 
 
+def _schwab_status_action(status: dict[str, object]) -> str:
+    token_status = str(status.get("token_status") or "")
+    details = str(status.get("details") or "").lower()
+    entitlement_status = str(status.get("entitlement_status") or "")
+    if token_status in {"not_connected", "reconnect_required", "missing_encryption_key", "unconfigured"}:
+        return "reconnect_schwab"
+    if entitlement_status == "blocked" or "entitled" in details or "forbidden" in details:
+        return "check_schwab_entitlements"
+    if str(status.get("live_probe_status") or status.get("probe_state") or "") in {"degraded", "failed"}:
+        return "check_schwab_provider_health"
+    return "none"
+
+
+def schwab_market_data_status(
+    *,
+    repo: ProviderOAuthRepository | None = None,
+    cfg: Settings = settings,
+    include_probe: bool = True,
+    sample_symbol: str = "SPY",
+) -> dict[str, object]:
+    """Return one Schwab market-data readiness payload for Health and Parity surfaces."""
+    oauth_repo = repo or ProviderOAuthRepository(SessionLocal)
+    status = schwab_connection_status(repo=oauth_repo, cfg=cfg)
+    active = resolve_market_data_provider_selection(cfg).effective_provider == SCHWAB_PROVIDER
+    status["mode"] = "primary_market_data" if active else "diagnostic"
+    status["active_production_provider"] = active
+    status["diagnostic_only"] = not active
+    status["readiness_scope"] = "read_only_market_data_primary" if active else "read_only_market_data_diagnostics"
+    status["live_probe_status"] = "not_run"
+    status["probe_state"] = "not_run"
+    status["probe_status"] = "not_run"
+    status["sample_symbol"] = sample_symbol
+    status["latency_ms"] = None
+    status["last_success_at"] = None
+    status["entitlement_status"] = "unknown"
+
+    if include_probe:
+        if status.get("configured") and status.get("token_status") == "connected":
+            health = SchwabMarketDataProvider(repo=oauth_repo, cfg=cfg).health_check(sample_symbol=sample_symbol)
+            refreshed_status = schwab_connection_status(repo=oauth_repo, cfg=cfg)
+            status.update(refreshed_status)
+            status["mode"] = "primary_market_data" if active else "diagnostic"
+            status["active_production_provider"] = active
+            status["diagnostic_only"] = not active
+            status["readiness_scope"] = "read_only_market_data_primary" if active else "read_only_market_data_diagnostics"
+            probe_state = "ok" if health.status == "ok" else "degraded"
+            status["status"] = "ok" if probe_state == "ok" else "degraded"
+            status["details"] = health.details
+            status["live_probe_status"] = probe_state
+            status["probe_state"] = probe_state
+            status["probe_status"] = probe_state
+            status["latency_ms"] = health.latency_ms
+            status["last_success_at"] = health.last_success_at.isoformat() if health.last_success_at else None
+            details_lower = health.details.lower()
+            if "not entitled" in details_lower or "forbidden" in details_lower:
+                status["entitlement_status"] = "blocked"
+            if "reconnect_required" in details_lower or status.get("token_status") == "reconnect_required":
+                status["requires_reconnect"] = True
+        elif not status.get("enabled"):
+            status["live_probe_status"] = "skipped"
+            status["probe_state"] = "skipped"
+            status["probe_status"] = "skipped"
+        elif not status.get("configured"):
+            status["live_probe_status"] = "unavailable"
+            status["probe_state"] = "unavailable"
+            status["probe_status"] = "unavailable"
+        else:
+            status["live_probe_status"] = "degraded"
+            status["probe_state"] = "degraded"
+            status["probe_status"] = "degraded"
+
+    status["market_data_ready"] = bool(
+        status.get("configured")
+        and status.get("oauth_connected")
+        and status.get("token_status") == "connected"
+        and status.get("live_probe_status") in {"ok", "not_run"}
+    )
+    status["action"] = _schwab_status_action(status)
+    return status
+
+
 __all__ = [
     "SCHWAB_PROVIDER",
     "SchwabAuthRequiredError",
@@ -1273,5 +1352,6 @@ __all__ = [
     "redact_schwab_text",
     "save_schwab_token_bundle",
     "schwab_connection_status",
+    "schwab_market_data_status",
     "schwab_oauth_configured",
 ]

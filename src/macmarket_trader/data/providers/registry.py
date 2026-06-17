@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from macmarket_trader.config import settings
 from macmarket_trader.data.providers.base import AuthProvider, BrokerProvider, EmailProvider, MacroCalendarProvider, NewsProvider
-from macmarket_trader.data.providers.market_data import MarketDataService
+from macmarket_trader.data.providers.market_data import MarketDataService, configured_market_data_provider_name
 from macmarket_trader.data.providers.broker import AlpacaBrokerProvider
 from macmarket_trader.data.providers.clerk import ClerkAuthProvider
 from macmarket_trader.data.providers.macro_calendar import FredMacroCalendarProvider
@@ -61,10 +61,19 @@ def build_broker_provider() -> BrokerProvider:
 
 
 _market_data_service: MarketDataService | None = None
+_market_data_service_provider_name: str | None = None
 
 
 def build_market_data_service() -> MarketDataService:
-    global _market_data_service
-    if _market_data_service is None:
+    global _market_data_service, _market_data_service_provider_name
+    provider_name = configured_market_data_provider_name()
+    if _market_data_service is None or _market_data_service_provider_name != provider_name:
         _market_data_service = MarketDataService()
+        _market_data_service_provider_name = provider_name
     return _market_data_service
+
+
+def reset_market_data_service() -> None:
+    global _market_data_service, _market_data_service_provider_name
+    _market_data_service = None
+    _market_data_service_provider_name = None

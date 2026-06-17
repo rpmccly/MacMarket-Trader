@@ -113,7 +113,9 @@ def test_user_generation_blocks_hidden_fallback_when_provider_expected(monkeypat
         json={"symbol": "AAPL", "event_text": "Operator trigger"},
     )
     assert response.status_code == 503
-    assert "hidden demo fallback" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["code"] == "MARKET_DATA_PROVIDER_UNAVAILABLE"
+    assert "hidden demo fallback" in detail["message"]
 
 
 def test_user_generation_non_equity_generates_recommendation() -> None:

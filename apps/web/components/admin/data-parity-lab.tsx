@@ -65,6 +65,7 @@ function verdictTone(value: string | undefined | null): BadgeTone {
     case "insufficient_data":
     case "expired":
     case "reconnect_required":
+    case "reconnect required":
     case "auth_unavailable":
     case "stale_source":
     case "provider_unavailable":
@@ -241,12 +242,19 @@ export function cleanDataParityErrorMessage(error: string | null | undefined, fa
 }
 
 export function isSchwabConnected(status: SchwabStatus | null): boolean {
-  return Boolean(status?.configured && status.credentials_present && status.oauth_connected && status.token_status === "connected");
+  const probe = status?.live_probe_status ?? status?.probe_state ?? status?.probe_status;
+  return Boolean(
+    status?.configured
+    && status.credentials_present
+    && status.oauth_connected
+    && status.token_status === "connected"
+    && (status.market_data_ready || probe === "ok")
+  );
 }
 
 export function shouldShowSchwabReconnect(status: SchwabStatus | null): boolean {
   if (!status) return false;
-  return Boolean(status.requires_reconnect || !isSchwabConnected(status));
+  return Boolean(status.requires_reconnect || status.action === "reconnect_schwab" || !isSchwabConnected(status));
 }
 
 function summaryValue(response: DataParityRunResponse | null, key: string): number {
@@ -671,8 +679,17 @@ export function DataParityLab() {
   }
 
   const schwabConnected = isSchwabConnected(schwabStatus);
-  const statusBadge = statusLoading ? "loading" : schwabConnected ? "Connected" : schwabStatus?.token_status ?? "unknown";
-  const statusTone = statusLoading ? "neutral" : schwabConnected ? "good" : verdictTone(schwabStatus?.token_status ?? schwabStatus?.status);
+  const probeStatus = schwabStatus?.live_probe_status ?? schwabStatus?.probe_state ?? schwabStatus?.probe_status ?? "not run";
+  const statusBadge = statusLoading
+    ? "loading"
+    : schwabConnected
+      ? "Ready"
+      : schwabStatus?.requires_reconnect || schwabStatus?.action === "reconnect_schwab"
+        ? "Reconnect required"
+        : probeStatus !== "ok" && probeStatus !== "not run"
+          ? probeStatus
+          : schwabStatus?.token_status ?? "unknown";
+  const statusTone = statusLoading ? "neutral" : schwabConnected ? "good" : verdictTone(statusBadge);
   const currentProviderName = String(asRecord(result?.providers.current).provider ?? "not run");
   const providerAName = formatProviderLabel(currentProviderName);
   const comparisonMode = String(result?.comparisonMode ?? asRecord(result?.providers.current).comparison_mode ?? "not_run");
@@ -707,10 +724,15 @@ export function DataParityLab() {
           <div><span>status</span><StatusBadge tone={statusTone}>{statusBadge}</StatusBadge></div>
           <div><span>configured</span><strong>{schwabStatus?.configured ? "yes" : "no"}</strong></div>
           <div><span>credentials</span><strong>{schwabStatus?.credentials_present ? "present" : "missing"}</strong></div>
-          <div><span>OAuth/token</span><strong>{schwabConnected ? "usable" : schwabStatus?.token_status ?? "unknown"}</strong></div>
+          <div><span>OAuth/token</span><strong>{schwabStatus?.oauth_connected ? schwabStatus?.token_status ?? "connected" : schwabStatus?.token_status ?? "unknown"}</strong></div>
+          <div><span>live probe</span><strong>{probeStatus}</strong></div>
+          <div><span>active production</span><strong>{schwabStatus?.active_production_provider ? "yes" : "no"}</strong></div>
+          <div><span>scope</span><strong>{schwabStatus?.readiness_scope ?? (schwabStatus?.mode ?? "diagnostic")}</strong></div>
+          <div><span>entitlement</span><strong>{schwabStatus?.entitlement_status ?? "unknown"}</strong></div>
           <div><span>access state</span><strong>{schwabStatus?.access_state ?? "-"}</strong></div>
           <div><span>refresh state</span><strong>{schwabStatus?.refresh_state ?? "-"}</strong></div>
           <div><span>last refresh</span><strong>{formatTimestamp(schwabStatus?.last_refresh_at)}</strong></div>
+          <div><span>last probe success</span><strong>{formatTimestamp(schwabStatus?.last_success_at)}</strong></div>
           <div><span>mode</span><strong>{schwabStatus?.mode ?? "diagnostic"}</strong></div>
         </div>
         <p className="dp-muted">{schwabStatus?.details ?? "Schwab diagnostics have not been loaded yet."}</p>

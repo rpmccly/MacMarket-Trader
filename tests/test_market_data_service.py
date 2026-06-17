@@ -32,6 +32,7 @@ from macmarket_trader.data.providers.market_data import (
     option_underlying_asset_type,
 )
 from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider
+from macmarket_trader.domain.schemas import Bar
 
 
 @pytest.fixture(autouse=True)
@@ -125,6 +126,36 @@ def test_market_data_service_does_not_silently_fallback_when_schwab_unavailable(
 
     with pytest.raises(ProviderUnavailableError, match="schwab historical bars unavailable"):
         service.historical_bars("AAPL", "1D", 10)
+
+
+def test_market_data_service_does_not_silently_fallback_when_schwab_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "workflow_demo_fallback", False)
+    monkeypatch.setattr(settings, "environment", "production")
+
+    service = MarketDataService()
+    monkeypatch.setattr(service._provider, "fetch_historical_bars", lambda symbol, timeframe, limit: [])
+
+    with pytest.raises(ProviderUnavailableError, match="schwab historical bars unavailable"):
+        service.historical_bars("AAPL", "1D", 10)
+
+
+def test_market_data_service_only_selects_alpaca_when_explicit(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "market_data_provider", "fallback")
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "alpaca_api_key_id", "alpaca-key")
+    monkeypatch.setattr(settings, "alpaca_api_secret_key", "alpaca-secret")
+
+    fallback_service = MarketDataService()
+    assert fallback_service._provider.name == "fallback"
+
+    monkeypatch.setattr(settings, "market_data_provider", "alpaca")
+    alpaca_service = MarketDataService()
+    assert alpaca_service._provider.name == "alpaca"
 
 
 def test_market_data_cache_keys_include_provider_identity(monkeypatch) -> None:
@@ -1993,6 +2024,58 @@ def test_analysis_setup_passes_requested_timeframe_to_market_data(monkeypatch) -
     assert payload["session_policy"] == "regular_hours"
     assert payload["data_quality"]["session_policy"] == "regular_hours"
     assert calls == [("GOOG", "4H", 120)]
+
+
+def test_analyze_returns_structured_provider_unavailable_for_insufficient_history(monkeypatch) -> None:
+    class StubMarketDataService:
+        def historical_bars(self, symbol: str, timeframe: str, limit: int):  # type: ignore[override]
+            return [
+                Bar(
+                    date=date(2026, 6, 16),
+                    timestamp=datetime(2026, 6, 16, 20, 0, tzinfo=UTC),
+                    open=100,
+                    high=101,
+                    low=99,
+                    close=100.5,
+                    volume=1000,
+                )
+            ], "schwab", False
+
+        def provider_health(self, sample_symbol: str = "SPY") -> MarketProviderHealth:
+            return MarketProviderHealth(
+                provider="market_data", mode="schwab", status="warning",
+                details="Schwab/Thinkorswim market-data probe failed: reconnect_required",
+                configured=True, feed="stocks", sample_symbol=sample_symbol,
+            )
+
+    monkeypatch.setattr(admin_routes, "market_data_service", StubMarketDataService())
+    monkeypatch.setattr(settings, "market_data_provider", "schwab")
+    monkeypatch.setattr(settings, "market_data_enabled", True)
+    monkeypatch.setattr(settings, "schwab_enabled", True)
+    monkeypatch.setattr(settings, "polygon_enabled", False)
+    monkeypatch.setattr(settings, "workflow_demo_fallback", False)
+    monkeypatch.setattr(settings, "environment", "test")
+
+    client = TestClient(app)
+    client.get("/user/me", headers={"Authorization": "Bearer user-token"})
+    from macmarket_trader.domain.models import AppUserModel
+    from macmarket_trader.storage.db import SessionLocal
+
+    with SessionLocal() as session:
+        user = session.execute(select(AppUserModel).where(AppUserModel.external_auth_user_id == "clerk_user")).scalar_one()
+        user.approval_status = "approved"
+        session.commit()
+
+    response = client.get("/user/analyze/SPY", headers={"Authorization": "Bearer user-token"})
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["code"] == "MARKET_DATA_PROVIDER_UNAVAILABLE"
+    assert payload["provider"] == "schwab"
+    assert payload["symbol"] == "SPY"
+    assert payload["action"] == "reconnect_schwab"
+    assert "only 1 bars" in payload["message"]
 
 
 def test_data_not_entitled_raised_on_polygon_403(monkeypatch) -> None:

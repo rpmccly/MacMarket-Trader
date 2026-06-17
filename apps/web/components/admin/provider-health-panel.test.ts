@@ -76,6 +76,13 @@ describe("provider health readiness copy", () => {
     expect(source).toContain("index samples");
     expect(source).toContain("index value available");
     expect(source).toContain("credentials present");
+    expect(source).toContain("live_probe_status");
+    expect(source).toContain("live probe");
+    expect(source).toContain("market_data_ready");
+    expect(source).toContain("market data ready");
+    expect(source).toContain("requires_reconnect");
+    expect(source).toContain("reconnect required");
+    expect(source).toContain("action");
     expect(source).toContain("paper routing enabled");
     expect(source).toContain("paper account status");
     expect(source).toContain("account probe");
@@ -90,8 +97,6 @@ describe("provider health readiness copy", () => {
     expect(source).toContain("No SPY fallback is used");
     expect(source).toContain("provider plan is not entitled");
     expect(source).toContain("Order routing is not enabled");
-    expect(source).not.toContain("live probe:");
-    expect(source).not.toContain("live probe: configured");
     expect(source).not.toContain("OPENAI_API_KEY");
     expect(source).not.toContain("sk-");
   });

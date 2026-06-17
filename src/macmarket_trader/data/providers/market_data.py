@@ -74,28 +74,59 @@ OPTION_CONTRACT_REFERENCE_MAX_PAGES = 8
 LEGACY_POLYGON_PROVIDER_ALIASES = {"polygon", "massive", "polygon/massive", "polygon_massive"}
 
 
+@dataclass(frozen=True)
+class MarketDataProviderSelection:
+    requested_provider: str
+    effective_provider: str
+    market_data_enabled: bool
+    provider_backed: bool
+    legacy_polygon_compat: bool = False
+    fallback_reason: str | None = None
+
+
+def resolve_market_data_provider_selection(cfg=settings) -> MarketDataProviderSelection:
+    """Resolve market-data provider intent in one place for routes, services, and diagnostics."""
+    mode = str(cfg.market_data_provider or "").strip().lower() or "fallback"
+    market_data_enabled = bool(cfg.market_data_enabled)
+    legacy_polygon_compat = False
+    fallback_reason: str | None = None
+
+    if market_data_enabled:
+        if mode in {"schwab", "alpaca"}:
+            effective = mode
+        elif mode in LEGACY_POLYGON_PROVIDER_ALIASES:
+            effective = "polygon"
+        elif bool(cfg.polygon_enabled) and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
+            effective = "polygon"
+            legacy_polygon_compat = True
+        else:
+            effective = "fallback"
+            fallback_reason = "unsupported_market_data_provider" if mode not in {"fallback", ""} else "fallback_selected"
+    elif bool(cfg.polygon_enabled) and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
+        # Legacy compatibility for older deployments that only set POLYGON_ENABLED=true.
+        effective = "polygon"
+        legacy_polygon_compat = True
+    else:
+        effective = "fallback"
+        fallback_reason = "market_data_disabled"
+
+    return MarketDataProviderSelection(
+        requested_provider=mode,
+        effective_provider=effective,
+        market_data_enabled=market_data_enabled,
+        provider_backed=effective != "fallback",
+        legacy_polygon_compat=legacy_polygon_compat,
+        fallback_reason=fallback_reason,
+    )
+
+
 def configured_market_data_provider_name() -> str:
     """Resolve the selected provider without allowing Polygon to override explicit modes."""
-    mode = settings.market_data_provider.strip().lower() or "fallback"
-    if not settings.market_data_enabled:
-        if settings.polygon_enabled and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
-            # Legacy compatibility for older deployments that only set POLYGON_ENABLED=true.
-            return "polygon"
-        return "fallback"
-    if mode in {"schwab", "alpaca"}:
-        return mode
-    if mode in LEGACY_POLYGON_PROVIDER_ALIASES:
-        return "polygon"
-    if settings.polygon_enabled and mode in {"fallback", "", *LEGACY_POLYGON_PROVIDER_ALIASES}:
-        # Legacy compatibility for older deployments that only set POLYGON_ENABLED=true.
-        return "polygon"
-    if mode not in {"fallback", ""}:
-        return "fallback"
-    return "fallback"
+    return resolve_market_data_provider_selection().effective_provider
 
 
 def provider_backed_market_data_expected() -> bool:
-    return configured_market_data_provider_name() != "fallback"
+    return resolve_market_data_provider_selection().provider_backed
 
 
 def workflow_demo_fallback_allowed() -> bool:
@@ -1481,6 +1512,10 @@ class MarketDataService:
             return AlpacaMarketDataProvider()
         return DeterministicFallbackMarketDataProvider()
 
+    @property
+    def provider_name(self) -> str:
+        return self._provider.name
+
     def _provider_is_configured(self) -> bool:
         checker = getattr(self._provider, "is_configured", None)
         if callable(checker):
@@ -1553,6 +1588,10 @@ class MarketDataService:
         try:
             bars = self._provider.fetch_historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
             if not bars:
+                if not self._allow_exception_fallback():
+                    raise ProviderUnavailableError(
+                        f"{self._provider.name} historical bars unavailable: provider returned no bars for {symbol.upper()}"
+                    )
                 result = self._fallback_result(symbol=symbol, timeframe=timeframe, limit=limit)
             else:
                 source = self._provider.name if self._provider.name != "fallback" else "fallback"

@@ -2,6 +2,44 @@
 
 Last updated: 2026-06-17
 
+## 2026-06-17 Update - Schwab Cutover Regression Hardening
+
+Completed in the current Phase 1 provider/workflow trust hardening track:
+- Reproduced the Analyze 500 failure mode with a one-bar provider response;
+  the backend traceback failed at `/user/analyze/{symbol}` when it indexed
+  `bars[-5]` after receiving insufficient history.
+- Added one canonical provider-selection resolver for market-data services and
+  diagnostics, kept explicit Schwab selection from being overridden by legacy
+  Polygon/Massive compatibility, and kept Alpaca market data opt-in only.
+- Hardened market-data reads so selected providers returning empty or
+  insufficient history do not silently fall back to deterministic bars when
+  demo fallback is disabled.
+- Changed `/user/analyze/{symbol}` provider-unavailable responses to structured
+  non-500 JSON with `MARKET_DATA_PROVIDER_UNAVAILABLE`, provider, symbol, and
+  operator action such as `reconnect_schwab`; chart routes now return matching
+  structured provider errors instead of generic 500s.
+- Made Schwab Provider Health and Data Parity use one probe-aware status
+  payload that distinguishes credentials, OAuth/token state, refresh state,
+  live probe, active production vs diagnostic scope, reconnect required,
+  entitlement blocked, and unavailable states.
+- Restored 1Y daily chart history requests to a one-year bar window so
+  operator indicators such as SMA 20/50 have enough provider history.
+
+Validation completed:
+- `pytest tests/test_schwab_market_data_provider.py tests/test_market_data_service.py tests/test_data_parity_service.py tests/test_data_parity_api.py`
+  passed: 107 passed.
+- `pytest --basetemp .codex-pytest-tmp` passed: 1272 passed / 4 skipped.
+- Frontend `npm test`, `npx tsc --noEmit`, and `npm run build` passed.
+- Local manual-style Schwab-selected API check confirmed effective provider
+  `schwab`, structured 503 from `/user/analyze/SPY`, and structured 503 from
+  `/charts/haco` without hidden fallback bars.
+
+Open/deferred:
+- Live Schwab account entitlement/OAuth reconnect must still be manually
+  verified in the running product before declaring the cutover production-ready.
+- The deployed runtime environment should be checked separately; prior local
+  inspection found the live runtime `.env` still selecting `MARKET_DATA_PROVIDER=alpaca`.
+
 ## 2026-06-17 Update - Schwab Market-Data Provider Cutover
 
 Completed in the current Phase 1 provider/workflow trust hardening track:

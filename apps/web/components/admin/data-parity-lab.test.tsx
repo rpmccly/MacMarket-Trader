@@ -127,12 +127,36 @@ describe("DataParityLab", () => {
       credentials_present: true,
       oauth_connected: true,
       token_status: "connected",
+      live_probe_status: "ok",
+      market_data_ready: true,
       details: "connected",
     };
 
     expect(isSchwabConnected(connected)).toBe(true);
     expect(shouldShowSchwabReconnect(connected)).toBe(false);
     expect(source).toContain("Refresh Schwab status");
+    expect(source).toContain("live probe");
+    expect(source).toContain("active production");
+  });
+
+  it("requires reconnect when OAuth exists but the live Schwab probe is degraded", () => {
+    const degraded = {
+      provider: "schwab_market_data",
+      mode: "primary_market_data",
+      status: "degraded",
+      configured: true,
+      credentials_present: true,
+      oauth_connected: true,
+      token_status: "connected",
+      live_probe_status: "degraded",
+      requires_reconnect: true,
+      action: "reconnect_schwab",
+      details: "Schwab/Thinkorswim market-data probe failed: reconnect_required",
+    };
+
+    expect(isSchwabConnected(degraded)).toBe(false);
+    expect(shouldShowSchwabReconnect(degraded)).toBe(true);
+    expect(source).toContain("Reconnect required");
   });
 
   it("cleans raw HTML API errors before rendering feedback", () => {

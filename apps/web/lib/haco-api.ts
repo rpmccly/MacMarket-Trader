@@ -60,6 +60,25 @@ export type HacoChartPayload = {
   bars_returned?: number | null;
 };
 
+async function chartErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = (await response.json()) as unknown;
+    if (payload && typeof payload === "object") {
+      const record = payload as Record<string, unknown>;
+      const detail = record.detail;
+      if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+        const message = (detail as Record<string, unknown>).message;
+        if (typeof message === "string" && message.trim()) return message;
+      }
+      if (typeof record.message === "string" && record.message.trim()) return record.message;
+      if (typeof record.code === "string" && record.code.trim()) return record.code;
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
 export async function fetchHacoChart(request: HacoChartRequest): Promise<HacoChartPayload> {
   const { history_range, ...rest } = request;
   const body = {
@@ -79,7 +98,7 @@ export async function fetchHacoChart(request: HacoChartRequest): Promise<HacoCha
     if (response.status === 425) {
       throw new Error("AUTH_NOT_READY");
     }
-    throw new Error(`Failed to load HACO chart: ${response.status}`);
+    throw new Error(await chartErrorMessage(response, `Failed to load HACO chart: ${response.status}`));
   }
   return (await response.json()) as HacoChartPayload;
 }

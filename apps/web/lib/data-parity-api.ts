@@ -41,7 +41,18 @@ export type SchwabStatus = {
   access_state?: string;
   refresh_state?: string;
   requires_reconnect?: boolean;
+  live_probe_status?: string;
+  probe_state?: string;
+  probe_status?: string;
+  market_data_ready?: boolean;
+  active_production_provider?: boolean;
+  diagnostic_only?: boolean;
+  readiness_scope?: string;
+  entitlement_status?: string;
+  action?: string;
+  latency_ms?: number | null;
   last_refresh_at?: string | null;
+  last_success_at?: string | null;
   access_token_expires_at?: string | null;
   refresh_token_expires_at?: string | null;
   last_error?: string | null;

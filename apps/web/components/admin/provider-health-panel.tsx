@@ -25,6 +25,10 @@ type ProviderHealth = {
     token_status?: string | null;
     access_state?: string | null;
     refresh_state?: string | null;
+    live_probe_status?: string | null;
+    market_data_ready?: boolean;
+    requires_reconnect?: boolean;
+    action?: string | null;
     active_production_provider?: boolean;
     paper_routing_enabled?: boolean;
     account_probe_endpoint?: string | null;
@@ -376,6 +380,18 @@ export function ProviderHealthPanel() {
                 {p.token_status ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>token status: </span>{p.token_status}</div> : null}
                 {p.access_state ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>access token: </span>{p.access_state}</div> : null}
                 {p.refresh_state ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>refresh token: </span>{p.refresh_state}</div> : null}
+                {p.live_probe_status ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>live probe: </span>{p.live_probe_status}</div> : null}
+                {p.market_data_ready !== undefined ? (
+                  <div style={{ fontSize: "0.8rem" }}>
+                    <span style={muted}>market data ready: </span>{p.market_data_ready ? "yes" : "no"}
+                  </div>
+                ) : null}
+                {p.requires_reconnect !== undefined ? (
+                  <div style={{ fontSize: "0.8rem" }}>
+                    <span style={muted}>reconnect required: </span>{p.requires_reconnect ? "yes" : "no"}
+                  </div>
+                ) : null}
+                {p.action ? <div style={{ fontSize: "0.8rem" }}><span style={muted}>action: </span>{p.action}</div> : null}
                 {p.active_production_provider !== undefined ? (
                   <div style={{ fontSize: "0.8rem" }}>
                     <span style={muted}>active market data: </span>{p.active_production_provider ? "yes" : "no"}

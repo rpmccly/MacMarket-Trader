@@ -20,7 +20,7 @@ REGULAR_HOURS_SOURCE_TIMEFRAME: ChartTimeframe = "30M"
 
 CHART_BAR_LIMIT_BY_TIMEFRAME: dict[ChartTimeframe, int] = {
     "1W": 156,
-    "1D": 120,
+    "1D": 366,
     "4H": 200,
     "1H": 400,
     "30M": 500,

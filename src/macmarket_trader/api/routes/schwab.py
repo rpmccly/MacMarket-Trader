@@ -19,7 +19,7 @@ from macmarket_trader.data.providers.schwab import (
     parse_schwab_token_payload,
     redact_schwab_text,
     save_schwab_token_bundle,
-    schwab_connection_status,
+    schwab_market_data_status,
     schwab_oauth_configured,
 )
 from macmarket_trader.domain.time import utc_now
@@ -113,4 +113,4 @@ def schwab_oauth_callback(
 
 @router.get("/admin/schwab/status")
 def admin_schwab_status(_admin=Depends(require_admin)):
-    return schwab_connection_status(repo=oauth_repo, cfg=settings)
+    return schwab_market_data_status(repo=oauth_repo, cfg=settings, include_probe=True, sample_symbol="SPY")

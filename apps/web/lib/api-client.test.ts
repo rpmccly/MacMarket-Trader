@@ -56,6 +56,36 @@ describe("fetchNormalized", () => {
     expect(JSON.stringify(result.raw)).not.toContain("<html");
     fetchSpy.mockRestore();
   });
+
+  it("surfaces nested FastAPI detail messages for structured provider errors", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            ok: false,
+            code: "MARKET_DATA_PROVIDER_UNAVAILABLE",
+            provider: "schwab",
+            symbol: "SPY",
+            message: "Schwab reconnect required.",
+            action: "reconnect_schwab",
+          },
+        }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const result = await fetchNormalized<{ ok: boolean }>("/api/user/analyze/SPY");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Schwab reconnect required.");
+    expect(result.raw).toEqual({
+      detail: expect.objectContaining({
+        code: "MARKET_DATA_PROVIDER_UNAVAILABLE",
+        action: "reconnect_schwab",
+      }),
+    });
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("fetchWorkflowApi", () => {

@@ -377,7 +377,8 @@ def test_chart_history_range_helpers_pure_module() -> None:
     assert chart_history_range_to_lookback_days(None) == 366
     # Bar-limit respects bounded chart route caps by timeframe.
     assert chart_history_range_bar_limit("1D", "1M") == max(31, 60)
-    assert chart_history_range_bar_limit("1D", "5Y") == 120
+    assert chart_history_range_bar_limit("1D", "1Y") == 366
+    assert chart_history_range_bar_limit("1D", "5Y") == 366
     assert chart_history_range_bar_limit("1W", "5Y") == 156
     assert chart_history_range_bar_limit("30M", "5Y") == 500
     assert chart_history_range_bar_limit("1H", "5Y") == 400

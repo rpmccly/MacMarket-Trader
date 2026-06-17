@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from macmarket_trader.analysis_packets import (
     PaperLifecycleSummary,
@@ -51,7 +52,7 @@ from macmarket_trader.data.providers.market_data import (
     unavailable_option_contract_snapshot,
     workflow_demo_fallback_allowed,
 )
-from macmarket_trader.data.providers.schwab import SchwabMarketDataProvider, schwab_connection_status
+from macmarket_trader.data.providers.schwab import schwab_market_data_status
 from macmarket_trader.data.providers.registry import build_email_provider, build_market_data_service
 from macmarket_trader.domain.enums import ApprovalStatus, MarketMode
 from macmarket_trader.domain.time import calendar_days_to_expiration, utc_now
@@ -489,7 +490,42 @@ def _safe_identity_value(value: str | None) -> str | None:
     return normalized
 
 
-def _workflow_bars(symbol: str, limit: int = 60, timeframe: str = "1D") -> tuple[list[Bar], str, bool]:
+def _market_data_action(provider: str) -> str:
+    if provider == "schwab":
+        return "reconnect_schwab"
+    if provider == "polygon":
+        return "check_polygon_market_data"
+    if provider == "alpaca":
+        return "check_alpaca_market_data"
+    return "configure_market_data_provider"
+
+
+def _market_data_unavailable_payload(
+    *,
+    symbol: str,
+    provider: str | None = None,
+    message: str | None = None,
+    sanitized_error: str | None = None,
+) -> dict[str, object]:
+    resolved_provider = provider or configured_market_data_provider_name()
+    payload: dict[str, object] = {
+        "ok": False,
+        "code": "MARKET_DATA_PROVIDER_UNAVAILABLE",
+        "provider": resolved_provider,
+        "symbol": symbol.upper(),
+        "message": message
+        or (
+            f"{resolved_provider} market data is unavailable for {symbol.upper()}. "
+            "Provider-backed workflows remain blocked until health recovers; no hidden fallback data was used."
+        ),
+        "action": _market_data_action(resolved_provider),
+    }
+    if sanitized_error:
+        payload["sanitized_error"] = sanitized_error
+    return payload
+
+
+def _workflow_bars(symbol: str, limit: int = 60, timeframe: str = "1D", min_bars: int = 1) -> tuple[list[Bar], str, bool]:
     try:
         bars, source, fallback_mode = market_data_service.historical_bars(symbol=symbol, timeframe=timeframe, limit=limit)
     except DataNotEntitledError:
@@ -519,33 +555,52 @@ def _workflow_bars(symbol: str, limit: int = 60, timeframe: str = "1D") -> tuple
         provider = configured_market_data_provider_name()
         raise HTTPException(
             status_code=503,
-            detail={
-                "error": "provider_unavailable",
-                "message": (
-                    f"{provider} market data is unavailable for this operator workflow. "
-                    "Verify provider health, OAuth/entitlements, and retry; production workflows do not silently use demo fallback."
-                ),
-                "provider": provider,
-                "sanitized_error": _sanitize_provider_error(exc),
-            },
+            detail=_market_data_unavailable_payload(
+                symbol=symbol,
+                provider=provider,
+                sanitized_error=_sanitize_provider_error(exc),
+            ),
         )
     if not bars:
+        provider = configured_market_data_provider_name()
         raise HTTPException(
             status_code=503,
-            detail=(
-                "No market-data bars available for operator workflow. "
-                "Verify provider health and retry from Recommendations."
+            detail=_market_data_unavailable_payload(
+                symbol=symbol,
+                provider=provider,
+                message=(
+                    f"{provider} market data returned no bars for {symbol.upper()}. "
+                    "Verify provider health and retry; production workflows do not silently use demo fallback."
+                ),
+            ),
+        )
+    if min_bars > 1 and len(bars) < min_bars:
+        provider = configured_market_data_provider_name()
+        raise HTTPException(
+            status_code=503,
+            detail=_market_data_unavailable_payload(
+                symbol=symbol,
+                provider=provider,
+                message=(
+                    f"{provider} market data returned only {len(bars)} bars for {symbol.upper()}; "
+                    f"{min_bars} are required for this workflow. No hidden fallback data was used."
+                ),
             ),
         )
 
     provider_is_expected = provider_backed_market_data_expected()
     allow_dev_demo_fallback = workflow_demo_fallback_allowed()
     if provider_is_expected and fallback_mode and not allow_dev_demo_fallback:
+        provider = configured_market_data_provider_name()
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Provider-backed market data is configured but unavailable. "
-                "User-facing recommendations/replay/orders are blocked to avoid hidden demo fallback."
+            detail=_market_data_unavailable_payload(
+                symbol=symbol,
+                provider=provider,
+                message=(
+                    f"{provider} provider-backed market data is configured but unavailable for {symbol.upper()}. "
+                    "User-facing workflows are blocked to avoid hidden demo fallback."
+                ),
             ),
         )
 
@@ -5554,13 +5609,20 @@ def analysis_setup(
 
 @user_router.get("/analyze/{symbol}")
 def analyze_symbol(symbol: str, market_mode: MarketMode = MarketMode.EQUITIES, _user=Depends(require_approved_user)):
-    bars, source, fallback_mode = _workflow_bars(symbol.upper(), limit=120)
+    normalized_symbol = symbol.upper()
+    try:
+        bars, source, fallback_mode = _workflow_bars(normalized_symbol, limit=120, min_bars=20)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else None
+        if detail and detail.get("code") == "MARKET_DATA_PROVIDER_UNAVAILABLE":
+            return JSONResponse(status_code=exc.status_code, content=detail)
+        raise
     latest = bars[-1]
     low20 = min(item.low for item in bars[-20:])
     high20 = max(item.high for item in bars[-20:])
     avg_volume = sum(item.volume for item in bars[-20:]) / min(len(bars), 20)
     ranking = ranking_engine.rank_candidates(
-        bars_by_symbol={symbol.upper(): (bars, source, fallback_mode)},
+        bars_by_symbol={normalized_symbol: (bars, source, fallback_mode)},
         strategies=[entry.display_name for entry in list_strategies(market_mode)[:4]],
         market_mode=market_mode,
         timeframe="1D",
@@ -5578,7 +5640,7 @@ def analyze_symbol(symbol: str, market_mode: MarketMode = MarketMode.EQUITIES, _
         for item in strategy_scoreboard
     ]
     return {
-        "symbol": symbol.upper(),
+        "symbol": normalized_symbol,
         "market_mode": market_mode.value,
         "timeframe": "1D",
         "source": f"fallback ({source})" if fallback_mode else source,
@@ -5606,9 +5668,9 @@ def analyze_symbol(symbol: str, market_mode: MarketMode = MarketMode.EQUITIES, _
         },
         "operator_note": "Focus on trigger quality, then promote qualified setup to Recommendations for execution prep.",
         "next_actions": [
-            {"label": "Open full workbench", "path": f"/analysis?symbol={symbol.upper()}"},
-            {"label": "Seed recommendation queue", "path": f"/recommendations?symbol={symbol.upper()}"},
-            {"label": "Create schedule from symbol", "path": f"/schedules?symbols={symbol.upper()}&name={symbol.upper()}%20Morning%20scan"},
+            {"label": "Open full workbench", "path": f"/analysis?symbol={normalized_symbol}"},
+            {"label": "Seed recommendation queue", "path": f"/recommendations?symbol={normalized_symbol}"},
+            {"label": "Create schedule from symbol", "path": f"/schedules?symbols={normalized_symbol}&name={normalized_symbol}%20Morning%20scan"},
         ],
         "status": "live" if market_mode == MarketMode.EQUITIES else "planned_research_preview",
         "execution_enabled": market_mode == MarketMode.EQUITIES,
@@ -7073,25 +7135,9 @@ def _llm_readiness(*, probe: bool = False) -> dict[str, object]:
 
 
 def _schwab_market_data_readiness() -> dict[str, object]:
-    status = schwab_connection_status(repo=provider_oauth_repo, cfg=settings)
+    status = schwab_market_data_status(repo=provider_oauth_repo, cfg=settings, include_probe=True, sample_symbol="SPY")
     active = _active_market_data_provider() == "schwab"
-    latency_ms = None
-    last_success_at = None
-    probe_state = "skipped"
-    if status.get("configured") and status.get("token_status") == "connected":
-        provider = SchwabMarketDataProvider(repo=provider_oauth_repo, cfg=settings)
-        health = provider.health_check(sample_symbol="SPY")
-        probe_state = "ok" if health.status == "ok" else "degraded"
-        latency_ms = health.latency_ms
-        last_success_at = health.last_success_at.isoformat() if health.last_success_at else None
-        status["status"] = "ok" if health.status == "ok" else "degraded"
-        status["details"] = health.details
-    elif not status.get("enabled"):
-        probe_state = "skipped"
-    elif not status.get("configured"):
-        probe_state = "unavailable"
-    else:
-        probe_state = "degraded"
+    probe_state = str(status.get("probe_state") or "skipped")
 
     config_state = _config_state(enabled=bool(status.get("enabled")), configured=bool(status.get("configured")))
     return {
@@ -7106,8 +7152,13 @@ def _schwab_market_data_readiness() -> dict[str, object]:
         "probe_state": probe_state,
         "probe_status": probe_state,
         "sample_symbol": "SPY",
-        "latency_ms": latency_ms,
-        "last_success_at": last_success_at,
+        "latency_ms": status.get("latency_ms"),
+        "last_success_at": status.get("last_success_at"),
+        "live_probe_status": status.get("live_probe_status"),
+        "market_data_ready": bool(status.get("market_data_ready")),
+        "requires_reconnect": bool(status.get("requires_reconnect")),
+        "entitlement_status": status.get("entitlement_status"),
+        "action": status.get("action"),
         "details": status.get("details"),
         "operational_impact": (
             "Schwab/Thinkorswim is the active read-only market-data provider. It does not enable broker execution, live trading, or order routing."
